@@ -1,0 +1,56 @@
+[project]
+name = "aida"
+version = "0.1.0"
+description = "Asistente Inteligente Determinista y Autónomo. Motor de decisión por utilidad, sin LLM en el bucle."
+readme = "README.md"
+authors = [
+    { name = "Jhon Coneo", email = "jconeo117@gmail.com" }
+]
+requires-python = ">=3.12"
+# El motor decide sin LLM. A propósito: el modelo solo entra por los puertos
+# de intención y cognición, en unidades posteriores, nunca como dependencia
+# del núcleo (criterio G4).
+dependencies = [
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+aida = "aida.run:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "pytest>=8.3",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+# ---------------------------------------------------------------------------
+# mypy en estricto: el motor decide por aritmética sobre estado, y un error de
+# tipos ahí no es un detalle de estilo, es una decisión mal tomada. El modo
+# estricto es la red de seguridad que sustituye a un compilador.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["packs"]
+# Los packs son datos de dominio, no código de librería: exigirles el mismo
+# rigor de lint que al motor solo produce ruido sobre ficheros que ni
+# ejecutan lógica propia.
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
