@@ -134,29 +134,6 @@ class NeedSpec(Spec):
     a cero sin que la cabeza se resienta: aprieta, pero no vuelve torpe.
     """
 
-    rank_slowdown: float = Field(default=0.0, ge=0.0)
-    """Convierte este eje en **rangos numerados**. 0.0 lo desactiva.
-
-    Un eje con rangos no tiene techo. El valor sigue viviendo en `[0, 1]` y
-    significa cuánto se lleva del rango actual; al llenarlo, el rango sube
-    uno y el valor vuelve a empezar. Siempre se puede seguir progresando, y
-    **siempre cuesta más que la vez anterior**.
-
-    El número dice cuánto se frena, como exponente sobre el rango:
-
-        ritmo(rango) = ritmo_base / (1 + rango) ** rank_slowdown
-
-    Con 1.0 es inversamente proporcional: el rango 3 avanza a un cuarto de la
-    velocidad del rango 0. Con 0.5 la cuesta es suave; con 2.0, pronunciada.
-
-    **Por qué frena, y no es una perilla de dificultad.** Al principio casi
-    todo enseña algo; más adelante, casi nada. La cuesta no modela que el
-    trabajo se ponga más difícil: modela que queda menos por aprender. De ahí
-    sale, sin tabla de niveles, que el tiempo hasta un rango alto crezca con
-    el cuadrado del rango — los rangos altos son raros porque cuestan, no
-    porque un tope los prohíba.
-    """
-
     escalates_after: int = Field(default=0, ge=0)
     """Cuántos ticks seguidos con este eje en el suelo hacen falta para que
     la presión escale. **0 = nunca escala**, y es el defecto.
@@ -264,19 +241,24 @@ class TemperamentKnob(StrEnum):
     """Aspectos de CÓMO se decide que un rasgo puede modular.
 
     Conjunto cerrado a propósito: a diferencia de las necesidades, esto no lo
-    define el pack sino el motor. Son los tres puntos donde la maquinaria de
+    define el pack sino el motor. Son los seis puntos donde la maquinaria de
     decisión admite variación individual.
 
-    Deliberadamente solo tres. Un asistente no tiene geografía que atravesar
-    ni una población de la que dejarse atraer, así que no hay una perilla de
-    "cuánto pesa la distancia" ni una de "cuánto atrae la compañía" que
-    modular — modularían un mecanismo que no existe. Si algún día se mide que
-    cambiar de tarea tiene un coste real, se añade una perilla propia con esa
-    semántica exacta, no se reutiliza esta lista.
+    Descartados los cuatro que necesitan una capa que AIDA no tiene: un
+    asistente no tiene geografía que atravesar (`travel_discount`) ni una
+    población de la que dejarse atraer o de la que hacerse amigo
+    (`companionship_weight`, `bond_rate`, `bond_fade`) — modularían un
+    mecanismo que no existe. Si algún día se mide que cambiar de tarea tiene
+    un coste real, ya existe `SWITCH_COST` más abajo: es justo esa perilla, no
+    una prestada que finja serlo.
 
-    El pack fija el valor del mundo (`TuningSpec`) y el agente lo modula: un
-    entorno donde equivocarse sale caro y un agente prudente son dos cosas
-    distintas que se componen, no que se sustituyen.
+    El pack fija el valor del mundo (`TuningSpec`) y el agente lo modula: son
+    dos cosas que se COMPONEN, no que se sustituyen. Conservar el valor en
+    `TuningSpec` pero quitar la perilla individual convertiría una
+    personalidad en una constante global, y una constante global no es una
+    personalidad — es justo lo contrario de personalidad como parámetro
+    modulable, no como *system prompt*, que es el diferenciador que defiende
+    el README en su §7.
     """
 
     TEMPERATURE = "temperature"
@@ -288,6 +270,29 @@ class TemperamentKnob(StrEnum):
     CRITICAL_THRESHOLD = "critical_need_threshold"
     """Cuándo cunde la alarma. Alto: se alarma pronto. Bajo: aguanta."""
 
+    SWITCH_COST = "switch_cost"
+    """Cuánto protege lo ya invertido. Alto: termina lo que empieza; bajo: lo
+    suelta en cuanto aparece algo mejor.
+
+    Es la perilla individual del compromiso con excepción de urgencia: el
+    coste de cambio de contexto que el proyecto necesita, con la misma
+    semántica que `TuningSpec.switch_cost` fija para el mundo entero.
+    """
+
+    NOVELTY = "novelty_weight"
+    """Cuánto castiga el hastío. Alto: necesita variedad y se cansa de lo
+    repetido; bajo: hace lo mismo cada día sin aburrirse.
+
+    Es lo que evita repetir el mismo aviso indefinidamente.
+    """
+
+    LEARNING_RATE = "learning_rate"
+    """Cuánto corrige sus expectativas tras cada experiencia. Alto: se fía de
+    lo último que le pasó; bajo: dogmático, tarda en aceptar que algo cambió.
+
+    Es el canal individual de las creencias aprendidas que llegan en U2.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Rasgos: multiplicadores estables de personalidad
@@ -298,6 +303,12 @@ class TraitSpec(Spec):
     Ahí está la variación de carácter: dos agentes con reglas idénticas y
     pesos distintos deciden distinto sin una sola línea de código específica
     para cada uno.
+
+    Diferido a U9, no descartado: `memory_multipliers` y `regret_multiplier`
+    de Agora —cuánto le dura a este agente el recuerdo y el rencor en
+    particular— vuelven junto con la memoria episódica, como canales de
+    personalidad sobre lo que se recuerda. No tienen consumidor hasta
+    entonces.
     """
 
     id: TraitId
@@ -471,20 +482,9 @@ class GoalSpec(Spec):
     sabiéndolo: un eje está hecho para llenarse, así que sobre suficientes
     ticks cualquiera que trabaje ese eje lo toca alguna vez. No se arregla
     subiendo el número —cerca del máximo alcanzable deja de ser un logro y
-    pasa a ser una lotería. Para un objetivo sostenido en el tiempo, ver
-    `at_rank`.
-    """
-
-    at_rank: int | None = Field(default=None, ge=1)
-    """Cuántos rangos hay que haber roto. Alternativa a `at_least`.
-
-    Con `rank_slowdown`, el valor del eje vuelve a cero cada vez que se
-    rompe un rango, así que un `at_least` sobre él se cumple con el primero y
-    no dice nada. El rango, en cambio, solo sube y no se reinicia: es el
-    único número de este eje que puede sostener un objetivo a largo plazo.
-
-    Exige que el eje tenga `rank_slowdown` > 0. Sin rangos, el número nunca
-    sube y la meta sería inalcanzable; lo comprueba el validador del pack.
+    pasa a ser una lotería—, salvo que el eje sea de `progression`
+    (`NeedSpec.progression`): ese no retrocede solo, así que un `at_least`
+    alto sobre él sí describe un objetivo sostenido, sin maquinaria aparte.
     """
 
     at_traits: dict[TraitId, float] = Field(default_factory=dict)
@@ -514,14 +514,12 @@ class GoalSpec(Spec):
         respuesta sería una convención arbitraria que nadie recuerda al leer
         el pack. Con ninguna, la meta no se puede cerrar jamás.
         """
-        cuantas = (
-            (self.at_least is not None) + (self.at_rank is not None) + bool(self.at_traits)
-        )
+        cuantas = (self.at_least is not None) + bool(self.at_traits)
         if cuantas != 1:
             raise ValueError(
                 f"meta {self.id!r}: hace falta EXACTAMENTE una condición de "
-                f"`at_least` (el valor del eje), `at_rank` (rangos rotos) o "
-                f"`at_traits` (ser quien hay que ser), y hay {cuantas}"
+                f"`at_least` (el valor del eje) o `at_traits` (ser quien hay "
+                f"que ser), y hay {cuantas}"
             )
         if self.requires_goal == self.id:
             raise ValueError(f"meta {self.id!r}: se abre a sí misma")
@@ -693,6 +691,9 @@ class SituationSpec(Spec):
     añade la otra mitad: no solo cambia CUÁNTO cuesta algo, cambia CÓMO se
     decide — el mismo estado que aprieta un eje puede además volver a
     alguien más metódico o más propenso a alarmarse.
+
+    Su consumidor llega en U3/U4; se declara ahora porque es la costura entre
+    situación y disposición, y las costuras se declaran pronto.
     """
 
     @model_validator(mode="after")
@@ -768,7 +769,10 @@ class HealthSpec(Spec):
     """Distancia media entre las trayectorias que produce el mismo pack con
     distinta semilla o distinta ficha de personalidad. Es la métrica que caza
     el colapso: configuraciones de carácter distintas que producen la misma
-    conducta.
+    conducta. Poder demostrarlo en integración continua —que dos
+    personalidades deciden distinto sobre el mismo estado, y que el azar no
+    se ha comido al carácter— es exactamente lo que defiende el README en su
+    §7.
     """
 
     may_go_unused: frozenset[ActionId] = Field(default_factory=frozenset)
