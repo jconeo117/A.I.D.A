@@ -8,3 +8,6 @@ dist/
 build/
 *.egg-info/
 runs/
+
+# Copias de trabajo aisladas de los subagentes (worktrees de git por unidad).
+.claude/worktrees/
