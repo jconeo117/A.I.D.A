@@ -15,7 +15,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, NewType
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 # ---------------------------------------------------------------------------
 # Identificadores.
@@ -121,7 +121,16 @@ class NeedSpec(Spec):
     initial: float = Field(default=1.0, ge=0.0, le=1.0)
 
     base_weight: float = Field(default=1.0, ge=0.0)
-    """Importancia base antes de que la personalidad la modifique."""
+    """Cuánto importa este eje a un agente sin ningún rasgo que lo module.
+
+    Sin esto todo eje partiría igualmente importante, y la única forma de
+    decir "esto importa más que aquello" sería inventar un rasgo universal
+    que todo agente tuviera igual — lo que convertiría un dato del PACK
+    (cuánto pesa este eje en el mundo) en un dato de cada FICHA de
+    personalidad. `TraitSpec.need_weight_multipliers` compone sobre este
+    valor, nunca lo sustituye: la personalidad reescala una importancia que
+    el pack ya fijó, no la crea desde cero.
+    """
 
     strain_weight: float = Field(default=0.0, ge=0.0)
     """Cuánto contribuye este eje al desgaste cognitivo cuando escasea.
@@ -424,7 +433,17 @@ class TasteSpec(Spec):
 
     target: ActionId | AgentId
     multiplier: float = Field(gt=0.0)
-    """<1 aversión, >1 predilección. Multiplica la utilidad final."""
+    """<1 aversión, >1 predilección. Multiplica la utilidad final entera, ya
+    compuesta, no un término aislado.
+
+    A diferencia de `TraitSpec`, un gusto no tiene un dial de intensidad que
+    elevar como exponente: es una asociación directa a UN objetivo concreto,
+    no una categoría que varía en grado. Por eso la cota es `gt=0.0` y no un
+    rango simétrico alrededor de 1 — un multiplicador negativo invertiría el
+    signo de una utilidad que ya puede ser negativa por sí misma (coste mayor
+    que beneficio), y esa inversión no tiene lectura: no es "le disgusta más",
+    es un signo que ya no significa lo que decía significar.
+    """
 
 
 class GoalStatus(StrEnum):
@@ -584,7 +603,16 @@ class AgentSpec(Spec):
     """Lo que este agente quiere. Vacío es legítimo."""
 
     traits: dict[TraitId, float] = Field(default_factory=dict)
-    """Rasgo -> intensidad en -1..1. Validado abajo."""
+    """Qué rasgos tiene ESTE agente y a qué intensidad — no qué hace cada
+    rasgo, eso vive en `TraitSpec`, compartido por todo el catálogo del pack.
+
+    Separar la definición del efecto (una vez, en `TraitSpec`) de la ficha de
+    intensidades (una por agente, aquí) es lo que permite que cien agentes
+    compartan el mismo catálogo de rasgos y decidan distinto sin que cada uno
+    repita `need_weight_multipliers` y compañía. Un rasgo ausente de este
+    `dict` no es un 0.0 explícito: simplemente no participa en la composición
+    de este agente en concreto.
+    """
 
     tastes: tuple[TasteSpec, ...] = ()
 
@@ -595,7 +623,16 @@ class AgentSpec(Spec):
 
     @model_validator(mode="after")
     def _traits_in_range(self) -> AgentSpec:
-        for trait, value in self.traits.items():
+        """Fuera de [-1, 1] la intensidad no significa nada del modelo.
+
+        `TraitSpec` compone sus multiplicadores como `M ** intensidad`: el
+        rango es lo que garantiza que 0 neutralice exactamente (`M**0 == 1`) y
+        que -1 invierta exactamente (`M**-1 == 1/M`). La potencia en sí no
+        revienta con un valor fuera de ese rango, así que sin esta puerta un
+        pack podría colar un 3.0 que compila y produce un número que no es
+        "invertido" ni "neutral" ni "a tope": solo un artefacto de la fórmula.
+        """
+        for trait, value in sorted(self.traits.items()):
             if not -1.0 <= value <= 1.0:
                 raise ValueError(f"rasgo {trait!r} = {value}, fuera de [-1, 1]")
         return self
@@ -666,8 +703,16 @@ class SituationSpec(Spec):
     al principio de la cuenta."""
 
     gain_multipliers: dict[NeedId, PositiveFactor] = Field(default_factory=dict)
-    """Cuánto cunde lo que se hace mientras esto está activo. Lo ausente vale
-    1.0.
+    """Cuánto cunde una ACCIÓN mientras esto está activo. Lo ausente vale 1.0.
+
+    Distinto de `effects`: eso drena o repone de forma pasiva, tick a tick,
+    pase lo que pase. Esto solo se nota en lo que el agente hace activamente
+    mientras dura la situación, y compone con `TraitSpec.gain_multipliers`
+    —situación por rasgo, no uno sustituye al otro. Sin este canal, la única
+    forma de que un contexto favorezca hacer algo sería subir el beneficio
+    declarado de cada acción del catálogo, lo que obligaría a cada acción a
+    conocer de antemano cada situación posible en vez de que la situación
+    describa su propio efecto una sola vez.
     """
 
     effects: dict[NeedId, float] = Field(default_factory=dict)
@@ -781,7 +826,30 @@ class HealthSpec(Spec):
     Una red de seguridad es el caso típico: en una ejecución sana nadie
     debería necesitar recurrir a ella. Cualquier OTRA acción sin usar sí es
     un aviso — es contenido declarado que nunca se ejerce.
+
+    Es un `frozenset` y no un `tuple` a propósito: el orden en que el pack
+    escribe estas acciones no debería ser parte de la identidad del modelo.
+    Con `tuple`, dos `HealthSpec` con las mismas acciones en distinto orden
+    dejarían de ser iguales para pydantic, lo que convertiría un detalle de
+    redacción del pack en una diferencia semántica que no lo es. Lo único que
+    un `frozenset` no da gratis es un orden de iteración estable entre
+    procesos —depende de `PYTHONHASHSEED`—, así que la serialización se fija
+    aparte en `_may_go_unused_sorted`, sin renunciar a la semántica de
+    conjunto del campo.
     """
+
+    @field_serializer("may_go_unused", when_used="json")
+    def _may_go_unused_sorted(self, value: frozenset[ActionId]) -> list[ActionId]:
+        """Fija el orden de volcado a JSON para que sea igual entre procesos.
+
+        El orden de iteración de un `frozenset` depende de `PYTHONHASHSEED`:
+        sin esto, el mismo `HealthSpec` produce un JSON distinto en cada
+        proceso aunque el contenido no haya cambiado, lo que rompe G6 en
+        cuanto exista un consumidor que registre esta pieza en el log o en un
+        pack cargado. El campo en sí sigue siendo un `frozenset` en memoria;
+        solo se ordena al volcarlo.
+        """
+        return sorted(value)
 
 
 # ---------------------------------------------------------------------------
