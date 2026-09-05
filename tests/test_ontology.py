@@ -15,14 +15,18 @@ aquí solo se prueba la declaración y su validación al construir.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 import aida.engine.ontology as ontology
 from aida.engine.ontology import (
+    ActionId,
     AgentSpec,
     GoalId,
     GoalSpec,
+    GoalStatus,
     HealthSpec,
     NeedId,
     NeedSpec,
@@ -289,6 +293,39 @@ def test_need_spec_no_tiene_campo_lethal_after() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3b. Lo que SÍ debe existir: los ocho identificadores que el corte conserva.
+#
+# `test_pieza_descartada_o_diferida_no_existe_en_el_modulo` y
+# `test_identificador_descartado_no_existe_en_el_modulo` solo protegen que lo
+# descartado no vuelva. Sin esto, borrar uno de los ocho identificadores
+# conservados (`02-corte-ontologia.md`, tabla "Se copia, adaptando") no lo
+# detectaría ningún test: es el hallazgo 1 de `30-validation.md`.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "nombre",
+    [
+        "NeedId",
+        "TraitId",
+        "GoalId",
+        "PhaseId",
+        "SituationId",
+        "ActionId",
+        "AgentId",
+        "Tag",
+    ],
+)
+def test_identificador_conservado_existe_en_el_modulo(nombre: str) -> None:
+    """Cada uno de los ocho identificadores que el corte decidió conservar
+    sigue definido en `ontology`. Complementa, en sentido inverso, a
+    `test_identificador_descartado_no_existe_en_el_modulo`.
+    """
+    # Arrange: el nombre bajo prueba llega parametrizado.
+
+    # Act / Assert
+    assert hasattr(ontology, nombre)
+
+
+# ---------------------------------------------------------------------------
 # 4. `TemperamentKnob`: exactamente seis miembros.
 # ---------------------------------------------------------------------------
 def test_temperament_knob_tiene_exactamente_seis_miembros() -> None:
@@ -330,6 +367,110 @@ def test_cada_temperament_knob_corresponde_a_un_campo_de_tuning_spec(
 
     # Act / Assert
     assert knob.value in TuningSpec.model_fields
+
+
+# ---------------------------------------------------------------------------
+# 4b. `GoalStatus`: exactamente cuatro estados, ni más ni menos.
+#
+# Es un enum, no un `Spec`, y por eso no lo cubría
+# `test_las_once_piezas_del_corte_son_importables_y_construibles`: la mutación
+# B de `30-validation.md` lo borró entero y la batería no se enteró.
+# ---------------------------------------------------------------------------
+def test_goal_status_tiene_exactamente_cuatro_estados() -> None:
+    """El conjunto completo de estados es `LOCKED`, `ACTIVE`, `ACHIEVED` y
+    `FAILED`: ni falta ninguno, ni sobra uno que confunda logrado con
+    perdido, que el corte distingue a propósito porque mueven rasgos
+    opuestos.
+    """
+    # Arrange
+    esperados = {"LOCKED", "ACTIVE", "ACHIEVED", "FAILED"}
+
+    # Act
+    encontrados = {miembro.name for miembro in GoalStatus}
+
+    # Assert
+    assert encontrados == esperados
+    assert len(GoalStatus) == 4
+
+
+# ---------------------------------------------------------------------------
+# 4c. Los campos que `02-corte-ontologia.md` nombra uno a uno en `NeedSpec`
+# siguen declarados, con el defecto que corresponde. `max_debt` y
+# `escalates_after` ya tienen su propia prueba en la sección 5; aquí van el
+# resto, y por introspección de `model_fields`, nunca por lectura del código:
+# un campo que sigue existiendo pero cuyo defecto cambió en silencio es el
+# mismo problema con otra cara.
+# ---------------------------------------------------------------------------
+def test_need_spec_decay_per_tick_sigue_siendo_obligatorio() -> None:
+    """`decay_per_tick` no tiene defecto: calibrarlo es trabajo del pack y no
+    hay un valor razonable que suponer en su ausencia.
+    """
+    # Arrange / Act
+    campo = NeedSpec.model_fields["decay_per_tick"]
+
+    # Assert
+    assert campo.is_required()
+
+
+@pytest.mark.parametrize(
+    "campo,defecto",
+    [
+        ("progression", False),
+        ("urgent_when_low", True),
+        ("base_weight", 1.0),
+        ("strain_weight", 0.0),
+        ("initial", 1.0),
+        ("urgency_exponent", 2.0),
+        ("cap", 1.0),
+    ],
+)
+def test_need_spec_campo_del_corte_conserva_su_valor_por_defecto(
+    campo: str, defecto: object
+) -> None:
+    """El campo sigue declarado en `NeedSpec` y su valor por defecto no
+    cambió en silencio.
+    """
+    # Arrange: el campo y su defecto esperado llegan parametrizados.
+
+    # Act / Assert
+    assert campo in NeedSpec.model_fields
+    assert NeedSpec.model_fields[campo].default == defecto
+
+
+def test_health_spec_may_go_unused_existe_con_defecto_frozenset_vacio() -> None:
+    """`HealthSpec.may_go_unused` — una de las tres piezas que borró la
+    mutación B de `30-validation.md` — sigue declarado, con un `frozenset`
+    vacío como defecto: ningún pack está obligado a marcar redes de
+    seguridad.
+    """
+    # Arrange / Act
+    salud = HealthSpec()
+
+    # Assert
+    assert "may_go_unused" in HealthSpec.model_fields
+    assert salud.may_go_unused == frozenset()
+
+
+def test_health_spec_may_go_unused_serializa_en_orden_alfabetico() -> None:
+    """`model_dump_json` vuelca `may_go_unused` siempre en orden alfabético,
+    aunque el `frozenset` se construya con los elementos en otro orden: es
+    lo que ancla el arreglo del criterio G6 (`field_serializer` de
+    `_may_go_unused_sorted`). Sin esto, el orden de volcado dependería de
+    `PYTHONHASHSEED` y el mismo `HealthSpec` produciría un JSON distinto en
+    cada proceso.
+    """
+    # Arrange: construido a propósito en un orden que no es el alfabético.
+    salud = HealthSpec(
+        may_go_unused=frozenset(
+            {ActionId("zeta"), ActionId("eme"), ActionId("alfa"), ActionId("beta")}
+        )
+    )
+
+    # Act
+    volcado = json.loads(salud.model_dump_json())
+
+    # Assert
+    assert volcado["may_go_unused"] == ["alfa", "beta", "eme", "zeta"]
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +518,16 @@ def test_escalates_after_negativo_falla() -> None:
 # Superficie pública mínima: las piezas del corte existen e instancian.
 # ---------------------------------------------------------------------------
 def test_las_once_piezas_del_corte_son_importables_y_construibles() -> None:
-    """Cada clase que el corte decidió transferir existe en el módulo y
-    admite al menos una construcción válida con los campos obligatorios.
+    """Cada una de las once piezas de la tabla "Se copia, adaptando" de
+    `02-corte-ontologia.md` existe en el módulo: las nueve `Spec` admiten al
+    menos una construcción válida con los campos obligatorios, y
+    `TemperamentKnob`/`GoalStatus` —los dos enums de la tabla, no `Spec`— se
+    construyen a partir de uno de sus miembros.
 
     No repite los validadores ya cubiertos arriba: solo confirma que la
-    superficie pública completa está presente.
+    superficie pública completa está presente. `GoalStatus` es justamente lo
+    que la mutación B de `30-validation.md` borró sin que este test se
+    enterase antes de incluirlo aquí.
     """
     # Arrange / Act
     necesidad = _need()
@@ -393,6 +539,8 @@ def test_las_once_piezas_del_corte_son_importables_y_construibles() -> None:
     situacion = _situation()
     salud = HealthSpec()
     calibracion = TuningSpec()
+    perilla = TemperamentKnob("temperature")
+    estado_de_meta = GoalStatus("active")
 
     # Assert
     assert necesidad.id == NeedId("necesidad")
@@ -404,3 +552,5 @@ def test_las_once_piezas_del_corte_son_importables_y_construibles() -> None:
     assert situacion.id == SituationId("situacion")
     assert salud.days == 7
     assert calibracion.candidate_pool == 3
+    assert perilla is TemperamentKnob.TEMPERATURE
+    assert estado_de_meta is GoalStatus.ACTIVE
