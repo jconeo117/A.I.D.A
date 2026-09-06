@@ -7,6 +7,7 @@ son, por ahora, toda la batería de la unidad.
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -95,3 +96,126 @@ def test_argumento_desconocido_termina_con_codigo_dos() -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(["--opcion-inexistente"])
     assert excinfo.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# CLI --pack (Unidad U2)
+# ---------------------------------------------------------------------------
+
+
+def _pack_yaml_valido() -> str:
+    return """
+id: "pack_cli_test"
+label: "Pack CLI válido"
+needs:
+  - id: "n1"
+    label: "Necesidad 1"
+    decay_per_tick: 0.01
+actions:
+  - id: "a1"
+    label: "Acción 1"
+    duration_ticks: 1
+    reversibility: "reversible"
+    satisfies:
+      n1: 0.5
+    effects:
+      n1: 0.5
+agents:
+  - id: "ag1"
+    label: "Agente 1"
+"""
+
+
+def test_run_pack_opcion_valida_imprime_resumen_y_devuelve_cero(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """`main(["--pack", <ruta>])` con pack válido devuelve 0 e imprime el resumen."""
+    # Arrange
+    pack_file = tmp_path / "valido.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    # Act
+    codigo = main(["--pack", str(pack_file)])
+
+    # Assert
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "pack 'pack_cli_test'" in captured.out
+    assert "needs: 1" in captured.out
+    assert "actions: 1" in captured.out
+    assert "agents: 1" in captured.out
+    assert captured.err == ""
+
+
+def test_run_pack_opcion_invalida_imprime_errores_en_stderr_y_devuelve_uno(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """`main(["--pack", <ruta>])` con pack inválido devuelve 1 e imprime error por stderr."""
+    # Arrange: pack con error de validación (efecto negativo sin coste declarado)
+    invalido_yaml = """
+id: "pack_invalido"
+label: "Pack inválido"
+needs:
+  - id: "n1"
+    label: "Necesidad 1"
+    decay_per_tick: 0.01
+actions:
+  - id: "a1"
+    label: "Acción 1"
+    duration_ticks: 1
+    reversibility: "reversible"
+    effects:
+      n1: -0.5
+agents:
+  - id: "ag1"
+    label: "Agente 1"
+"""
+    pack_file = tmp_path / "invalido.yaml"
+    pack_file.write_text(invalido_yaml, encoding="utf-8")
+
+    # Act
+    codigo = main(["--pack", str(pack_file)])
+
+    # Assert
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert captured.err != ""
+    assert "no se pudo cargar" in captured.err or "inválido" in captured.err
+
+
+def test_run_pack_archivo_inexistente_devuelve_uno_y_reporta_en_stderr(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """`main(["--pack", <ruta_inexistente>])` devuelve 1 e informa por stderr."""
+    # Arrange
+    ruta_inexistente = tmp_path / "no_existe.yaml"
+
+    # Act
+    codigo = main(["--pack", str(ruta_inexistente)])
+
+    # Assert
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "no se pudo cargar" in captured.err
+
+
+def test_run_pack_no_invoca_sys_exit_directamente(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`main` no llama a `sys.exit` para --pack: retorna el código como entero."""
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    def mock_exit(code: int = 0) -> None:
+        raise AssertionError(f"sys.exit({code}) fue llamado dentro de main()")
+
+    monkeypatch.setattr(sys, "exit", mock_exit)
+
+    # Tanto en éxito como en fallo no debe llamar a sys.exit
+    assert main(["--pack", str(pack_file)]) == 0
+    assert main(["--pack", str(tmp_path / "no_existe.yaml")]) == 1
+

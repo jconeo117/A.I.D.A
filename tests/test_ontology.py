@@ -233,18 +233,22 @@ def test_situation_spec_que_vuelve_pero_dura_cero_falla() -> None:
         "DebtSpec",
         "AflictionSpec",
         "ElasticSpec",
-        "ActionSpec",
         "ClockSpec",
     ],
 )
 def test_pieza_descartada_o_diferida_no_existe_en_el_modulo(nombre: str) -> None:
-    """Ninguna de las piezas descartadas por el corte, ni las diferidas a U3
-    (`ActionSpec`) o U4 (`ClockSpec`), está definida en `ontology`.
+    """Ninguna de las piezas descartadas por el corte, ni las diferidas
+    (como `ClockSpec` a U4), está definida en `ontology`.
     """
     # Arrange: el nombre bajo prueba llega parametrizado.
 
     # Act / Assert
     assert not hasattr(ontology, nombre)
+
+
+def test_actionspec_pieza_de_u2_existe_en_el_modulo() -> None:
+    """ActionSpec era diferida en U1 pero se implementa e integra en U2."""
+    assert hasattr(ontology, "ActionSpec")
 
 
 @pytest.mark.parametrize(
