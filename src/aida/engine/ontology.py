@@ -775,6 +775,111 @@ class SituationSpec(Spec):
 
 
 # ---------------------------------------------------------------------------
+# Acciones
+# ---------------------------------------------------------------------------
+class Reversibility(StrEnum):
+    """Si lo que hace una acción se puede deshacer, y a qué precio."""
+
+    REVERSIBLE = "reversible"
+    REVERSIBLE_WITH_COST = "reversible_with_cost"
+    IRREVERSIBLE = "irreversible"
+
+
+class ActionSpec(Spec):
+    """Entrada del catálogo cerrado de acciones del asistente.
+
+    Define una operación posible con su latencia prevista, sus requisitos
+    de ejecutabilidad, su impacto anticipado al deliberar y su efecto real al
+    completarse.
+
+    `satisfies` y `effects` parecen redundantes pero no lo son:
+      - satisfies -> se usa ANTES, para puntuar la acción al deliberar.
+      - effects   -> se usa DESPUÉS, para aplicar el resultado real.
+    Separarlos permite que el agente anticipe un alivio que difiera del efecto
+    real, lo que hace posible modelar error de predicción y aprendizaje.
+    """
+
+    id: ActionId
+    label: str
+    reversibility: Reversibility
+    """Obligatorio y sin valor por defecto: una acción sin clasificar no
+    carga. Un defecto convertiría el olvido en la clasificación más
+    permisiva, que es justo la que no se debe poder elegir por descuido.
+    """
+
+    duration_ticks: int = Field(ge=1)
+    """Latencia esperada en ticks para completar la acción."""
+
+    interruptible: bool = True
+    """Si una urgencia crítica puede abortarla a medias. Si es False, la
+    acción se completa íntegramente o no se empieza.
+    """
+
+    requires: dict[NeedId, NonNegativeFactor] = Field(default_factory=dict)
+    """Nivel mínimo por eje de necesidad para poder si quiera intentarla.
+    Puerta dura: evita intentar acciones que no se pueden costear.
+    """
+
+    requires_traits: dict[TraitId, float] = Field(default_factory=dict)
+    """Intensidad mínima de rasgo requerida, acotada a [-1, 1]."""
+
+    satisfies: dict[NeedId, float] = Field(default_factory=dict)
+    """Cuánto anticipa aliviar cada necesidad (evaluado al deliberar)."""
+
+    costs: dict[NeedId, NonNegativeFactor] = Field(default_factory=dict)
+    """Cuánto anticipa gastar en cada necesidad (evaluado al deliberar)."""
+
+    effects: dict[NeedId, float] = Field(default_factory=dict)
+    """Delta real aplicado al estado tras completar la acción."""
+
+    phase_multipliers: dict[PhaseId, PositiveFactor] = Field(default_factory=dict)
+    """Multiplicador de beneficio según el tramo del ciclo. Lo ausente vale 1.0."""
+
+    situation_multipliers: dict[SituationId, PositiveFactor] = Field(default_factory=dict)
+    """Multiplicador de beneficio según el contexto activo. Lo ausente vale 1.0."""
+
+    saturation_gain: float = Field(default=0.0, ge=0.0)
+    """Hastío acumulado por repetición continua de esta acción."""
+
+    tags: frozenset[Tag] = Field(default_factory=frozenset)
+    """Etiquetas libres para agrupación o clasificación."""
+
+    @field_serializer("tags", when_used="json")
+    def _tags_sorted(self, value: frozenset[Tag]) -> list[Tag]:
+        """Fija el orden de volcado a JSON para que sea determinista entre procesos."""
+        return sorted(value)
+
+    @model_validator(mode="after")
+    def _validate_coherence(self) -> ActionSpec:
+        """Comprueba coherencia de cotas en rasgos y de signos entre promesas y efectos.
+
+        - Toda clave en `requires_traits` debe estar acotada a [-1, 1].
+        - Toda clave en `satisfies` debe aparecer en `effects` con signo positivo (> 0.0).
+        - Toda clave en `costs` debe aparecer en `effects` con signo negativo (< 0.0).
+        """
+        for trait, intensity in sorted(self.requires_traits.items()):
+            if not -1.0 <= intensity <= 1.0:
+                raise ValueError(
+                    f"acción {self.id!r}.requires_traits[{trait!r}] = {intensity}, fuera de [-1, 1]"
+                )
+        for need in sorted(self.satisfies):
+            effect = self.effects.get(need)
+            if effect is None or effect <= 0.0:
+                raise ValueError(
+                    f"acción {self.id!r}: la clave {need!r} de `satisfies` debe aparecer "
+                    f"en `effects` con signo positivo (> 0.0), pero vale {effect!r}"
+                )
+        for need in sorted(self.costs):
+            effect = self.effects.get(need)
+            if effect is None or effect >= 0.0:
+                raise ValueError(
+                    f"acción {self.id!r}: la clave {need!r} de `costs` debe aparecer "
+                    f"en `effects` con signo negativo (< 0.0), pero vale {effect!r}"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Salud
 # ---------------------------------------------------------------------------
 class HealthSpec(Spec):

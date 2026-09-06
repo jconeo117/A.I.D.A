@@ -1,0 +1,258 @@
+# =============================================================================
+# Pack de plantilla: Vigilancia y Mantenimiento de Infraestructura
+#
+# Un pack traduce un dominio operativo real a las primitivas abstractas del
+# motor de A.I.D.A.: ejes de necesidad, acciones del catálogo con sus niveles de
+# reversibilidad, franjas del ciclo operativo, contextos transitorios y rasgos
+# de personalidad del agente que supervisa el entorno.
+#
+# Este pack modela la monitorización continua de un clúster de servicios donde
+# la degradación de recursos genera presión sobre el asistente y exige
+# intervenciones con distintos compromisos de riesgo y coste de reversión.
+# =============================================================================
+
+id: "infraestructura_base"
+label: "Vigilancia de Infraestructura y Servicios"
+
+# -----------------------------------------------------------------------------
+# Ejes de necesidad (NeedSpec)
+# Representan variables de salud operativa que decaen con el tiempo o con la
+# carga y requieren acciones para mantenerse en niveles seguros.
+# -----------------------------------------------------------------------------
+needs:
+  # Eje 1: Espacio en disco disponible.
+  # Decae continuamente por generación de logs y artefactos temporales.
+  # Incorpora max_debt: si el disco se llena al 100%, la acumulación de deuda
+  # representa archivos residuales que requieren purga profunda antes de
+  # recuperar margen operativo normal.
+  - id: "espacio_libre"
+    label: "Espacio en disco disponible"
+    initial: 0.85
+    cap: 1.0
+    decay_per_tick: 0.005
+    max_debt: 0.50
+    escalates_after: 0
+
+  # Eje 2: Vigencia de certificados criptográficos y credenciales de acceso.
+  # Decae lentamente conforme se acerca la fecha de expiración.
+  # Incorpora escalates_after: si entra en suelo y nadie renueva
+  # las credenciales tras 20 ticks, el riesgo escala a incidente mayor.
+  - id: "certificados_vigentes"
+    label: "Vigencia de certificados y credenciales"
+    initial: 0.90
+    cap: 1.0
+    decay_per_tick: 0.002
+    max_debt: 0.0
+    escalates_after: 20
+
+  # Eje 3: Réplicas de servicios activas y respondiendo a sondas de salud.
+  # Representa la redundancia del sistema frente a fallos de hardware o red.
+  - id: "replicas_al_dia"
+    label: "Salud y redundancia de réplicas"
+    initial: 0.80
+    cap: 1.0
+    decay_per_tick: 0.003
+    max_debt: 0.0
+    escalates_after: 0
+
+# -----------------------------------------------------------------------------
+# Rasgos de personalidad (TraitSpec)
+# Modulan cómo pondera el agente los ejes o cuánto rendimiento extrae al actuar.
+# Dos rasgos ejercitan canales multiplicadores distintos.
+# -----------------------------------------------------------------------------
+traits:
+  # Rasgo 1: Prudente / Conservador.
+  # Pondera más alto la importancia del espacio libre y amplifica el coste
+  # percibido de gastar redundancia.
+  - id: "prudente"
+    label: "Perfil conservador"
+    need_weight_multipliers:
+      espacio_libre: 1.30
+    cost_multipliers:
+      replicas_al_dia: 1.25
+
+  # Rasgo 2: Proactivo.
+  # Maximiza el rendimiento obtenido al intervenir sobre certificados y réplicas.
+  - id: "proactivo"
+    label: "Perfil proactivo"
+    gain_multipliers:
+      certificados_vigentes: 1.20
+      replicas_al_dia: 1.15
+
+# -----------------------------------------------------------------------------
+# Franjas del ciclo temporal (PhaseSpec)
+# Tramos con nombre que modulan la efectividad o conveniencia de ciertas tareas.
+# -----------------------------------------------------------------------------
+phases:
+  - id: "horario_laboral"
+    label: "Horario de alta interacción comercial"
+    starts_at: 0
+
+  - id: "ventana_nocturna"
+    label: "Ventana nocturna de mantenimiento"
+    starts_at: 60
+
+# -----------------------------------------------------------------------------
+# Situaciones contextuales (SituationSpec)
+# Estados transitorios que alteran multiplicadores y aplican efectos continuos.
+# -----------------------------------------------------------------------------
+situations:
+  # Situación periódica: cada 50 ticks ocurre un pico de tráfico de 10 ticks.
+  - id: "pico_de_trafico"
+    label: "Pico de tráfico periódico"
+    every: 50
+    lasts: 10
+    starts_at: 10
+    gain_multipliers:
+      replicas_al_dia: 1.30
+    effects:
+      espacio_libre: -0.01
+
+# -----------------------------------------------------------------------------
+# Catálogo cerrado de acciones (ActionSpec)
+# Operaciones posibles. Se cubren los tres niveles de reversibilidad:
+#   - reversible
+#   - reversible_with_cost
+#   - irreversible
+#
+# Cumplen estrictamente la coherencia de signos:
+#   - todo elemento en 'satisfies' tiene delta positivo (> 0.0) en 'effects'
+#   - todo elemento en 'costs' tiene delta negativo (< 0.0) en 'effects'
+#   - todo efecto negativo está declarado en 'costs'
+#   - todo requisito en 'requires' cubre el consumo del efecto
+# -----------------------------------------------------------------------------
+actions:
+  # Acción 1: Purgar archivos temporales y rotar logs viejos.
+  # REVERSIBLE: si se necesitan de nuevo, los registros están respaldados.
+  - id: "purgar_temporales"
+    label: "Purgar logs y temporales de nodos"
+    reversibility: "reversible"
+    duration_ticks: 2
+    interruptible: true
+    requires:
+      espacio_libre: 0.05
+    satisfies:
+      espacio_libre: 0.25
+    costs:
+      replicas_al_dia: 0.05
+    effects:
+      espacio_libre: 0.25
+      replicas_al_dia: -0.05
+    phase_multipliers:
+      ventana_nocturna: 1.25
+    saturation_gain: 0.10
+    tags:
+      - "mantenimiento"
+      - "disco"
+
+  # Acción 2: Desplegar réplicas adicionales en caliente.
+  # REVERSIBLE_WITH_COST: se pueden destruir instancias excedentes, pero consume
+  # cómputo y espacio transitorio de imágenes.
+  - id: "escalar_replicas"
+    label: "Desplegar réplicas adicionales"
+    reversibility: "reversible_with_cost"
+    duration_ticks: 3
+    interruptible: false
+    requires:
+      espacio_libre: 0.10
+    satisfies:
+      replicas_al_dia: 0.35
+    costs:
+      espacio_libre: 0.10
+    effects:
+      replicas_al_dia: 0.35
+      espacio_libre: -0.10
+    situation_multipliers:
+      pico_de_trafico: 1.40
+    saturation_gain: 0.05
+    tags:
+      - "escalabilidad"
+      - "alta_disponibilidad"
+
+  # Acción 3: Rotar y reemitir certificados criptográficos de producción.
+  # IRREVERSIBLE: invalida inmediatamente los certificados anteriores en la CA.
+  # Requiere autoridad explícita y no se puede deshacer una vez propagado.
+  - id: "rotar_certificados"
+    label: "Rotar certificados de producción"
+    reversibility: "irreversible"
+    duration_ticks: 5
+    interruptible: false
+    requires:
+      replicas_al_dia: 0.10
+    satisfies:
+      certificados_vigentes: 0.60
+    costs:
+      replicas_al_dia: 0.08
+    effects:
+      certificados_vigentes: 0.60
+      replicas_al_dia: -0.08
+    phase_multipliers:
+      ventana_nocturna: 1.50
+    saturation_gain: 0.20
+    tags:
+      - "seguridad"
+      - "critico"
+
+  # Acción 4: Comprobación pasiva de integridad y telemetría.
+  # REVERSIBLE: consulta de solo lectura, no altera el entorno.
+  - id: "auditar_telemetria"
+    label: "Ejecutar auditoría de telemetría"
+    reversibility: "reversible"
+    duration_ticks: 1
+    interruptible: true
+    satisfies:
+      replicas_al_dia: 0.05
+    costs: {}
+    effects:
+      replicas_al_dia: 0.05
+    phase_multipliers:
+      horario_laboral: 1.10
+    saturation_gain: 0.02
+    tags:
+      - "diagnostico"
+
+# -----------------------------------------------------------------------------
+# Ficha del agente (AgentSpec)
+# Define la identidad del agente supervisor, sus intensidades de rasgos y
+# estados iniciales de necesidad.
+# -----------------------------------------------------------------------------
+agents:
+  - id: "centinela_01"
+    label: "Agente Centinela de Infraestructura"
+    traits:
+      prudente: 0.60
+      proactivo: 0.40
+    initial_needs:
+      espacio_libre: 0.80
+      certificados_vigentes: 0.90
+      replicas_al_dia: 0.75
+    tastes:
+      - target: "auditar_telemetria"
+        multiplier: 1.15
+
+# -----------------------------------------------------------------------------
+# Contrato de salud (HealthSpec)
+# Bandas de validación de diseño para integración continua.
+# No son parámetros que modifiquen la ejecución: son aserciones comprobables
+# sobre la trayectoria esperada del sistema (evitan tanto la saturación como
+# la indiferencia).
+# -----------------------------------------------------------------------------
+health:
+  days: 7
+  seeds:
+    - 1312
+    - 7
+    - 99
+  min_crisis: 0.0
+  max_crisis: 0.85
+  max_abort_ratio: 0.30
+  min_differentiation: 0.10
+  may_go_unused:
+    - "rotar_certificados"
+
+# -----------------------------------------------------------------------------
+# Calibración global (TuningSpec)
+# Parámetros por defecto de toma de decisiones.
+# -----------------------------------------------------------------------------
+tuning:
+  critical_need_threshold: 0.20
