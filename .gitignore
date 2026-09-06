@@ -11,3 +11,4 @@ runs/
 
 # Copias de trabajo aisladas de los subagentes (worktrees de git por unidad).
 .claude/worktrees/
+.agents/
