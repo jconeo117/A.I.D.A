@@ -156,11 +156,20 @@ class Event:
     """
 
     digest: str | None = None
-    """`digest_of_content(content)`, calculado una vez al emitir. Se guarda
-    en vez de recalcularse en cada lectura porque comparar dos digests tiene
-    que poder hacerse sin volver a tener el contenido a mano — por ejemplo,
-    para confirmar que un journal no se corrompió sin transportar el texto
-    entero de vuelta."""
+    """`digest_of_content(content)` para todo evento que entra por `emit`,
+    la única puerta que lo garantiza: es quien calcula el digest y nunca
+    deja que quien llama lo componga por su cuenta (ver el docstring de
+    `emit`). Un `Event` construido a mano, sin pasar por `emit`, puede
+    llevar un `content` y un `digest` que no se correspondan — el
+    `dataclass` no lo impide, y añadir esa validación aquí lo convertiría en
+    un modelo de pydantic por la puerta de atrás, exactamente lo que la
+    medición de la cabecera de esta clase justifica no hacer.
+
+    Se guarda en vez de recalcularse en cada lectura porque comparar dos
+    digests tiene que poder hacerse sin volver a tener el contenido a mano
+    — por ejemplo, para confirmar que un journal no se corrompió sin
+    transportar el texto entero de vuelta.
+    """
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Event:
         """Se devuelve a sí mismo: es la consecuencia de ser inmutable.
@@ -182,6 +191,19 @@ class Event:
         JSON distintas — exactamente el fallo que ya mordió una vez a
         `HealthSpec.may_go_unused` con un `frozenset`, aquí con un `dict`
         en vez de con el orden de hash de un `PYTHONHASHSEED` variable.
+
+        `ensure_ascii=False` es deliberado —el log tiene que ser legible por
+        un humano, y escapar todo no-ASCII lo convertiría en `\\uXXXX`
+        ilegible—, pero `U+2028` y `U+2029` (separador de línea y de
+        párrafo Unicode) son un caso aparte: no son `\\n`, así que JSON los
+        deja crudos dentro de la cadena, pero sí cuentan como salto de línea
+        para `str.splitlines()`. `content` almacena texto arbitrario que
+        viene de fuera —la entrada menos confiable del sistema—, y un solo
+        `U+2028` colado ahí bastaría para que "una línea por evento" sea
+        cierto contando por `\\n` y falso contando por `splitlines()`, que
+        es justo lo que usan los consumidores del journal. Se escapan a mano
+        después de `json.dumps`, que no los toca por tratarse de caracteres
+        válidos dentro de una cadena JSON.
         """
         fields: dict[str, Any] = {
             "seq": self.seq,
@@ -197,7 +219,8 @@ class Event:
             fields["content"] = self.content
         if self.digest is not None:
             fields["digest"] = self.digest
-        return json.dumps(fields, separators=(",", ":"), ensure_ascii=False)
+        line = json.dumps(fields, separators=(",", ":"), ensure_ascii=False)
+        return line.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
 class EvictedEventError(LookupError):

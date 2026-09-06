@@ -249,7 +249,19 @@ class AgentState:
         debido y el eje sube menos de lo que la cantidad bruta sugiere — así
         es como un eje hundido mucho tiempo no se arregla con una reposición
         cualquiera.
+
+        `amount` negativo revienta con `ValueError` en vez de tratarse como
+        gasto. Dejarlo pasar rompía el tope `max_debt`: con deuda pendiente,
+        `paid = min(owed, amount)` se vuelve negativo si `amount` lo es, y
+        entonces `remaining = owed - paid` queda POR ENCIMA de `owed` en vez
+        de por debajo — la deuda crece con una llamada que se supone que
+        repone. Delegar en `_spend` en vez de rechazar se descartó a
+        propósito: fundiría en un solo método dos verbos distintos —reponer
+        y gastar—, y quien de verdad quiera bajar un eje ya tiene `_spend`,
+        `apply` y `endure` para eso.
         """
+        if amount < 0.0:
+            raise ValueError(f"amount = {amount}, restore no admite cantidades negativas")
         owed = self.debt.get(need_id, 0.0)
         if owed > 0.0:
             paid = min(owed, amount)
@@ -266,10 +278,17 @@ class AgentState:
         return self.needs[need_id] - before
 
     def gain(self, need_id: NeedId, amount: float, need: NeedSpec) -> float:
-        """`restore` anotando en el libro como lo que llega por actuar."""
+        """`restore` anotando en el libro como lo que llega por actuar.
+
+        Llama a `restore` antes de anotar, no al revés: si `amount` es
+        negativo, `restore` revienta antes de que el ledger vea una entrada
+        que de todas formas iba a fallar. Anotar primero dejaría el libro
+        con una cifra que nunca llegó a materializarse.
+        """
+        delivered = self.restore(need_id, amount, need)
         if self.ledger is not None:
             self.ledger.record(self.ledger.active, need_id, amount)
-        return self.restore(need_id, amount, need)
+        return delivered
 
     def deficit(self, need_id: NeedId) -> float:
         """Cuánto falta para estar entero, contando lo debido.
@@ -423,10 +442,17 @@ class AgentState:
         """Disipa el hastío, a la tasa que declara
         `TuningSpec.saturation_recovery`. Lo que llega a cero se olvida: el
         diccionario solo ocupa lo que el agente ha hecho últimamente, no todo
-        lo que ha hecho alguna vez."""
+        lo que ha hecho alguna vez.
+
+        Se recorre en orden de identificador. Hoy no hay acumulador
+        compartido entre acciones que dependa de en qué orden se procesan,
+        pero ordenar cuesta nada y evita que esta sea la única iteración sin
+        ordenar de los cuatro módulos nuevos — la misma disciplina que
+        `decay` ya aplica arriba.
+        """
         if rate <= 0.0:
             return
-        for action in list(self.saturation):
+        for action in sorted(self.saturation):
             remaining = self.saturation[action] - rate
             if remaining <= 0.0:
                 del self.saturation[action]
