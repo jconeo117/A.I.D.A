@@ -199,6 +199,67 @@ def test_check_unique_ids_detecta_agente_duplicado() -> None:
     )
 
 
+def test_check_unique_ids_detecta_rasgo_duplicado() -> None:
+    """Dos rasgos con el mismo id son rechazados (I-003: rama sin cubrir)."""
+    expect_rejection(
+        "rasgos: id duplicado 'cauteloso'",
+        traits=[
+            {"id": "cauteloso", "label": "Cauteloso 1"},
+            {"id": "cauteloso", "label": "Cauteloso 2"},
+        ],
+    )
+
+
+def test_check_unique_ids_detecta_franja_duplicada() -> None:
+    """Dos franjas con el mismo id son rechazadas (I-003: rama sin cubrir)."""
+    expect_rejection(
+        "franjas: id duplicado 'pico_laboral'",
+        phases=[
+            {"id": "pico_laboral", "label": "Pico 1", "starts_at": 100},
+            {"id": "pico_laboral", "label": "Pico 2", "starts_at": 200},
+        ],
+    )
+
+
+def test_check_unique_ids_detecta_situacion_duplicada() -> None:
+    """Dos situaciones con el mismo id son rechazadas (I-003: rama sin cubrir)."""
+    expect_rejection(
+        "situaciones: id duplicado 'alta_demanda'",
+        situations=[
+            {"id": "alta_demanda", "label": "Alta demanda 1"},
+            {"id": "alta_demanda", "label": "Alta demanda 2"},
+        ],
+    )
+
+
+def test_check_unique_ids_detecta_meta_de_pack_duplicada() -> None:
+    """Dos metas del pack con el mismo id son rechazadas (I-003: rama sin cubrir)."""
+    expect_rejection(
+        "metas: id duplicado 'meta_dup'",
+        goals=[
+            {"id": "meta_dup", "label": "Meta 1", "need": "cpu", "at_least": 0.5},
+            {"id": "meta_dup", "label": "Meta 2", "need": "cpu", "at_least": 0.6},
+        ],
+    )
+
+
+def test_check_unique_ids_detecta_meta_duplicada_dentro_de_un_agente() -> None:
+    """Dos metas dentro del mismo agente con igual id son rechazadas (I-003: rama sin cubrir)."""
+    expect_rejection(
+        "metas de 'agente_monitor': id duplicado 'meta_dup'",
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "goals": [
+                    {"id": "meta_dup", "label": "Meta 1", "need": "cpu", "at_least": 0.5},
+                    {"id": "meta_dup", "label": "Meta 2", "need": "cpu", "at_least": 0.6},
+                ],
+            }
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. _check_global_id_collisions
 # ---------------------------------------------------------------------------
@@ -458,6 +519,40 @@ def test_check_goal_refs_detecta_ciclo_en_prerrequisitos_de_metas() -> None:
     )
 
 
+def test_check_goal_refs_detecta_requires_goal_que_no_pertenece_al_agente() -> None:
+    """`requires_goal` de una meta de agente que apunta a una meta que no es
+    suya (aunque exista, a nivel de pack) es rechazado (I-003: rama sin cubrir,
+    `pack.py:318`).
+    """
+    expect_rejection(
+        "agente 'agente_monitor', meta 'meta_local': espera a 'meta_del_pack', "
+        "que no es una meta suya",
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "goals": [
+                    {
+                        "id": "meta_local",
+                        "label": "Meta local",
+                        "need": "cpu",
+                        "at_least": 0.5,
+                        "requires_goal": "meta_del_pack",
+                    }
+                ],
+            }
+        ],
+        goals=[
+            {
+                "id": "meta_del_pack",
+                "label": "Meta del pack",
+                "need": "cpu",
+                "at_least": 0.5,
+            }
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # 8. _check_goals_are_reachable
 # ---------------------------------------------------------------------------
@@ -492,6 +587,77 @@ def test_check_goals_are_reachable_detecta_meta_inalcanzable_sin_accion_que_aliv
             }
         ],
         health={},
+    )
+
+
+def test_check_goals_are_reachable_detecta_meta_de_agente_sobre_necesidad_que_nadie_sube() -> None:
+    """Una meta DENTRO de un agente sobre un eje que ninguna acción sube es
+    rechazada (I-003: rama de agente sin cubrir; la de pack ya estaba cubierta).
+    """
+    expect_rejection(
+        "agente 'agente_monitor', meta 'meta_agente_inalcanzable': ninguna acción "
+        "sube 'disco_temporal'",
+        needs=[
+            {"id": "cpu", "label": "Uso de CPU", "decay_per_tick": 0.02, "initial": 0.5},
+            {"id": "memoria", "label": "Uso de memoria", "decay_per_tick": 0.01, "initial": 0.3},
+            {"id": "disco_temporal", "label": "Disco temporal", "decay_per_tick": 0.01},
+        ],
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "goals": [
+                    {
+                        "id": "meta_agente_inalcanzable",
+                        "label": "Meta inalcanzable",
+                        "need": "disco_temporal",
+                        "at_least": 0.5,
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_check_goals_are_reachable_detecta_at_traits_de_meta_de_agente_inalcanzable() -> None:
+    """`at_traits` de una meta DE AGENTE que ninguna otra meta suya sube es
+    rechazado (I-003: rama sin cubrir).
+    """
+    expect_rejection(
+        "agente 'agente_monitor', meta 'meta_trait': pide 'cauteloso' a 0.9, "
+        "tiene 0.5 y ninguna de sus metas se lo sube",
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "traits": {"cauteloso": 0.5},
+                "goals": [
+                    {
+                        "id": "meta_trait",
+                        "label": "Meta trait",
+                        "need": "cpu",
+                        "at_traits": {"cauteloso": 0.9},
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_check_goals_are_reachable_detecta_at_traits_de_meta_de_pack_inalcanzable() -> None:
+    """`at_traits` de una meta DE PACK que ninguna otra meta del pack sube es
+    rechazado (I-003: rama sin cubrir).
+    """
+    expect_rejection(
+        "meta 'meta_trait_pack': pide 'cauteloso' a 0.9 y ninguna meta se lo sube",
+        goals=[
+            {
+                "id": "meta_trait_pack",
+                "label": "Meta trait pack",
+                "need": "cpu",
+                "at_traits": {"cauteloso": 0.9},
+            }
+        ],
     )
 
 
@@ -636,6 +802,46 @@ def test_check_actions_are_reachable_detecta_requisito_que_nadie_alcanza() -> No
                 "label": "Monitor",
                 "initial_needs": {"memoria": 0.1},
             }
+        ],
+    )
+
+
+def test_check_actions_are_reachable_detecta_rasgo_requerido_que_ningun_agente_alcanza() -> None:
+    """Una acción que exige un rasgo a un nivel que ningún agente tiene ni puede
+    llegar a tener por sus metas es inalcanzable y se rechaza (I-004: la rama
+    `if not alcanza_alguno` de `_check_actions_are_reachable`, alcanzable y sin
+    test hasta ahora — no confundir con `if req_val > 1.0`, que es rama muerta
+    porque `ActionSpec.requires_traits` ya está acotado a `[-1, 1]`).
+    """
+    expect_rejection(
+        "acción 'requiere_prudencia': exige rasgo 'cauteloso' a 0.9, pero ningún "
+        "agente lo alcanza ni tiene metas que lo suban",
+        actions=[
+            {
+                "id": "optimizar_cpu",
+                "label": "Optimizar procesos de CPU",
+                "duration_ticks": 2,
+                "reversibility": "reversible",
+                "satisfies": {"cpu": 0.4},
+                "costs": {"memoria": 0.1},
+                "effects": {"cpu": 0.4, "memoria": -0.1},
+                "requires": {"memoria": 0.2},
+            },
+            {
+                "id": "reiniciar_servicio",
+                "label": "Reiniciar servicio crítico",
+                "duration_ticks": 5,
+                "reversibility": "reversible_with_cost",
+                "satisfies": {"memoria": 0.5},
+                "effects": {"memoria": 0.5},
+            },
+            {
+                "id": "requiere_prudencia",
+                "label": "Exige mucha prudencia",
+                "duration_ticks": 1,
+                "reversibility": "reversible",
+                "requires_traits": {"cauteloso": 0.9},
+            },
         ],
     )
 
@@ -873,10 +1079,16 @@ except ValidationError as exc:
     )
 
 
-def test_determinismo_health_may_go_unused_caza_mutacion_sin_sorted() -> None:
-    """Demuestra que el test de determinismo para `health.may_go_unused` muerde:
-    1) Con `sorted()`, el mensaje de error es 100% idéntico entre 40 semillas de PYTHONHASHSEED.
-    2) Sin `sorted()`, el orden de hash de frozenset produce mensajes divergentes entre semillas.
+def test_determinismo_health_may_go_unused_identico_en_40_semillas() -> None:
+    """El mensaje de `health.may_go_unused` es idéntico entre 40 semillas de
+    `PYTHONHASHSEED` cuando el motor ordena antes de recorrer el `frozenset`.
+
+    I-008: esta función tenía una segunda mitad que construía un `frozenset` a
+    pelo, sin importar el motor, y comprobaba que CPython lo itera en orden
+    variable entre procesos. Es una propiedad del intérprete, no del código
+    bajo prueba: mutar `pack.py` —incluso borrar el `sorted()` real— no puede
+    ponerla en rojo. Se retira y queda solo la mitad que sí muerde: la que
+    ejercita `ContentPack.model_validate` de verdad.
     """
     code_with_sorted = """
 import sys
@@ -921,36 +1133,6 @@ except ValidationError as exc:
         f"El mensaje de health.may_go_unused divergió entre semillas con sorted(): "
         f"{len(outputs_with_sorted)} variantes"
     )
-
-    # Prueba de mutación: simular la iteración cruda sin sorted() para demostrar que muerde
-    code_raw_unsorted = """
-import sys
-raw_frozenset = frozenset([
-    "accion_z", "accion_a", "accion_m", "accion_d", "accion_k",
-    "accion_b", "accion_x", "accion_c", "accion_w", "accion_p",
-])
-# Sin sorted:
-msgs = [f"health.may_go_unused: acción desconocida {a!r}" for a in raw_frozenset]
-sys.stdout.write("\\n".join(msgs))
-"""
-    outputs_unsorted: set[str] = set()
-    for seed in seeds:
-        env = dict(os.environ, PYTHONHASHSEED=seed)
-        res = subprocess.run(
-            [sys.executable, "-c", code_raw_unsorted],
-            capture_output=True,
-            text=True,
-            check=True,
-            env=env,
-        )
-        outputs_unsorted.add(res.stdout.strip())
-
-    # Sin sorted(), frozenset itera en orden dependiente del proceso (al menos 10 variantes en 40)
-    assert len(outputs_unsorted) > 10, (
-        f"La mutación sin sorted() debería haber divergido fuertemente, pero solo dio "
-        f"{len(outputs_unsorted)} variantes"
-    )
-
 
 
 # ---------------------------------------------------------------------------

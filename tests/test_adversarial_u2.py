@@ -6,6 +6,11 @@ Diseñada por Challenger 1 para someter a prueba:
 3. Comprobación rigurosa de cotas en _check_declared_bounds.
 4. Consolidación de fallos múltiples (10+ fallos simultáneos sin cortocircuito).
 5. Entradas hostiles, inyecciones en YAML y tipos inválidos.
+
+Nada de la ontología ni del pack se importa por nombre en la cabecera (I-002,
+`docs/CONVENCIONES.md` §6): se importan los módulos y se accede por atributo
+dentro de cada test, para que borrar un nombre del motor produzca un fallo
+legible en un solo test en vez de tumbar la colección entera.
 """
 
 from __future__ import annotations
@@ -19,18 +24,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aida.engine.ontology import (
-    ActionSpec,
-    AgentSpec,
-    GoalSpec,
-    HealthSpec,
-    NeedId,
-    NeedSpec,
-    Reversibility,
-    TasteSpec,
-    TraitSpec,
-)
-from aida.engine.pack import ContentPack, PackError, load_pack
+import aida.engine.ontology as ontology
+import aida.engine.pack as pack
 
 # ===========================================================================
 # 1. Determinismo entre subprocesos (PYTHONHASHSEED)
@@ -193,10 +188,10 @@ def test_adversarial_sign_coherence_satisfies_zero_delta_rejected() -> None:
         ValidationError,
         match=r"satisfies.*debe aparecer en `effects` con signo positivo",
     ):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_zero_sat",
             label="Zero satisfies delta",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             satisfies={"n1": 0.5},
             effects={"n1": 0.0},
@@ -209,10 +204,10 @@ def test_adversarial_sign_coherence_costs_zero_delta_rejected() -> None:
         ValidationError,
         match=r"costs.*debe aparecer en `effects` con signo negativo",
     ):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_zero_cost",
             label="Zero cost delta",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             costs={"n1": 0.5},
             effects={"n1": 0.0},
@@ -225,10 +220,10 @@ def test_adversarial_sign_coherence_costs_negative_zero_delta_rejected() -> None
         ValidationError,
         match=r"costs.*debe aparecer en `effects` con signo negativo",
     ):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_neg_zero_cost",
             label="Neg zero cost delta",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             costs={"n1": 0.5},
             effects={"n1": -0.0},
@@ -238,10 +233,10 @@ def test_adversarial_sign_coherence_costs_negative_zero_delta_rejected() -> None
 def test_adversarial_sign_coherence_satisfies_key_missing_from_effects() -> None:
     """Clave en satisfies que no existe en effects debe ser rechazada."""
     with pytest.raises(ValidationError, match=r"satisfies.*debe aparecer en `effects`"):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_missing_sat",
             label="Missing satisfies in effects",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             satisfies={"n1": 0.5},
             effects={},
@@ -251,12 +246,12 @@ def test_adversarial_sign_coherence_satisfies_key_missing_from_effects() -> None
 def test_adversarial_sign_coherence_costs_key_missing_from_effects() -> None:
     """Clave en costs que no existe en effects debe ser rechazada."""
     with pytest.raises(ValidationError, match=r"costs.*debe aparecer en `effects`"):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_missing_cost",
             label="Missing cost in effects",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
-            costs={"n1": 0.5},
+            costs={"n1": 0.2},
             effects={},
         )
 
@@ -264,10 +259,10 @@ def test_adversarial_sign_coherence_costs_key_missing_from_effects() -> None:
 def test_adversarial_sign_coherence_key_in_both_satisfies_and_costs_impossible() -> None:
     """Una misma clave en satisfies y costs no puede tener signos opuestos a la vez."""
     with pytest.raises(ValidationError):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_both",
             label="Key in both satisfies and costs",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             satisfies={"n1": 0.3},
             costs={"n1": 0.3},
@@ -277,57 +272,57 @@ def test_adversarial_sign_coherence_key_in_both_satisfies_and_costs_impossible()
 
 def test_adversarial_sign_coherence_explicit_zero_cost_with_negative_effect() -> None:
     """Un coste declarado como 0.0 explícito para ignorar efecto negativo es válido."""
-    action = ActionSpec(
+    action = ontology.ActionSpec(
         id="act_explicit_zero_cost",
         label="Efecto negativo ignorado a propósito",
-        reversibility=Reversibility.REVERSIBLE_WITH_COST,
+        reversibility=ontology.Reversibility.REVERSIBLE_WITH_COST,
         duration_ticks=1,
         costs={"n1": 0.0},
         effects={"n1": -0.2},
     )
-    assert action.costs[NeedId("n1")] == 0.0
-    assert action.effects[NeedId("n1")] == -0.2
+    assert action.costs[ontology.NeedId("n1")] == 0.0
+    assert action.effects[ontology.NeedId("n1")] == -0.2
 
 
 def test_adversarial_sign_coherence_extreme_float_boundaries() -> None:
     """Valores flotantes extremadamente pequeños cerca de 0.0 respetan los signos."""
-    action = ActionSpec(
+    action = ontology.ActionSpec(
         id="act_tiny_floats",
         label="Flotantes diminutos",
-        reversibility=Reversibility.REVERSIBLE,
+        reversibility=ontology.Reversibility.REVERSIBLE,
         duration_ticks=1,
         satisfies={"n1": 0.01},
         costs={"n2": 0.01},
         effects={"n1": 1e-12, "n2": -1e-12},
     )
-    assert action.effects[NeedId("n1")] == 1e-12
-    assert action.effects[NeedId("n2")] == -1e-12
+    assert action.effects[ontology.NeedId("n1")] == 1e-12
+    assert action.effects[ontology.NeedId("n2")] == -1e-12
 
 
 def test_adversarial_requires_traits_exact_boundaries() -> None:
     """requires_traits en -1.0 y 1.0 son válidos; fuera por épsilon son rechazados."""
-    ActionSpec(
+    ontology.ActionSpec(
         id="act_bound_ok",
         label="Bounds OK",
-        reversibility=Reversibility.REVERSIBLE,
+        reversibility=ontology.Reversibility.REVERSIBLE,
         duration_ticks=1,
         requires_traits={"t1": -1.0, "t2": 1.0},
     )
 
     with pytest.raises(ValidationError, match=r"requires_traits.*fuera de \[-1, 1\]"):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_bound_low",
             label="Bound Low",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             requires_traits={"t1": -1.000001},
         )
 
     with pytest.raises(ValidationError, match=r"requires_traits.*fuera de \[-1, 1\]"):
-        ActionSpec(
+        ontology.ActionSpec(
             id="act_bound_high",
             label="Bound High",
-            reversibility=Reversibility.REVERSIBLE,
+            reversibility=ontology.Reversibility.REVERSIBLE,
             duration_ticks=1,
             requires_traits={"t1": 1.000001},
         )
@@ -340,25 +335,25 @@ def test_adversarial_requires_traits_exact_boundaries() -> None:
 
 def test_adversarial_bounds_initial_needs_exact_boundaries() -> None:
     """AgentSpec.initial_needs en 0 y 1 son válidos; fuera son detectados por cotas."""
-    need = NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
-    act = ActionSpec(
+    need = ontology.NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
+    act = ontology.ActionSpec(
         id="a1",
         label="A1",
-        reversibility=Reversibility.REVERSIBLE,
+        reversibility=ontology.Reversibility.REVERSIBLE,
         duration_ticks=1,
         effects={"n1": 0.1},
         satisfies={"n1": 0.1},
     )
 
     # Válido en 0.0 y 1.0
-    pack_ok = ContentPack(
+    pack_ok = pack.ContentPack(
         id="p_ok",
         label="Pack OK",
         needs=(need,),
         actions=(act,),
         agents=(
-            AgentSpec(id="ag1", label="Agente 1", initial_needs={"n1": 0.0}),
-            AgentSpec(id="ag2", label="Agente 2", initial_needs={"n1": 1.0}),
+            ontology.AgentSpec(id="ag1", label="Agente 1", initial_needs={"n1": 0.0}),
+            ontology.AgentSpec(id="ag2", label="Agente 2", initial_needs={"n1": 1.0}),
         ),
     )
     assert len(pack_ok.agents) == 2
@@ -368,12 +363,12 @@ def test_adversarial_bounds_initial_needs_exact_boundaries() -> None:
         ValueError,
         match=r"agente 'ag_low'\.initial_needs\['n1'\] = -1e-06, fuera de \[0\.0, 1\.0\]",
     ):
-        ContentPack(
+        pack.ContentPack(
             id="p_bad_low",
             label="Pack Bad Low",
             needs=(need,),
             actions=(act,),
-            agents=(AgentSpec(id="ag_low", label="Ag Low", initial_needs={"n1": -1e-6}),),
+            agents=(ontology.AgentSpec(id="ag_low", label="Ag Low", initial_needs={"n1": -1e-6}),),
         )
 
     # Inválido en 1.000001
@@ -381,47 +376,49 @@ def test_adversarial_bounds_initial_needs_exact_boundaries() -> None:
         ValueError,
         match=r"agente 'ag_high'\.initial_needs\['n1'\] = 1\.000001, fuera de \[0\.0, 1\.0\]",
     ):
-        ContentPack(
+        pack.ContentPack(
             id="p_bad_high",
             label="Pack Bad High",
             needs=(need,),
             actions=(act,),
-            agents=(AgentSpec(id="ag_high", label="Ag High", initial_needs={"n1": 1.000001}),),
+            agents=(
+                ontology.AgentSpec(id="ag_high", label="Ag High", initial_needs={"n1": 1.000001}),
+            ),
         )
 
 
 def test_adversarial_bounds_at_traits_exact_boundaries() -> None:
     """GoalSpec.at_traits en -2.0 y 2.0 son válidos; fuera son detectados en agente y en pack."""
-    need = NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
-    trait = TraitSpec(id="t1", label="T1")
-    act = ActionSpec(
+    need = ontology.NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
+    trait = ontology.TraitSpec(id="t1", label="T1")
+    act = ontology.ActionSpec(
         id="a1",
         label="A1",
-        reversibility=Reversibility.REVERSIBLE,
+        reversibility=ontology.Reversibility.REVERSIBLE,
         duration_ticks=1,
         effects={"n1": 0.1},
         satisfies={"n1": 0.1},
     )
 
     # Válido en -2.0 y 2.0 en agente y pack con meta helper para alcanzar cota
-    goal_helper = GoalSpec(
+    goal_helper = ontology.GoalSpec(
         id="g_helper", label="Helper", need="n1", at_least=0.5, on_success={"t1": 1.0}
     )
-    goal_min = GoalSpec(id="g_min", label="G Min", need="n1", at_traits={"t1": -2.0})
-    goal_max = GoalSpec(id="g_max", label="G Max", need="n1", at_traits={"t1": 2.0})
+    goal_min = ontology.GoalSpec(id="g_min", label="G Min", need="n1", at_traits={"t1": -2.0})
+    goal_max = ontology.GoalSpec(id="g_max", label="G Max", need="n1", at_traits={"t1": 2.0})
 
-    goal_helper_pack = GoalSpec(
+    goal_helper_pack = ontology.GoalSpec(
         id="g_helper_p", label="Helper P", need="n1", at_least=0.5, on_success={"t1": 2.0}
     )
 
-    pack_ok = ContentPack(
+    pack_ok = pack.ContentPack(
         id="p_ok_traits",
         label="Pack OK Traits",
         needs=(need,),
         traits=(trait,),
         actions=(act,),
         agents=(
-            AgentSpec(
+            ontology.AgentSpec(
                 id="ag1",
                 label="Ag1",
                 traits={"t1": 1.0},
@@ -433,20 +430,22 @@ def test_adversarial_bounds_at_traits_exact_boundaries() -> None:
     assert len(pack_ok.goals) == 3
 
     # Inválido en agente: at_traits < -2.0
-    goal_toolow = GoalSpec(id="g_toolow", label="G Low", need="n1", at_traits={"t1": -2.0001})
+    goal_toolow = ontology.GoalSpec(
+        id="g_toolow", label="G Low", need="n1", at_traits={"t1": -2.0001}
+    )
     pattern_low = (
         r"agente 'ag1', meta 'g_toolow'\.at_traits\['t1'\] = -2\.0001, "
         r"fuera de \[-2\.0, 2\.0\]"
     )
     with pytest.raises(ValueError, match=pattern_low):
-        ContentPack(
+        pack.ContentPack(
             id="p_bad_ag_trait_low",
             label="Pack Bad",
             needs=(need,),
             traits=(trait,),
             actions=(act,),
             agents=(
-                AgentSpec(
+                ontology.AgentSpec(
                     id="ag1",
                     label="Ag1",
                     traits={"t1": 0.0},
@@ -456,18 +455,20 @@ def test_adversarial_bounds_at_traits_exact_boundaries() -> None:
         )
 
     # Inválido en pack: at_traits > 2.0
-    goal_toohigh = GoalSpec(id="g_toohigh", label="G High", need="n1", at_traits={"t1": 2.0001})
+    goal_toohigh = ontology.GoalSpec(
+        id="g_toohigh", label="G High", need="n1", at_traits={"t1": 2.0001}
+    )
     with pytest.raises(
         ValueError,
         match=r"meta 'g_toohigh'\.at_traits\['t1'\] = 2\.0001, fuera de \[-2\.0, 2\.0\]",
     ):
-        ContentPack(
+        pack.ContentPack(
             id="p_bad_pack_trait_high",
             label="Pack Bad High",
             needs=(need,),
             traits=(trait,),
             actions=(act,),
-            agents=(AgentSpec(id="ag1", label="Ag1"),),
+            agents=(ontology.AgentSpec(id="ag1", label="Ag1"),),
             goals=(goal_toohigh,),
         )
 
@@ -480,24 +481,26 @@ def test_adversarial_bounds_at_traits_exact_boundaries() -> None:
 def test_adversarial_consolidacion_fallos_masivos() -> None:
     """Un pack con 13 violaciones simultáneas reporta TODOS los fallos sin cortocircuito."""
     with pytest.raises(ValidationError) as exc_info:
-        ContentPack(
+        pack.ContentPack(
             id="pack_caotico",
             label="Pack con 13 violaciones",
             needs=(
-                NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01),
-                NeedSpec(id="n1", label="N1 Dup", initial=0.5, decay_per_tick=0.01),
+                ontology.NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01),
+                ontology.NeedSpec(id="n1", label="N1 Dup", initial=0.5, decay_per_tick=0.01),
             ),
             traits=(
-                TraitSpec(id="t_valido", label="T1"),
-                TraitSpec(id="t_fantasma_shift", label="Shift sin franjas", phase_shift=1),
+                ontology.TraitSpec(id="t_valido", label="T1"),
+                ontology.TraitSpec(
+                    id="t_fantasma_shift", label="Shift sin franjas", phase_shift=1
+                ),
             ),
             phases=(),
             situations=(),
             actions=(
-                ActionSpec(
+                ontology.ActionSpec(
                     id="clash_id",
                     label="Accion Clash",
-                    reversibility=Reversibility.IRREVERSIBLE,
+                    reversibility=ontology.Reversibility.IRREVERSIBLE,
                     duration_ticks=1,
                     requires={"n_fantasma": 0.5},
                     requires_traits={"t_desconocido": 0.5},
@@ -507,21 +510,21 @@ def test_adversarial_consolidacion_fallos_masivos() -> None:
                 ),
             ),
             agents=(
-                AgentSpec(
+                ontology.AgentSpec(
                     id="clash_id",
                     label="Agente Clash",
                     initial_needs={"n1": 3.0},
                     traits={"t_valido": 0.0},
-                    tastes=(TasteSpec(target="entidad_inexistente", multiplier=0.8),),
+                    tastes=(ontology.TasteSpec(target="entidad_inexistente", multiplier=0.8),),
                     goals=(
-                        GoalSpec(
+                        ontology.GoalSpec(
                             id="g_ciclo_1",
                             label="G1",
                             need="n1",
                             requires_goal="g_ciclo_2",
                             at_traits={"t_valido": 5.0},
                         ),
-                        GoalSpec(
+                        ontology.GoalSpec(
                             id="g_ciclo_2",
                             label="G2",
                             need="n1",
@@ -531,7 +534,7 @@ def test_adversarial_consolidacion_fallos_masivos() -> None:
                     ),
                 ),
             ),
-            health=HealthSpec(
+            health=ontology.HealthSpec(
                 may_go_unused=frozenset(["accion_no_registrada"]),
             ),
         )
@@ -578,23 +581,23 @@ agents: []
 """,
         encoding="utf-8",
     )
-    with pytest.raises(PackError, match=r"no se pudo cargar"):
-        load_pack(malicious_yaml)
+    with pytest.raises(pack.PackError, match=r"no se pudo cargar"):
+        pack.load_pack(malicious_yaml)
 
 
 def test_adversarial_content_pack_rechaza_campos_adicionales() -> None:
     """ContentPack hereda de Spec y debe rechazar claves adicionales por extra='forbid'."""
-    need = NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
-    act = ActionSpec(
+    need = ontology.NeedSpec(id="n1", label="N1", initial=0.5, decay_per_tick=0.01)
+    act = ontology.ActionSpec(
         id="a1",
         label="A1",
-        reversibility=Reversibility.REVERSIBLE,
+        reversibility=ontology.Reversibility.REVERSIBLE,
         duration_ticks=1,
     )
-    agent = AgentSpec(id="ag1", label="Ag1")
+    agent = ontology.AgentSpec(id="ag1", label="Ag1")
 
     with pytest.raises(ValidationError, match=r"Extra inputs are not permitted"):
-        ContentPack.model_validate(
+        pack.ContentPack.model_validate(
             {
                 "id": "pack_extra",
                 "label": "Pack Extra",
@@ -610,7 +613,7 @@ def test_adversarial_actionspec_rechaza_reversibility_invalida_o_ausente() -> No
     """ActionSpec rechaza strings no pertenecientes a Reversibility o la ausencia del campo."""
     # Ausente
     with pytest.raises(ValidationError, match=r"Field required"):
-        ActionSpec.model_validate(
+        ontology.ActionSpec.model_validate(
             {
                 "id": "act_sin_rev",
                 "label": "Sin rev",
@@ -623,7 +626,7 @@ def test_adversarial_actionspec_rechaza_reversibility_invalida_o_ausente() -> No
         ValidationError,
         match=r"Input should be 'reversible', 'reversible_with_cost' or 'irreversible'",
     ):
-        ActionSpec.model_validate(
+        ontology.ActionSpec.model_validate(
             {
                 "id": "act_rev_invalida",
                 "label": "Rev invalida",
