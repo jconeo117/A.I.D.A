@@ -168,7 +168,14 @@ class ContentPack(Spec):
         return problems
 
     def _check_need_refs(self) -> list[str]:
-        """Toda referencia a una necesidad debe existir en el pack."""
+        """Toda referencia a una necesidad debe existir en el pack.
+
+        `goal.need` vive dentro de una meta, así que lo valida
+        `_check_goal_refs`, y solo él: es la única puerta sobre el contenido
+        de una meta. Mirarlo también aquí duplicaría la comprobación con el
+        mismo criterio en dos sitios, justo lo que el cuarto invariante de
+        determinismo prohíbe.
+        """
         known = frozenset(str(n.id) for n in self.needs)
         problems: list[str] = []
 
@@ -215,23 +222,18 @@ class ContentPack(Spec):
             problems += self._unknown_keys(
                 f"agente {agent.id!r}.initial_needs", "necesidad", agent.initial_needs, known
             )
-            for goal in agent.goals:
-                if str(goal.need) not in known:
-                    problems.append(
-                        f"agente {agent.id!r}, meta {goal.id!r}: necesidad "
-                        f"desconocida {goal.need!r}"
-                    )
-
-        for goal in self.goals:
-            if str(goal.need) not in known:
-                problems.append(
-                    f"meta {goal.id!r}: necesidad desconocida {goal.need!r}"
-                )
 
         return problems
 
     def _check_trait_refs(self) -> list[str]:
-        """Todo rasgo referido debe existir en el pack."""
+        """Todo rasgo referido debe existir en el pack.
+
+        `at_traits` de una meta vive dentro de una meta, así que lo valida
+        `_check_goal_refs`, y solo él: es la única puerta sobre el contenido
+        de una meta. Mirarlo también aquí duplicaría la comprobación con el
+        mismo criterio en dos sitios, justo lo que el cuarto invariante de
+        determinismo prohíbe.
+        """
         known = frozenset(str(t.id) for t in self.traits)
         problems: list[str] = []
 
@@ -239,25 +241,10 @@ class ContentPack(Spec):
             problems += self._unknown_keys(
                 f"agente {agent.id!r}", "rasgo", agent.traits, known
             )
-            for goal in agent.goals:
-                problems += self._unknown_keys(
-                    f"agente {agent.id!r}, meta {goal.id!r}.at_traits",
-                    "rasgo",
-                    goal.at_traits,
-                    known,
-                )
 
         for action in self.actions:
             problems += self._unknown_keys(
                 f"acción {action.id!r}.requires_traits", "rasgo", action.requires_traits, known
-            )
-
-        for goal in self.goals:
-            problems += self._unknown_keys(
-                f"meta {goal.id!r}.at_traits",
-                "rasgo",
-                goal.at_traits,
-                known,
             )
 
         return problems
@@ -497,13 +484,12 @@ class ContentPack(Spec):
                             f"jamás será ejecutable"
                         )
 
+            # No hay rama equivalente a `minimum > 1.0` para `requires_traits`:
+            # `ActionSpec` ya acota ese campo a [-1, 1] al construirse
+            # (ontology.py, `_validate_coherence`), así que un pack con un
+            # requisito fuera de rango nunca llega a validarse aquí.
             for trait_id, req_val in sorted(action.requires_traits.items()):
-                if req_val > 1.0:
-                    problems.append(
-                        f"acción {action.id!r}: exige rasgo {trait_id!r} a {req_val}, pero "
-                        f"los rasgos no superan 1.0; jamás será ejecutable"
-                    )
-                elif self.agents:
+                if self.agents:
                     alcanza_alguno = False
                     for agent in self.agents:
                         derivas_max = sum(
@@ -563,7 +549,7 @@ class ContentPack(Spec):
 
     @model_validator(mode="after")
     def _validate(self) -> ContentPack:
-        all_problems = [
+        problems = [
             *self._check_unique_ids(),
             *self._check_global_id_collisions(),
             *self._check_need_refs(),
@@ -579,7 +565,6 @@ class ContentPack(Spec):
             *self._check_health_refs(),
             *self._check_declared_bounds(),
         ]
-        problems = list(dict.fromkeys(all_problems))
         if problems:
             raise ValueError(
                 f"pack {self.id!r} inválido:\n" + "\n".join(f"  - {p}" for p in problems)
