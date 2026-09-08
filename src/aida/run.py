@@ -1,10 +1,11 @@
 """Punto de entrada de la línea de comandos.
 
     uv run aida --version
+    uv run aida --pack <ruta>
+    uv run aida --pack <ruta> --explain
 
-Aquí no hay nada más que ejecutar todavía: el bucle de deliberación llega en
-unidades posteriores. `main` no llama a `sys.exit` para poder probarse sin
-terminar el proceso del test.
+`main` no llama a `sys.exit` para poder probarse sin terminar el proceso
+del test.
 """
 
 from __future__ import annotations
@@ -15,14 +16,19 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from aida import __version__
+from aida.engine.explain import explain_deliberation
+from aida.engine.ontology import GoalStatus
 from aida.engine.pack import PackError, describe_pack, load_pack
+from aida.engine.state import AgentState, ExecutionState
 
-USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta>."
+USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
 
 
 def _construir_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="aida", description="A.I.D.A.: asistente determinista.")
+    parser = argparse.ArgumentParser(
+        prog="aida", description="A.I.D.A.: asistente determinista."
+    )
     parser.add_argument(
         "--version",
         action="store_true",
@@ -32,6 +38,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         "--pack",
         metavar="RUTA",
         help="carga, valida y resume el content pack en la ruta indicada",
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="delibera una vez con el agente del pack e imprime la traza causal",
     )
     return parser
 
@@ -48,13 +59,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         path = Path(args.pack)
         try:
             pack = load_pack(path)
-            resumen = describe_pack(pack)
-            elementos = ", ".join(f"{k}: {v}" for k, v in sorted(resumen.items()))
-            print(f"pack {pack.id!r} ({elementos})")
-            return 0
         except PackError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+
+        if args.explain:
+            if not pack.agents:
+                print("El pack no declara ningún agente para deliberar.", file=sys.stderr)
+                return 1
+
+            agent_spec = pack.agents[0]
+            needs = {
+                need.id: agent_spec.initial_needs.get(need.id, need.initial)
+                for need in sorted(pack.needs, key=lambda n: str(n.id))
+            }
+            goals = {
+                goal.id: (GoalStatus.LOCKED if goal.requires_goal else GoalStatus.ACTIVE)
+                for goal in agent_spec.goals
+            }
+            agent = AgentState(
+                agent_id=agent_spec.id,
+                needs=needs,
+                traits=dict(agent_spec.traits),
+                goals=goals,
+            )
+            agent.recompose(pack)
+            execution = ExecutionState(agent=agent, tick=0)
+            situations = execution.active_situations(pack.situations)
+
+            decision, trace = explain_deliberation(
+                execution, pack, phase=None, situations=situations
+            )
+            if decision is None or trace is None:
+                print("No hay ninguna opción disponible para deliberar.", file=sys.stderr)
+                return 1
+
+            print(trace.format_human())
+            return 0
+
+        resumen = describe_pack(pack)
+        elementos = ", ".join(f"{k}: {v}" for k, v in sorted(resumen.items()))
+        print(f"pack {pack.id!r} ({elementos})")
+        return 0
+
+    if args.explain:
+        print("aida: error: --explain requiere especificar un pack con --pack", file=sys.stderr)
+        return 1
 
     print(USO_BREVE)
     return 0
