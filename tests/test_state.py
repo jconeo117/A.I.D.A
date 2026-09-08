@@ -48,6 +48,7 @@ from aida.engine.ontology import (
     TraitSpec,
     TuningSpec,
 )
+from aida.engine.outcome import learn
 from aida.engine.pack import ContentPack
 from aida.engine.rng import RngSource
 from aida.engine.state import AgentState, ExecutionState, Ledger, PerformingAction
@@ -138,6 +139,23 @@ def test_restore_sin_deuda_se_recorta_contra_el_cap() -> None:
     # Assert
     assert entregado == pytest.approx(0.1)
     assert agente.needs[necesidad.id] == pytest.approx(1.0)
+
+
+def test_restore_respeta_techo_efectivo_del_agente_y_no_supera_caps() -> None:
+    """`restore` recorta contra el techo efectivo del agente (`cap_of`), no contra `need.cap`.
+
+    Si el agente tiene un techo reducido por personalidad (`caps={'n1': 0.5}`),
+    reponer cuando está en 0.4 una cantidad de 0.5 debe llevarlo como máximo a 0.5
+    (entregando 0.1), no a 0.9 (entregando 0.5) (I-021, mutante S2b).
+    """
+    necesidad = _need_spec(cap=1.0)
+    agente = _agent({necesidad.id: 0.4})
+    agente.caps[necesidad.id] = 0.5
+
+    entregado = agente.restore(necesidad.id, 0.5, necesidad)
+
+    assert agente.needs[necesidad.id] == pytest.approx(0.5)
+    assert entregado == pytest.approx(0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +252,25 @@ def test_max_debt_cero_desactiva_la_deuda_y_no_deja_entrada() -> None:
     # Assert
     assert agente.needs[necesidad.id] == 0.0
     assert necesidad.id not in agente.debt
+
+
+def test_spend_recorta_contra_techo_efectivo_del_agente() -> None:
+    """`_spend` recorta contra el techo efectivo del agente (`cap_of`), no contra `need.cap`.
+
+    Si un agente tiene un valor de necesidad en 0.8 y su techo efectivo se reduce a 0.5
+    (por ejemplo, tras recomposición de rasgos), un gasto de 0.1 que deja un valor
+    bruto de 0.7 debe recortarse contra el techo del agente (0.5), no contra el
+    nominal del pack (1.0) (mutante S2a).
+    """
+    necesidad = _need_spec(cap=1.0)
+    agente = _agent({necesidad.id: 0.8})
+    agente.caps[necesidad.id] = 0.5
+
+    agente._spend(0.1, necesidad)
+
+    # 0.8 - 0.1 = 0.7; con cap_of(necesidad)=0.5, debe recortarse a 0.5
+    # Si mutara a cap = need.cap (1.0), el valor quedaría en 0.7.
+    assert agente.needs[necesidad.id] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -886,29 +923,65 @@ def test_recompose_modula_temperamento_con_situaciones_activas() -> None:
 
 def test_beliefs_estan_indexadas_por_accion_y_necesidad_sin_compartirse() -> None:
     """Las creencias en AgentState se indexan por [ActionId][NeedId] y dos acciones
-    no comparten creencias sobre el mismo eje (I-013).
+    no comparten creencias sobre el mismo eje al aprender (I-013, I-022).
     """
-    agente = _agent({NeedId("n1"): 0.5})
+    import typing
+
+    # Verificamos la declaración canónica del tipo: indexado por acción y necesidad
+    hints = typing.get_type_hints(AgentState)
+    assert hints["gain_beliefs"] == dict[ActionId, dict[NeedId, float]]
+    assert hints["cost_beliefs"] == dict[ActionId, dict[NeedId, float]]
+
+    n1 = NeedId("n1")
+    act_a = ActionSpec(
+        id=ActionId("act_a"),
+        label="Acción A",
+        duration_ticks=1,
+        reversibility=Reversibility.REVERSIBLE,
+        satisfies={n1: 0.5},
+        costs={},
+        effects={n1: 0.5},
+    )
+    act_b = ActionSpec(
+        id=ActionId("act_b"),
+        label="Acción B",
+        duration_ticks=1,
+        reversibility=Reversibility.REVERSIBLE,
+        satisfies={n1: 0.5},
+        costs={},
+        effects={n1: 0.5},
+    )
+
+    agente = _agent({n1: 0.2})
 
     # Arrancan vacías
     assert agente.gain_beliefs == {}
     assert agente.cost_beliefs == {}
 
-    # Una acción no experimentada resuelve por defecto a 1.0
-    act_a = ActionId("act_a")
-    act_b = ActionId("act_b")
-    n1 = NeedId("n1")
-    assert agente.gain_beliefs.get(act_a, {}).get(n1, 1.0) == 1.0
+    # Ambas acciones resuelven por defecto a 1.0
+    assert agente.gain_beliefs.get(act_a.id, {}).get(n1, 1.0) == 1.0
+    assert agente.gain_beliefs.get(act_b.id, {}).get(n1, 1.0) == 1.0
 
-    # Simulamos aprendizaje sobre act_a
-    creencias_a = agente.gain_beliefs.setdefault(act_a, {})
-    creencias_a[n1] = 1.4
+    # Ejecutamos aprendizaje real con learn sobre act_a.
+    # Prometía 0.5, pero solo rindió 0.25 (la mitad).
+    # Con rate=0.4: creencia = 1.0 + 0.4 * (0.25/0.5 - 1.0) = 1.0 - 0.2 = 0.8
+    gb_a = agente.gain_beliefs.setdefault(act_a.id, {})
+    cb_a = agente.cost_beliefs.setdefault(act_a.id, {})
+    learn(
+        gain_beliefs=gb_a,
+        cost_beliefs=cb_a,
+        action=act_a,
+        received={n1: 0.25},
+        before={n1: 0.2},
+        rate=0.4,
+    )
 
-    # act_a tiene la creencia actualizada
-    assert agente.gain_beliefs[act_a][n1] == pytest.approx(1.4)
-    # act_b NO comparte creencia: sigue resolviendo a 1.0 y no está en el diccionario
-    assert agente.gain_beliefs.get(act_b, {}).get(n1, 1.0) == 1.0
-    assert act_b not in agente.gain_beliefs
+    # act_a actualizó su creencia
+    assert agente.gain_beliefs[act_a.id][n1] == pytest.approx(0.8)
+
+    # act_b NO se movió ni comparte el aprendizaje sobre n1
+    assert act_b.id not in agente.gain_beliefs
+    assert agente.gain_beliefs.get(act_b.id, {}).get(n1, 1.0) == 1.0
 
 
 def test_drift_trait_muta_rasgo_y_recompone_en_la_misma_llamada() -> None:

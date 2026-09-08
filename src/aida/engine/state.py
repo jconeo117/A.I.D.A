@@ -259,9 +259,10 @@ class AgentState:
         """El ÚNICO sitio donde se fuerza el rango de un eje.
 
         Si el recorte se dispersa, un día un eje vale más que su techo y se
-        pierden horas buscando quién lo dejó así. El suelo es 0 para
-        cualquiera; el techo es el que declara `NeedSpec.cap` — todavía sin
-        ajuste por personalidad, que llega con la composición de rasgos.
+        pierden horas buscando quién lo dejó así. El suelo es 0.0 para
+        cualquiera; el techo `cap` es el techo efectivo del agente provisto
+        por `cap_of(need)` —que ya incorpora la modulación de personalidad
+        derivada de los rasgos— o el nominal de `NeedSpec.cap` como fallback.
         """
         return max(0.0, min(cap, value))
 
@@ -270,7 +271,7 @@ class AgentState:
 
         Las cuatro líneas que son la razón de ser de esta unidad: lo que el
         recorte se lleva no se pierde, se anota aparte, con tope
-        `need.max_debt`. El eje sigue viviendo en `[0, need.cap]` — quien lea
+        `need.max_debt`. El eje sigue viviendo en `[0, cap]` — quien lea
         `needs` no se entera de que hubo un recorte más grande.
         """
         raw = self.needs[need.id] - amount
@@ -312,7 +313,7 @@ class AgentState:
         if amount <= 0.0:
             return 0.0
         before = self.needs[need_id]
-        cap = need.cap
+        cap = self.cap_of(need)
         self.needs[need_id] = self._clamp(before + amount, cap)
         return self.needs[need_id] - before
 

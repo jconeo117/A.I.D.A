@@ -102,11 +102,11 @@ def test_learn_ganancia_mayor_da_sorpresa_positiva() -> None:
     received = {n1: 0.6}  # Rendimiento 0.6 / 0.4 = 1.5 > 1.0
     rate = 0.1
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # error = 1.5 - 1.0 = +0.5, factor = +1.0 => sorpresa = +0.5
-    assert sorpresa > 0.0
-    assert sorpresa == pytest.approx(0.5)
+    assert surprise > 0.0
+    assert surprise == pytest.approx(0.5)
     # creencia actualizada = 1.0 + 0.1 * 0.5 = 1.05
     assert gain_beliefs[n1] == pytest.approx(1.05)
 
@@ -121,11 +121,11 @@ def test_learn_ganancia_menor_da_sorpresa_negativa() -> None:
     received = {n1: 0.2}  # Rendimiento 0.2 / 0.4 = 0.5 < 1.0
     rate = 0.2
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # error = 0.5 - 1.0 = -0.5, factor = +1.0 => sorpresa = -0.5
-    assert sorpresa < 0.0
-    assert sorpresa == pytest.approx(-0.5)
+    assert surprise < 0.0
+    assert surprise == pytest.approx(-0.5)
     # creencia actualizada = 1.0 + 0.2 * (-0.5) = 0.90
     assert gain_beliefs[n1] == pytest.approx(0.90)
 
@@ -142,13 +142,13 @@ def test_learn_gastar_mas_da_sorpresa_negativa() -> None:
     received = {n2: -0.3}  # Se gastó 0.3 en vez de 0.2 => realized = 0.3 / 0.2 = 1.5
     rate = 0.1
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # error_crudo = 1.5 - 1.0 = +0.5. Almacén usa error crudo: 1.0 + 0.1 * 0.5 = 1.05
     assert cost_beliefs[n2] == pytest.approx(1.05)
     # Sorpresa normalizada: +0.5 * (-1.0) = -0.5 (gastar de más es peor!)
-    assert sorpresa < 0.0
-    assert sorpresa == pytest.approx(-0.5)
+    assert surprise < 0.0
+    assert surprise == pytest.approx(-0.5)
 
 
 def test_learn_gastar_menos_da_sorpresa_positiva() -> None:
@@ -163,13 +163,13 @@ def test_learn_gastar_menos_da_sorpresa_positiva() -> None:
     received = {n2: -0.1}  # Se gastó 0.1 en vez de 0.2 => realized = 0.1 / 0.2 = 0.5
     rate = 0.1
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # error_crudo = 0.5 - 1.0 = -0.5. Almacén usa error crudo: 1.0 + 0.1 * (-0.5) = 0.95
     assert cost_beliefs[n2] == pytest.approx(0.95)
     # Sorpresa normalizada: -0.5 * (-1.0) = +0.5 (gastar menos es mejor!)
-    assert sorpresa > 0.0
-    assert sorpresa == pytest.approx(0.5)
+    assert surprise > 0.0
+    assert surprise == pytest.approx(0.5)
 
 
 # -----------------------------------------------------------------------------
@@ -199,10 +199,10 @@ def test_learn_devuelve_sorpresa_maxima_y_no_la_suma() -> None:
     received = {n1: 0.55, n2: -0.32}
     rate = 0.1
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
-    assert sorpresa == pytest.approx(-0.6)
-    assert sorpresa != pytest.approx(-0.5)  # No es la suma!
+    assert surprise == pytest.approx(-0.6)
+    assert surprise != pytest.approx(-0.5)  # No es la suma!
 
 
 def test_learn_sorpresa_maxima_cuando_ganancia_es_mayor() -> None:
@@ -223,8 +223,8 @@ def test_learn_sorpresa_maxima_cuando_ganancia_es_mayor() -> None:
     received = {n1: 0.9, n2: -0.24}
     rate = 0.1
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
-    assert sorpresa == pytest.approx(0.8)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    assert surprise == pytest.approx(0.8)
 
 
 # -----------------------------------------------------------------------------
@@ -245,12 +245,12 @@ def test_exclusion_techo_no_aprende_si_no_cabia() -> None:
     received = {n1: 0.15}  # Recibió poco porque no cabía más
     rate = 0.5
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # Creencia queda intacta en 1.0
     assert gain_beliefs[n1] == pytest.approx(1.0)
     # Sin sorpresa
-    assert sorpresa == 0.0
+    assert surprise == 0.0
 
 
 def test_exclusion_suelo_no_aprende_si_no_se_podia_pagar() -> None:
@@ -266,12 +266,12 @@ def test_exclusion_suelo_no_aprende_si_no_se_podia_pagar() -> None:
     received = {n2: -0.05}  # Solo se pudo cobrar 0.05
     rate = 0.5
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     # Creencia de coste queda intacta
     assert cost_beliefs[n2] == pytest.approx(1.0)
     # Sin sorpresa
-    assert sorpresa == 0.0
+    assert surprise == 0.0
 
 
 def test_exclusion_efectos_colaterales_no_aprende_fuera_de_satisfies_o_costs() -> None:
@@ -296,11 +296,11 @@ def test_exclusion_efectos_colaterales_no_aprende_fuera_de_satisfies_o_costs() -
     received = {n_colateral_pos: 0.8, n_colateral_neg: -0.5}
     rate = 0.5
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate)
 
     assert gain_beliefs[n_colateral_pos] == pytest.approx(1.0)
     assert cost_beliefs[n_colateral_neg] == pytest.approx(1.0)
-    assert sorpresa == 0.0
+    assert surprise == 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -320,9 +320,9 @@ def test_learn_con_rate_cero_deja_diccionarios_intactos_y_devuelve_cero() -> Non
     before = {n1: 0.2, n2: 0.8}
     received = {n1: 0.8, n2: -0.4}  # Grandes desviaciones
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate=0.0)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate=0.0)
 
-    assert sorpresa == 0.0
+    assert surprise == 0.0
     assert gain_beliefs == {n1: 1.0}
     assert cost_beliefs == {n2: 1.0}
 
@@ -336,9 +336,9 @@ def test_learn_con_rate_negativo_no_muta_y_devuelve_cero() -> None:
     before = {n1: 0.2}
     received = {n1: 0.8}
 
-    sorpresa = learn(gain_beliefs, cost_beliefs, action, received, before, rate=-0.1)
+    surprise = learn(gain_beliefs, cost_beliefs, action, received, before, rate=-0.1)
 
-    assert sorpresa == 0.0
+    assert surprise == 0.0
     assert gain_beliefs == {n1: 1.0}
 
 

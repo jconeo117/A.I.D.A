@@ -345,9 +345,9 @@ received = {
     **{ontology.NeedId(f"n_sat_{i}"): 0.25 + 0.04 * i for i in range(6)},
     **{ontology.NeedId(f"n_cst_{i}"): -(0.2 + 0.03 * i) for i in range(6)},
 }
-sorpresa = outcome.learn(gain_beliefs, cost_beliefs, action, received, before, rate=0.2)
+surprise = outcome.learn(gain_beliefs, cost_beliefs, action, received, before, rate=0.2)
 out = [
-    sorpresa.hex(),
+    surprise.hex(),
     [[k, gain_beliefs[k].hex()] for k in sorted(gain_beliefs)],
     [[k, cost_beliefs[k].hex()] for k in sorted(cost_beliefs)],
 ]
@@ -903,8 +903,8 @@ def test_adversarial_learn_desempate_determinista_sorpresa() -> None:
     before = {n_a: 0.2, n_b: 0.8}
     received = {n_a: 0.75, n_b: -0.75}
 
-    sorpresa1 = outcome.learn(gb1, cb1, action_ab, received, before, rate=0.1)
-    assert sorpresa1 == pytest.approx(0.5)
+    surprise1 = outcome.learn(gb1, cb1, action_ab, received, before, rate=0.1)
+    assert surprise1 == pytest.approx(0.5)
 
     # Invertimos roles: n_a es coste (-1.0), n_b es ganancia (+1.0).
     # Con sorted(effects), n_a < n_b, gana el coste => sorpresa -0.5.
@@ -923,8 +923,8 @@ def test_adversarial_learn_desempate_determinista_sorpresa() -> None:
     before2 = {n_a: 0.8, n_b: 0.2}
     received2 = {n_a: -0.75, n_b: 0.75}
 
-    sorpresa2 = outcome.learn(gb2, cb2, action_ba, received2, before2, rate=0.1)
-    assert sorpresa2 == pytest.approx(-0.5)
+    surprise2 = outcome.learn(gb2, cb2, action_ba, received2, before2, rate=0.1)
+    assert surprise2 == pytest.approx(-0.5)
 
 
 def test_adversarial_metas_multiplicativas_valor_absoluto_y_no_suma() -> None:
