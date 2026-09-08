@@ -5,17 +5,11 @@ no cambian una vez cargadas. Este archivo define cómo ESTÁ ahora mismo: lo que
 un tick puede tocar. Es la distinción que `ontology.py` ya declara en su
 cabecera (`Spec` frente a `State`), aplicada.
 
-**Qué falta aquí a propósito.** `AgentState` guarda `traits` en bruto, pero no
-recompone pesos, aptitud, temple ni techo a partir de ellos: esa composición
-—`need_weight_multipliers`, `gain_multipliers`, `cost_multipliers`,
-`cap_multipliers` de `TraitSpec`, elevados a la intensidad del rasgo— es
-exactamente el contenido que el mapa de arquitectura asigna a
-`engine/disposition.py`, todavía pendiente. Meterla aquí antes de tiempo
-crearía dos sitios que hacen la misma cuenta el día que `disposition.py`
-llegue, que es justo el fallo que la disciplina de determinismo prohíbe bajo
-el nombre de "una sola puerta por mecanismo". Hasta entonces, un techo se lee
-directamente del pack (`NeedSpec.cap`) y un coste o una ganancia no llevan
-ningún multiplicador de personalidad todavía.
+**Derivados y personalidad.** `AgentState` mantiene los rasgos en bruto
+y compone pesos, aptitud, temple, techos y temperamento a través de
+`engine/disposition.py`. Las expectativas empíricas derivadas de resultados
+se actualizan a través de `engine/outcome.py`. El cálculo de urgencia reside
+exclusivamente en `disposition.py` como puerta canónica única.
 """
 
 from __future__ import annotations
@@ -23,6 +17,18 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
+from aida.engine.disposition import (
+    Temperament,
+    compose_caps,
+    compose_costs,
+    compose_gains,
+    compose_need_weights,
+    compose_temperament,
+    compute_strain,
+)
+from aida.engine.disposition import (
+    urgency as urgency,
+)
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import (
     ActionId,
@@ -35,6 +41,7 @@ from aida.engine.ontology import (
     SituationSpec,
     TraitId,
 )
+from aida.engine.pack import ContentPack
 from aida.engine.rng import RngSource
 
 # -----------------------------------------------------------------------------
@@ -113,23 +120,6 @@ class Ledger:
 
     def record(self, book: dict[NeedId, float], need_id: NeedId, amount: float) -> None:
         book[need_id] = book.get(need_id, 0.0) + amount
-
-
-def _urgency(value: float, exponent: float, cap: float) -> float:
-    """`(1 - valor / techo) ** exponente`, tal como la declara
-    `NeedSpec.urgency_exponent`.
-
-    Vive aquí y no en un módulo de disposición porque `AgentState.strain`
-    —desgaste, derivado de las necesidades y recalculado cada tick— la
-    necesita antes de que exista quien componga personalidad. No depende de
-    ningún rasgo: es aritmética directa entre el valor de un eje y lo que el
-    pack declaró para él, y por eso puede vivir en el estado sin abrir una
-    segunda puerta al mecanismo — la que se abra en disposición, cuando
-    exista, debe llamar a esta, no reescribirla.
-    """
-    if cap <= 0.0:
-        return 0.0
-    return float(max(0.0, 1.0 - value / cap) ** exponent)
 
 
 # -----------------------------------------------------------------------------
@@ -215,7 +205,54 @@ class AgentState:
     ledger: Ledger | None = None
     """Libro de calibración. `None` = apagado, que es la normalidad."""
 
+    need_weights: dict[NeedId, float] = field(default_factory=dict)
+    """Cuánto le importa a este agente cada eje. Derivado de rasgos y metas
+    activas (`compose_need_weights`)."""
+
+    gains: dict[NeedId, float] = field(default_factory=dict)
+    """Aptitud del agente en cada eje. Derivado de rasgos (`compose_gains`)."""
+
+    costs: dict[NeedId, float] = field(default_factory=dict)
+    """Temple del agente en cada eje. Derivado de rasgos (`compose_costs`)."""
+
+    caps: dict[NeedId, float] = field(default_factory=dict)
+    """Techo efectivo en cada eje. Derivado de rasgos (`compose_caps`)."""
+
+    temperament: Temperament | None = None
+    """Configuración de decisión derivada de rasgos, desgaste y tuning
+    (`compose_temperament`)."""
+
+    gain_beliefs: dict[ActionId, dict[NeedId, float]] = field(default_factory=dict)
+    """Multiplicadores de expectativa sobre lo que entregan las acciones,
+    indexados por acción y necesidad. Mutado por `learn`. Arranca vacío; lo
+    ausente representa 1.0 (quien no tiene experiencia previa se cree el pack)."""
+
+    cost_beliefs: dict[ActionId, dict[NeedId, float]] = field(default_factory=dict)
+    """Multiplicadores de expectativa sobre lo que cuestan las acciones,
+    indexados por acción y necesidad. Mutado por `learn`. Arranca vacío; lo
+    ausente representa 1.0."""
+
     # -- necesidades ----------------------------------------------------------
+
+    def cap_of(self, need: NeedSpec | NeedId) -> float:
+        """Devuelve el techo efectivo para un eje de necesidad.
+
+        Puerta única para la lectura de techos en el agente. Si el agente ya
+        ha recompuesto sus rasgos (`recompose`), lee el techo personalizado de
+        `self.caps`. Si la necesidad aún no figura en `self.caps` (por ejemplo,
+        un `AgentState` instanciado que no ha sido recompuesto todavía), recurre
+        como fallback a `need.cap` si se proporcionó un `NeedSpec`, o a 1.0 por
+        defecto.
+
+        **Efecto secundario del fallback**: un `AgentState` sin recomponer
+        utilizará el techo nominal del pack (`NeedSpec.cap` o 1.0), lo cual
+        difiere del techo efectivo ajustado por rasgos si el agente posee
+        modificadores de tope en sus rasgos. Recomponer al inicializar el
+        agente garantiza coherencia operativa.
+        """
+        need_id = need.id if isinstance(need, NeedSpec) else need
+        default = need.cap if isinstance(need, NeedSpec) else 1.0
+        return self.caps.get(need_id, default)
 
     @staticmethod
     def _clamp(value: float, cap: float) -> float:
@@ -239,7 +276,8 @@ class AgentState:
         raw = self.needs[need.id] - amount
         if raw < 0.0 and need.max_debt > 0.0:
             self.debt[need.id] = min(need.max_debt, self.debt.get(need.id, 0.0) - raw)
-        self.needs[need.id] = self._clamp(raw, need.cap)
+        cap = self.cap_of(need)
+        self.needs[need.id] = self._clamp(raw, cap)
 
     def restore(self, need_id: NeedId, amount: float, need: NeedSpec) -> float:
         """Repone, saldando la deuda primero. Devuelve lo que llegó al eje.
@@ -274,7 +312,8 @@ class AgentState:
         if amount <= 0.0:
             return 0.0
         before = self.needs[need_id]
-        self.needs[need_id] = self._clamp(before + amount, need.cap)
+        cap = need.cap
+        self.needs[need_id] = self._clamp(before + amount, cap)
         return self.needs[need_id] - before
 
     def gain(self, need_id: NeedId, amount: float, need: NeedSpec) -> float:
@@ -366,31 +405,20 @@ class AgentState:
         filtrara aquí, habría dos formas de expresar "esto va mal" —el valor
         bajo y la deuda alta— y ninguna se podría calibrar por separado.
         """
-        return _urgency(self.needs[need.id], need.urgency_exponent, need.cap)
+        cap = self.cap_of(need)
+        return urgency(self.needs[need.id], need.urgency_exponent, cap)
 
-    def refresh_state(self, need_specs: Mapping[NeedId, NeedSpec]) -> None:
-        """Recalcula lo que depende de las necesidades. Hoy, solo `strain`:
-        la composición de temperamento a partir de rasgos y de lo que el
-        agente lleva encima llega con la personalidad (`disposition.py`,
-        todavía pendiente), y hasta entonces no hay nada más que recomponer
-        aquí.
+    def refresh_state(
+        self, need_specs: ContentPack | Mapping[NeedId, NeedSpec]
+    ) -> None:
+        """Recalcula el desgaste cognitivo (`strain`) a partir de las necesidades.
 
-        Media ponderada de la urgencia de los ejes que el pack marca como
-        desgastantes (`NeedSpec.strain_weight`). Reutiliza la misma curva de
-        urgencia en vez de inventar un parámetro nuevo: el exponente ya dice
-        cuán bruscamente ese eje empieza a doler, que es exactamente lo que
-        hace falta aquí también. 0.0 si el pack no marca ningún eje como
-        desgastante.
+        Delega exclusivamente en `disposition.compute_strain`, constituyendo la
+        única puerta canónica para el cálculo de desgaste en todo el motor.
+        Pasa los techos efectivos del agente (`self.caps`) para que la urgencia
+        se normalice respecto a la capacidad real de este agente en cada eje.
         """
-        total = 0.0
-        weight_sum = 0.0
-        for need_id in sorted(need_specs):
-            need = need_specs[need_id]
-            if need.strain_weight <= 0.0:
-                continue
-            total += need.strain_weight * self.urgency(need)
-            weight_sum += need.strain_weight
-        self.strain = total / weight_sum if weight_sum else 0.0
+        self.strain = compute_strain(need_specs, self.needs, self.caps)
 
     def advance_floor_streak(
         self,
@@ -472,6 +500,48 @@ class AgentState:
                 goal_id for goal_id, status in self.goals.items() if status is GoalStatus.ACTIVE
             )
         )
+
+    # -- recomposición y deriva --------------------------------------------
+
+    def recompose(
+        self,
+        pack: ContentPack,
+        active_situations: Iterable[SituationId] = (),
+    ) -> None:
+        """Rehace todo lo derivado de rasgos y estado actual. Puerta única.
+
+        Recalcula los pesos de necesidades (incluyendo metas activas), aptitud
+        (gains), temple (costs), techos (caps) y temperamento a partir de los
+        rasgos actuales. Las creencias no se reinician: son acumuladas por
+        experiencia.
+        """
+        active_goals = tuple(
+            pack.goal_by_id[gid] for gid in self.pursuing() if gid in pack.goal_by_id
+        )
+        self.need_weights = compose_need_weights(pack, self.traits, active_goals)
+        self.gains = compose_gains(pack, self.traits)
+        self.costs = compose_costs(pack, self.traits)
+        self.caps = compose_caps(pack, self.traits)
+        self.temperament = compose_temperament(
+            pack, self.traits, self.strain, active_situations=active_situations
+        )
+
+    def drift_trait(self, pack: ContentPack, trait: TraitId, delta: float) -> None:
+        """Mueve un rasgo en [-1.0, 1.0] y vuelve a componer todo lo derivado.
+
+        Guarda explícita: el rasgo debe existir obligatoriamente en el pack; si
+        no figura en `pack.trait_by_id`, levanta `KeyError` con un mensaje
+        propio que identifica el rasgo faltante antes de alterar el estado.
+        Modificar el rasgo y recomponer en la misma llamada garantiza que ningún
+        consumidor use derivados desfasados.
+        """
+        if trait not in pack.trait_by_id:
+            raise KeyError(
+                f"el rasgo {trait!r} no existe en el pack {pack.id!r}; "
+                f"declarados: {sorted(pack.trait_by_id)}"
+            )
+        self.traits[trait] = max(-1.0, min(1.0, self.traits.get(trait, 0.0) + delta))
+        self.recompose(pack)
 
 
 # -----------------------------------------------------------------------------

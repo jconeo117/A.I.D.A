@@ -20,22 +20,35 @@ o de situaciones (U3/U4), `recompose` y `drift_trait` (movidos a U2).
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import inspect
+import textwrap
 
 import pytest
 
+import aida.engine.disposition as disposition
 import aida.engine.state as state
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import (
     ActionId,
+    ActionSpec,
     AgentId,
+    AgentSpec,
     GoalId,
+    GoalSpec,
     GoalStatus,
     NeedId,
     NeedSpec,
+    Reversibility,
     SituationId,
     SituationSpec,
+    TemperamentKnob,
+    TraitId,
+    TraitSpec,
+    TuningSpec,
 )
+from aida.engine.pack import ContentPack
 from aida.engine.rng import RngSource
 from aida.engine.state import AgentState, ExecutionState, Ledger, PerformingAction
 
@@ -166,6 +179,23 @@ def test_strain_no_se_entera_de_la_deuda() -> None:
 
     # Assert
     assert sin_deuda.strain == con_deuda.strain
+
+
+def test_refresh_state_coincide_numericando_con_compute_strain() -> None:
+    """AgentState.refresh_state y disposition.compute_strain producen el mismo resultado
+    sin divergencia (I-014).
+    """
+    necesidad = _need_spec(cap=1.0, urgency_exponent=2.0, strain_weight=1.0)
+    specs = {necesidad.id: necesidad}
+    agente = _agent({necesidad.id: 0.5})
+    agente.caps = {necesidad.id: 0.5}
+
+    agente.refresh_state(specs)
+    strain_directo = disposition.compute_strain(specs, agente.needs, agente.caps)
+
+    # Con cap=0.5 y need=0.5, el agente está lleno en su cota personal => strain es 0.0
+    assert agente.strain == pytest.approx(0.0)
+    assert agente.strain == pytest.approx(strain_directo)
 
 
 # ---------------------------------------------------------------------------
@@ -684,43 +714,297 @@ def test_pieza_descartada_no_existe_en_el_modulo(nombre: str) -> None:
         "subir_de_rango",
         "rango",
         "animos",
-        "recompose",
-        "drift_trait",
     ],
 )
 def test_metodo_descartado_no_existe_en_agent_state(nombre: str) -> None:
-    """Ninguno de los métodos descartados cuelga de `AgentState` — incluidos
-    `recompose` y `drift_trait`, que la corrección de `04-corte-estado.md`
-    movió a U2 porque dependen de `disposition.py`, todavía inexistente."""
+    """Ninguno de los métodos descartados cuelga de `AgentState`.
+    Nota: `recompose` y `drift_trait` pertenecían a este listado antes de U3,
+    pero fueron incorporados como métodos oficiales al llegar `disposition.py`.
+    """
     # Arrange: el nombre bajo prueba llega parametrizado.
 
     # Act / Assert
     assert not hasattr(AgentState, nombre)
 
 
-def test_agent_state_no_declara_campos_que_dependen_de_disposition() -> None:
-    """`need_weights`, `gains`, `costs`, `caps`, `temperament`,
-    `phase_shift`, `gain_beliefs` y `cost_beliefs` no tienen quién los llene
-    todavía: aprobado explícitamente en la corrección de
-    `04-corte-estado.md`. Un campo sin escritor ni consumidor es código
-    muerto."""
-    # Arrange
-    prohibidos = {
+def test_agent_state_declara_los_siete_campos_derivados_de_u3() -> None:
+    """En U3, AgentState incorpora los siete campos derivados:
+    need_weights, gains, costs, caps, temperament, gain_beliefs, cost_beliefs.
+    """
+    requeridos = {
         "need_weights",
         "gains",
         "costs",
         "caps",
         "temperament",
-        "phase_shift",
         "gain_beliefs",
         "cost_beliefs",
     }
-
-    # Act
     campos = {campo.name for campo in dataclasses.fields(AgentState)}
+    assert requeridos.issubset(campos)
 
-    # Assert
-    assert campos.isdisjoint(prohibidos)
+
+def test_agent_state_sigue_sin_declarar_phase_shift_diferido_a_reloj() -> None:
+    """phase_shift se difiere al reloj (U5) y no debe existir en AgentState."""
+    campos = {campo.name for campo in dataclasses.fields(AgentState)}
+    assert "phase_shift" not in campos
+
+
+# ---------------------------------------------------------------------------
+# Bloque E — U3: recomposición y deriva de rasgos
+# ---------------------------------------------------------------------------
+
+
+def _pack_para_recomposicion(**overrides: object) -> ContentPack:
+    n1 = NeedSpec(
+        id=NeedId("n1"),
+        label="Eje 1",
+        decay_per_tick=0.01,
+        base_weight=1.0,
+        cap=0.8,
+        urgency_exponent=2.0,
+        strain_weight=1.0,
+    )
+    t1 = TraitSpec(
+        id=TraitId("t1"),
+        label="Rasgo 1",
+        need_weight_multipliers={NeedId("n1"): 2.0},
+        gain_multipliers={NeedId("n1"): 1.5},
+        cost_multipliers={NeedId("n1"): 0.5},
+        cap_multipliers={NeedId("n1"): 1.25},
+        temperament_multipliers={TemperamentKnob.LOSS_AVERSION: 2.0},
+    )
+    act1 = ActionSpec(
+        id=ActionId("act1"),
+        label="Accion 1",
+        duration_ticks=1,
+        reversibility=Reversibility.REVERSIBLE,
+        satisfies={NeedId("n1"): 0.5},
+        effects={NeedId("n1"): 0.5},
+    )
+    base: dict[str, object] = {
+        "id": "pack_recomp",
+        "label": "Pack para recomposicion",
+        "needs": (n1,),
+        "actions": (act1,),
+        "agents": (AgentSpec(id=_ALICIA, label="Alicia", initial_needs={"n1": 0.5}),),
+        "traits": (t1,),
+        "tuning": TuningSpec(loss_aversion=1.0),
+    }
+    base.update(overrides)
+    return ContentPack(**base)
+
+
+def test_recompose_recalcula_todos_los_campos_derivados() -> None:
+    """recompose(pack) actualiza need_weights, gains, costs, caps y temperament
+    a partir de los rasgos actuales del agente. Preserva las creencias existentes.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.4})
+    agente.traits = {TraitId("t1"): 1.0}
+    # Creencias previas (indexadas por ActionId y NeedId)
+    agente.gain_beliefs = {ActionId("act1"): {NeedId("n1"): 1.2}}
+    agente.cost_beliefs = {ActionId("act1"): {NeedId("n1"): 0.8}}
+
+    agente.recompose(pack)
+
+    assert agente.need_weights[NeedId("n1")] == pytest.approx(2.0)
+    assert agente.gains[NeedId("n1")] == pytest.approx(1.5)
+    assert agente.costs[NeedId("n1")] == pytest.approx(0.5)
+    assert agente.caps[NeedId("n1")] == pytest.approx(1.0)  # min(1.0, 0.8 * 1.25 = 1.0)
+    assert agente.temperament is not None
+    assert agente.temperament.loss_aversion == pytest.approx(2.0)
+
+    # Creencias no deben reiniciarse
+    assert agente.gain_beliefs[ActionId("act1")][NeedId("n1")] == pytest.approx(1.2)
+    assert agente.cost_beliefs[ActionId("act1")][NeedId("n1")] == pytest.approx(0.8)
+
+
+def test_recompose_pasa_metas_activas_a_need_weights() -> None:
+    """recompose traslada efectivamente las metas activas a compose_need_weights (I-015)."""
+    n1 = NeedSpec(
+        id=NeedId("n1"),
+        label="Eje 1",
+        decay_per_tick=0.01,
+        base_weight=2.0,
+    )
+    g1 = GoalSpec(
+        id=GoalId("g1"),
+        label="Meta activa",
+        need=NeedId("n1"),
+        at_least=0.8,
+        weight_multiplier=3.0,
+    )
+    pack = _pack_para_recomposicion(needs=(n1,), goals=(g1,))
+    agente = _agent({NeedId("n1"): 0.5}, goals={GoalId("g1"): GoalStatus.ACTIVE})
+    agente.traits = {TraitId("t1"): 0.0}
+    agente.recompose(pack)
+
+    # Si recompose pasara () en vez de las metas activas, daría 2.0 en vez de 6.0
+    assert agente.need_weights[NeedId("n1")] == pytest.approx(6.0)
+
+    # Metas alcanzadas o fallidas no se consideran activas en pursuing()
+    agente.goals[GoalId("g1")] = GoalStatus.ACHIEVED
+    agente.recompose(pack)
+    assert agente.need_weights[NeedId("n1")] == pytest.approx(2.0)
+
+
+def test_recompose_modula_temperamento_con_strain_del_agente() -> None:
+    """recompose traslada efectivamente self.strain a compose_temperament (I-018)."""
+    pack = _pack_para_recomposicion(
+        tuning=TuningSpec(
+            loss_aversion=1.0,
+            strain_multipliers={TemperamentKnob.LOSS_AVERSION: 4.0},
+        ),
+    )
+    agente = _agent({NeedId("n1"): 0.5})
+    agente.traits = {TraitId("t1"): 0.0}
+    # Con strain=0.5: 1.0 * (4.0 ** 0.5) = 2.0. Con strain ignorado/0.0 daría 1.0.
+    agente.strain = 0.5
+    agente.recompose(pack)
+
+    assert agente.temperament is not None
+    assert agente.temperament.loss_aversion == pytest.approx(2.0)
+
+
+def test_recompose_modula_temperamento_con_situaciones_activas() -> None:
+    """recompose traslada efectivamente active_situations a compose_temperament (I-018)."""
+    s1 = SituationSpec(
+        id=SituationId("s1"),
+        label="Situación crítica",
+        temperament_multipliers={TemperamentKnob.LOSS_AVERSION: 3.0},
+    )
+    pack = _pack_para_recomposicion(situations=(s1,))
+    agente = _agent({NeedId("n1"): 0.5})
+    agente.traits = {TraitId("t1"): 0.0}
+    agente.recompose(pack, active_situations=(SituationId("s1"),))
+
+    assert agente.temperament is not None
+    # Con situación activa: 1.0 * 3.0 = 3.0. Si fuera ignorada o pasada como (), daría 1.0.
+    assert agente.temperament.loss_aversion == pytest.approx(3.0)
+
+
+def test_beliefs_estan_indexadas_por_accion_y_necesidad_sin_compartirse() -> None:
+    """Las creencias en AgentState se indexan por [ActionId][NeedId] y dos acciones
+    no comparten creencias sobre el mismo eje (I-013).
+    """
+    agente = _agent({NeedId("n1"): 0.5})
+
+    # Arrancan vacías
+    assert agente.gain_beliefs == {}
+    assert agente.cost_beliefs == {}
+
+    # Una acción no experimentada resuelve por defecto a 1.0
+    act_a = ActionId("act_a")
+    act_b = ActionId("act_b")
+    n1 = NeedId("n1")
+    assert agente.gain_beliefs.get(act_a, {}).get(n1, 1.0) == 1.0
+
+    # Simulamos aprendizaje sobre act_a
+    creencias_a = agente.gain_beliefs.setdefault(act_a, {})
+    creencias_a[n1] = 1.4
+
+    # act_a tiene la creencia actualizada
+    assert agente.gain_beliefs[act_a][n1] == pytest.approx(1.4)
+    # act_b NO comparte creencia: sigue resolviendo a 1.0 y no está en el diccionario
+    assert agente.gain_beliefs.get(act_b, {}).get(n1, 1.0) == 1.0
+    assert act_b not in agente.gain_beliefs
+
+
+def test_drift_trait_muta_rasgo_y_recompone_en_la_misma_llamada() -> None:
+    """drift_trait altera la intensidad del rasgo y vuelve a componer de inmediato."""
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.4})
+    agente.traits = {TraitId("t1"): 0.0}
+    agente.recompose(pack)
+
+    assert agente.gains[NeedId("n1")] == pytest.approx(1.0)
+
+    # Aplicamos deriva de +1.0
+    agente.drift_trait(pack, TraitId("t1"), 1.0)
+
+    assert agente.traits[TraitId("t1")] == pytest.approx(1.0)
+    # Los derivados deben haberse recalculado sin invocar recompose por separado
+    assert agente.gains[NeedId("n1")] == pytest.approx(1.5)
+    assert agente.costs[NeedId("n1")] == pytest.approx(0.5)
+
+
+def test_drift_trait_acota_intensidad_a_menos_uno_y_uno() -> None:
+    """drift_trait no permite que la intensidad se salga del intervalo [-1.0, 1.0]."""
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.4})
+    agente.traits = {TraitId("t1"): 0.5}
+
+    agente.drift_trait(pack, TraitId("t1"), 2.0)
+    assert agente.traits[TraitId("t1")] == 1.0
+
+    agente.drift_trait(pack, TraitId("t1"), -5.0)
+    assert agente.traits[TraitId("t1")] == -1.0
+
+
+def test_drift_trait_con_rasgo_inexistente_lanza_keyerror() -> None:
+    """drift_trait sobre un rasgo que no está en el pack levanta KeyError con
+    mensaje propio que nombra el rasgo.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.4})
+
+    with pytest.raises(KeyError, match=r"el rasgo 'fantasma' no existe en el pack"):
+        agente.drift_trait(pack, TraitId("fantasma"), 0.1)
+
+
+def test_agent_state_urgency_delega_en_disposition_urgency_usando_caps() -> None:
+    """AgentState.urgency delega en disposition.urgency leyendo el techo derivado de caps."""
+    necesidad = _need_spec(cap=1.0, urgency_exponent=2.0)
+    agente = _agent({necesidad.id: 0.5})
+    # Sin caps personalizadas, usa need.cap = 1.0 => (1 - 0.5/1.0)**2 = 0.25
+    assert agente.urgency(necesidad) == pytest.approx(0.25)
+
+    # Con cap personalizada en caps => ej. cap=0.5, valor=0.5 => 0.0 (alcanzó su tope)
+    agente.caps = {necesidad.id: 0.5}
+    assert agente.urgency(necesidad) == pytest.approx(0.0)
+
+
+def test_state_urgency_es_identica_a_disposition_urgency() -> None:
+    """Introspección: state.urgency es exactamente disposition.urgency."""
+    assert state.urgency is disposition.urgency
+    assert not hasattr(state, "_urgency")
+
+
+def test_agent_state_urgency_invoca_la_funcion_urgency_sin_reimplementarla(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AgentState.urgency invoca la función canónica de urgency y no re-implementa
+    la fórmula (I-017).
+    """
+    llamadas: list[tuple[float, float, float]] = []
+
+    def spy_urgency(value: float, exponent: float, cap: float = 1.0) -> float:
+        llamadas.append((value, exponent, cap))
+        return 777.0
+
+    monkeypatch.setattr(state, "urgency", spy_urgency)
+    necesidad = _need_spec(cap=1.0, urgency_exponent=2.0)
+    agente = _agent({necesidad.id: 0.5})
+    agente.caps = {necesidad.id: 0.8}
+
+    res = agente.urgency(necesidad)
+    # Si AgentState.urgency contuviera una fórmula local, devolvería (1 - 0.5/0.8)**2 != 777.0
+    assert res == 777.0
+    assert len(llamadas) == 1
+    assert llamadas[0] == (0.5, 2.0, 0.8)
+
+
+def test_agent_state_urgency_no_contiene_operaciones_aritmeticas_locales_de_urgencia() -> None:
+    """Verifica por AST que AgentState.urgency no reintroduce la fórmula de potencia
+    localmente (I-017).
+    """
+    source = textwrap.dedent(inspect.getsource(AgentState.urgency))
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        assert not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)), (
+            "AgentState.urgency no debe reimplementar la fórmula con operador **"
+        )
 
 
 def test_execution_state_no_expone_censo_ni_geografia_ni_faccion() -> None:

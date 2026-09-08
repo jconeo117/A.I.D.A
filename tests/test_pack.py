@@ -454,6 +454,37 @@ def test_check_phase_refs_detecta_franja_desconocida_en_actions() -> None:
     )
 
 
+def test_check_phase_refs_detecta_trait_con_phase_shift_sin_franjas() -> None:
+    """Un rasgo que declara phase_shift en un pack sin franjas es rechazado."""
+    expect_rejection(
+        "declara `phase_shift` pero el pack no tiene franjas",
+        traits=[
+            {
+                "id": "cauteloso",
+                "label": "Cauteloso",
+                "phase_shift": 1,
+            }
+        ],
+        phases=[],
+    )
+
+
+def test_check_phase_refs_pack_con_franjas_y_trait_con_phase_shift_es_valido() -> None:
+    """Un pack con franjas y un rasgo que declara phase_shift es válido (I-010)."""
+    p = build_pack(
+        traits=[
+            {
+                "id": "cauteloso",
+                "label": "Cauteloso",
+                "phase_shift": 2,
+            }
+        ]
+    )
+    assert p.id == "pack_test"
+    assert len(p.phases) == 1
+    assert p.trait_by_id[ontology.TraitId("cauteloso")].phase_shift == 2
+
+
 # ---------------------------------------------------------------------------
 # 6. _check_situation_refs
 # ---------------------------------------------------------------------------
@@ -548,6 +579,53 @@ def test_check_goal_refs_detecta_requires_goal_que_no_pertenece_al_agente() -> N
                 "label": "Meta del pack",
                 "need": "cpu",
                 "at_least": 0.5,
+            }
+        ],
+    )
+
+
+def test_check_goal_refs_detecta_necesidad_desconocida_en_meta_de_agente() -> None:
+    """Una meta dentro de un agente con necesidad desconocida es rechazada con su
+    mensaje específico (I-011).
+    """
+    expect_rejection(
+        "agente 'agente_monitor', meta 'meta_local': necesidad desconocida 'necesidad_fantasma'",
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "goals": [
+                    {
+                        "id": "meta_local",
+                        "label": "Meta local",
+                        "need": "necesidad_fantasma",
+                        "at_least": 0.5,
+                    }
+                ],
+            }
+        ],
+    )
+
+
+def test_check_goal_refs_detecta_rasgo_desconocido_en_at_traits_de_meta_de_agente() -> None:
+    """Una meta dentro de un agente con at_traits hacia un rasgo desconocido es rechazada
+    con su mensaje (I-011).
+    """
+    expect_rejection(
+        "agente 'agente_monitor', meta 'meta_local'.at_traits: "
+        "rasgo desconocida/o 'rasgo_fantasma'",
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "goals": [
+                    {
+                        "id": "meta_local",
+                        "label": "Meta local",
+                        "need": "cpu",
+                        "at_traits": {"rasgo_fantasma": 0.5},
+                    }
+                ],
             }
         ],
     )
