@@ -934,3 +934,149 @@ print(f"{d.action}:{d.utility:.6f}")
         results.append(p_res.stdout.strip())
 
     assert len(set(results)) == 1, f"Decisiones difieren entre PYTHONHASHSEED: {results}"
+
+
+# =============================================================================
+# 13. Ancla de remediación I-024 (§5.1): Aversión al coste (loss_aversion)
+# =============================================================================
+
+
+def test_loss_aversion_altera_preferencia_entre_accion_costosa_y_accion_barata() -> None:
+    """Demuestra que loss_aversion cambia la preferencia de acción (I-024).
+
+    - Con aversión al coste baja (loss_aversion = 1.0), gana una acción cara
+      pero muy rentable (alto beneficio neto).
+    - Con aversión al coste alta (loss_aversion = 3.0), gana una acción barata
+      aunque rinda menos beneficio bruto, porque el coste penaliza severamente.
+
+    Ancla contra mutación: quitar 'agent.temperament.loss_aversion *' en la
+    fórmula de utilidad en candidates(...) deja la deliberación inmune a la
+    aversión al coste, provocando el fallo de este test.
+    """
+    need_b = _make_need("need_benefit", initial=0.0, cap=1.0, exponent=1.0)
+    need_c = _make_need("need_cost", initial=0.0, cap=1.0, exponent=1.0)
+
+    act_expensive = _make_action(
+        "act_expensive",
+        satisfies={"need_benefit": 1.0},
+        costs={"need_cost": 0.4},
+    )
+    act_cheap = _make_action(
+        "act_cheap",
+        satisfies={"need_benefit": 0.5},
+        costs={"need_cost": 0.1},
+    )
+
+    trait_prudent = ontology.TraitSpec(
+        id=ontology.TraitId("t_prudent"),
+        label="Prudent",
+        temperament_multipliers={ontology.TemperamentKnob.LOSS_AVERSION: 3.0},
+    )
+
+    p = _make_pack(
+        needs=[need_b, need_c],
+        actions=[act_expensive, act_cheap],
+        traits=[trait_prudent],
+        tuning=ontology.TuningSpec(loss_aversion=1.0, candidate_pool=1),
+    )
+
+    # Caso 1: Agente neutro sin rasgo (loss_aversion = 1.0)
+    # util(expensive) = 1.0 - 1.0 * 0.4 = 0.6
+    # util(cheap)     = 0.5 - 1.0 * 0.1 = 0.4
+    # -> Gana act_expensive
+    exec_neutral = _make_execution(p, traits={"t_prudent": 0.0})
+    assert exec_neutral.agent.temperament is not None
+    assert exec_neutral.agent.temperament.loss_aversion == pytest.approx(1.0)
+
+    act_exp_id = ontology.ActionId("act_expensive")
+    act_chp_id = ontology.ActionId("act_cheap")
+
+    pool_neutral, _ = decide.candidates(exec_neutral, p)
+    utils_neutral = {d.action: d.utility for d in pool_neutral}
+    assert utils_neutral[act_exp_id] == pytest.approx(0.6)
+    assert utils_neutral[act_chp_id] == pytest.approx(0.4)
+    assert utils_neutral[act_exp_id] > utils_neutral[act_chp_id]
+
+    decision_neutral = decide.decide(exec_neutral, p)
+    assert decision_neutral is not None
+    assert decision_neutral.action == act_exp_id
+
+    # Caso 2: Agente con rasgo prudente (loss_aversion = 3.0)
+    # util(expensive) = 1.0 - 3.0 * 0.4 = 1.0 - 1.2 = -0.2
+    # util(cheap)     = 0.5 - 3.0 * 0.1 = 0.5 - 0.3 = 0.2
+    # -> Gana act_cheap (inversión estricta de orden de preferencia)
+    exec_prudent = _make_execution(p, traits={"t_prudent": 1.0})
+    assert exec_prudent.agent.temperament is not None
+    assert exec_prudent.agent.temperament.loss_aversion == pytest.approx(3.0)
+
+    pool_prudent, _ = decide.candidates(exec_prudent, p)
+    utils_prudent = {d.action: d.utility for d in pool_prudent}
+    assert utils_prudent[act_exp_id] == pytest.approx(-0.2)
+    assert utils_prudent[act_chp_id] == pytest.approx(0.2)
+    assert utils_prudent[act_chp_id] > utils_prudent[act_exp_id]
+
+    decision_prudent = decide.decide(exec_prudent, p)
+    assert decision_prudent is not None
+    assert decision_prudent.action == act_chp_id
+
+
+# =============================================================================
+# 14. Ancla de remediación I-027 (§5.4): Modulación de critical_needs por tarea en curso
+# =============================================================================
+
+
+def test_critical_needs_modulado_por_avance_de_tarea_en_curso_y_switch_cost() -> None:
+    """El avance de una tarea en curso reduce el umbral de necesidad crítica (I-027).
+
+    Regla: Si el agente está ejecutando una acción (agent.performing), el umbral
+    se modula según:
+        threshold = critical_need_threshold * (1.0 - progress * switch_cost)
+    donde progress = 1.0 - ticks_remaining / total_ticks.
+
+    A mayor avance de la tarea en curso, más difícil resulta interrumpir al agente:
+    hace falta que el eje esté peor (valor menor) para catalogarse como emergencia.
+    Un valor de necesidad intermedio (ej. 0.3):
+    - Con la acción recién empezada (progress=0.0, threshold=0.4): 0.3 < 0.4 -> ES crítico.
+    - Con la acción casi terminada (progress=0.8, threshold=0.24): 0.3 > 0.24 -> NO es crítico.
+
+    Ancla contra mutación: borrar el bloque de modulación por agent.performing
+    deja el umbral estático en 0.4, provocando que la tarea casi terminada siga
+    reportando la necesidad como crítica y haciendo fallar el test.
+    """
+    need_a = _make_need("need_crit", initial=0.3, cap=1.0, exponent=1.0, urgent_when_low=True)
+    act_work = _make_action("act_work", duration_ticks=10)
+    p = _make_pack(
+        needs=[need_a],
+        actions=[act_work],
+        tuning=ontology.TuningSpec(
+            critical_need_threshold=0.4,
+            switch_cost=0.5,
+        ),
+    )
+
+    # Escenario 1: Tarea recién empezada (ticks_remaining = 10, total_ticks = 10 -> progress = 0.0)
+    # threshold = 0.4 * (1.0 - 0.0 * 0.5) = 0.4
+    # need value = 0.3 < 0.4 -> es necesidad crítica
+    exec_early = _make_execution(p, needs={"need_crit": 0.3})
+    assert exec_early.agent.temperament is not None
+    assert exec_early.agent.temperament.critical_need_threshold == pytest.approx(0.4)
+    assert exec_early.agent.temperament.switch_cost == pytest.approx(0.5)
+
+    exec_early.agent.performing = state.PerformingAction(
+        action=ontology.ActionId("act_work"),
+        ticks_remaining=10,
+        total_ticks=10,
+    )
+    assert decide.critical_needs(exec_early, p) == [ontology.NeedId("need_crit")]
+
+    # Escenario 2: Tarea casi terminada (ticks_remaining = 2, total_ticks = 10 -> progress = 0.8)
+    # threshold = 0.4 * (1.0 - 0.8 * 0.5) = 0.4 * 0.6 = 0.24
+    # need value = 0.3 > 0.24 -> ya no califica como crítica
+    exec_late = _make_execution(p, needs={"need_crit": 0.3})
+    exec_late.agent.performing = state.PerformingAction(
+        action=ontology.ActionId("act_work"),
+        ticks_remaining=2,
+        total_ticks=10,
+    )
+    assert decide.critical_needs(exec_late, p) == []
+

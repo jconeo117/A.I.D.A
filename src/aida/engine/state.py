@@ -360,6 +360,13 @@ class AgentState:
     ) -> None:
         """Suma los deltas de algo que el agente acaba de completar.
 
+        Antes de anotar, escala por aptitud (`self.gains`) lo que entra y
+        por temple (`self.costs`) lo que sale — el mismo canal que compone
+        `disposition.compose_gains` y `compose_costs`. Un agente que todavía
+        no se recompuso tiene los dos diccionarios vacíos, así que el factor
+        cae a 1.0 por defecto y no cambia nada: solo escala una vez que hay
+        personalidad compuesta.
+
         Positivo entra por `gain` —lo que llega por actuar—; negativo por
         `_spend`, anotado como demanda. Ordenado por identificador: sumar en
         coma flotante no es asociativo, y sin un orden fijo dos ejecuciones
@@ -369,9 +376,10 @@ class AgentState:
             delta = effects[need_id]
             need = need_specs[need_id]
             if delta >= 0.0:
-                self.gain(need_id, delta, need)
+                gained = delta * self.gains.get(need_id, 1.0)
+                self.gain(need_id, gained, need)
             else:
-                cost = -delta
+                cost = -delta * self.costs.get(need_id, 1.0)
                 if self.ledger is not None:
                     self.ledger.record(self.ledger.demand, need_id, cost)
                 self._spend(cost, need)
@@ -384,6 +392,12 @@ class AgentState:
         como PASIVO y no como activo: llega por estar ahí, no por decidir
         nada, y confundir las dos columnas del libro es exactamente el error
         que `Ledger` existe para no cometer.
+
+        Solo el lado negativo escala por temple (`self.costs`). La aptitud
+        (`self.gains`) mide cuánto rinde lo que el agente hace por sí mismo;
+        escalar con ella lo que le cae encima sin que decida nada mezclaría
+        dos cosas distintas: lo que consigues actuando y lo que te impone el
+        entorno.
         """
         for need_id in sorted(effects):
             delta = effects[need_id]
@@ -393,7 +407,7 @@ class AgentState:
                     self.ledger.record(self.ledger.passive, need_id, delta)
                 self.restore(need_id, delta, need)
             else:
-                cost = -delta
+                cost = -delta * self.costs.get(need_id, 1.0)
                 if self.ledger is not None:
                     self.ledger.record(self.ledger.demand, need_id, cost)
                 self._spend(cost, need)

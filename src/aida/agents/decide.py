@@ -203,7 +203,8 @@ def candidates(
     los cinco factores aritméticos, calcula la utilidad y añade un `Decision`.
 
     Fórmula:
-        utilidad = beneficio * novedad * phase_fit * situation_fit - coste
+        utilidad = beneficio * novedad * phase_fit * situation_fit
+                   - aversión_al_coste * coste
     """
     agent = execution.agent
     if agent.temperament is None:
@@ -228,7 +229,7 @@ def candidates(
         nov = novelty(agent, action.id, agent.temperament.novelty_weight)
         p_fit = phase_fit(action, phase)
         s_fit = situation_fit(action, sit_tuple)
-        util = (b * nov * p_fit * s_fit) - c
+        util = (b * nov * p_fit * s_fit) - agent.temperament.loss_aversion * c
 
         pool.append(
             Decision(
@@ -242,6 +243,32 @@ def candidates(
             )
         )
 
+    return pool, discarded
+
+
+def _deliberate(
+    execution: ExecutionState,
+    pack: ContentPack,
+    must_address: NeedId | None = None,
+    phase: PhaseId | None = None,
+    situations: Iterable[SituationId] = (),
+) -> tuple[list[Decision], dict[ActionId, str]]:
+    """Candidatas y descartes reales que `decide` va a considerar.
+
+    Único lugar donde se calcula el catálogo completo (`candidates`) y se le
+    aplica el filtro de `must_address`. `decide()` y `explain_deliberation()`
+    llaman aquí en vez de repetir el filtro cada uno por su lado — así la
+    traza nunca puede describir como candidata una acción que `must_address`
+    ya había descartado, porque las dos funciones ven exactamente la misma
+    lista.
+    """
+    pool, discarded = candidates(execution, pack, phase=phase, situations=situations)
+    if must_address is not None:
+        pool = [
+            d
+            for d in pool
+            if pack.action_by_id[d.action].satisfies.get(must_address, 0.0) > 0.0
+        ]
     return pool, discarded
 
 
@@ -275,14 +302,9 @@ def decide(
             "AgentState.recompose(pack) must be called before decide()."
         )
 
-    pool, _ = candidates(execution, pack, phase=phase, situations=situations)
-
-    if must_address is not None:
-        pool = [
-            d
-            for d in pool
-            if pack.action_by_id[d.action].satisfies.get(must_address, 0.0) > 0.0
-        ]
+    pool, _ = _deliberate(
+        execution, pack, must_address=must_address, phase=phase, situations=situations
+    )
 
     if not pool:
         return None

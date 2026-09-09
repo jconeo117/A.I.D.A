@@ -1100,3 +1100,102 @@ def test_execution_state_no_expone_censo_ni_geografia_ni_faccion() -> None:
 
     # Assert
     assert campos.isdisjoint(prohibidos)
+
+
+# =============================================================================
+# Bloque Remediación I-028 (§5.5): Aptitud (gains) y Temple (costs) en apply y endure
+# =============================================================================
+
+
+def test_apply_con_delta_positivo_escala_por_aptitud_gains() -> None:
+    """apply con delta positivo multiplica la ganancia por self.gains (I-028).
+
+    Ancla contra mutación: quitar '* self.gains.get(need_id, 1.0)' hace que el
+    incremento sea igual al delta sin amplificar por la aptitud del agente.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.2}, ledger=Ledger())
+    agente.traits = {TraitId("t1"): 1.0}
+    agente.recompose(pack)
+    assert agente.gains[NeedId("n1")] == pytest.approx(1.5)
+
+    need_spec = pack.need_by_id[NeedId("n1")]
+    agente.apply({NeedId("n1"): 0.2}, {NeedId("n1"): need_spec})
+
+    # Delta 0.2 * aptitud 1.5 = 0.3 ganancia efectiva
+    # Nivel: 0.2 + 0.3 = 0.5
+    assert agente.needs[NeedId("n1")] == pytest.approx(0.5)
+    assert agente.ledger is not None
+    assert agente.ledger.active[NeedId("n1")] == pytest.approx(0.3)
+
+
+def test_apply_con_delta_negativo_escala_por_temple_costs() -> None:
+    """apply con delta negativo multiplica el gasto por self.costs (I-028).
+
+    Ancla contra mutación: quitar '* self.costs.get(need_id, 1.0)' hace que el
+    coste sea igual a abs(delta) sin amortiguar por el temple del agente.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.8}, ledger=Ledger())
+    agente.traits = {TraitId("t1"): 1.0}
+    agente.recompose(pack)
+    assert agente.costs[NeedId("n1")] == pytest.approx(0.5)
+
+    need_spec = pack.need_by_id[NeedId("n1")]
+    agente.apply({NeedId("n1"): -0.4}, {NeedId("n1"): need_spec})
+
+    # Gasto nominal 0.4 * temple 0.5 = 0.2 gasto efectivo
+    # Nivel: 0.8 - 0.2 = 0.6
+    assert agente.needs[NeedId("n1")] == pytest.approx(0.6)
+    assert agente.ledger is not None
+    assert agente.ledger.demand[NeedId("n1")] == pytest.approx(0.2)
+
+
+def test_endure_con_delta_negativo_escala_por_temple_costs() -> None:
+    """endure con delta negativo multiplica el gasto por self.costs (I-028).
+
+    Ancla contra mutación: quitar '* self.costs.get(need_id, 1.0)' en endure
+    hace que el coste ambiental no se amortigüe por el temple del agente.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.8}, ledger=Ledger())
+    agente.traits = {TraitId("t1"): 1.0}
+    agente.recompose(pack)
+    assert agente.costs[NeedId("n1")] == pytest.approx(0.5)
+
+    need_spec = pack.need_by_id[NeedId("n1")]
+    agente.endure({NeedId("n1"): -0.4}, {NeedId("n1"): need_spec})
+
+    # Gasto nominal 0.4 * temple 0.5 = 0.2 gasto efectivo
+    # Nivel: 0.8 - 0.2 = 0.6
+    assert agente.needs[NeedId("n1")] == pytest.approx(0.6)
+    assert agente.ledger is not None
+    assert agente.ledger.demand[NeedId("n1")] == pytest.approx(0.2)
+
+
+def test_endure_con_delta_positivo_no_escala_por_aptitud_gains() -> None:
+    """endure con delta positivo NO escala por self.gains (I-028).
+
+    La aptitud mide rendimiento al actuar deliberadamente; los efectos ambientales
+    pasivos entran directamente sin amplificación por aptitud.
+
+    Ancla contra mutación: añadir '* self.gains.get(need_id, 1.0)' en el lado
+    positivo de endure amplifica la entrada pasiva (0.2 * 1.5 = 0.3), haciendo
+    fallar la comprobación de que el nivel queda exactamente en 0.4.
+    """
+    pack = _pack_para_recomposicion()
+    agente = _agent({NeedId("n1"): 0.2}, ledger=Ledger())
+    agente.traits = {TraitId("t1"): 1.0}
+    agente.recompose(pack)
+    assert agente.gains[NeedId("n1")] == pytest.approx(1.5)
+
+    need_spec = pack.need_by_id[NeedId("n1")]
+    agente.endure({NeedId("n1"): 0.2}, {NeedId("n1"): need_spec})
+
+    # Efecto pasivo puro: exactamente 0.2, sin multiplicar por gains (1.5)
+    # Nivel: 0.2 + 0.2 = 0.4 (si multiplicara daría 0.5)
+    assert agente.needs[NeedId("n1")] == pytest.approx(0.4)
+    assert agente.ledger is not None
+    assert agente.ledger.passive[NeedId("n1")] == pytest.approx(0.2)
+    assert NeedId("n1") not in agente.ledger.active
+

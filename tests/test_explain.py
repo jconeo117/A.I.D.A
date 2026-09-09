@@ -563,3 +563,90 @@ def test_format_human_estructura_completa() -> None:
     assert "Desviación de creencias aprendidas" in text
     assert "Opciones descartadas por puertas duras" in text
     assert str(trace) == text
+
+
+# =============================================================================
+# 7. Anclas de remediación I-025 (§5.2) e I-026 (§5.3)
+# =============================================================================
+
+
+def test_build_trace_con_decision_suboptima_reporta_runner_up_mejor_y_margen_negativo() -> None:
+    """build_trace con decisión subóptima asigna runner_up mejor y margen negativo (I-025).
+
+    Regla:
+        runner_up = la mejor opción del pool que no fue la elegida
+        margin = decision.utility - ranked_pool[0].utility (negativo si no fue la mejor)
+
+    Ancla contra mutación: envolver el cálculo de margin en abs(...) produce
+    un valor positivo (+0.3), enmascarando que la decisión elegida quedó por
+    detrás de la mejor alternativa del catálogo.
+    """
+    need = _make_need("need_a", initial=0.0)
+    act_a = _make_action("act_a", satisfies={"need_a": 0.8})
+    act_b = _make_action("act_b", satisfies={"need_a": 0.5})
+    p = _make_pack(needs=[need], actions=[act_a, act_b])
+    exec_st = _make_execution(p)
+
+    dec_best = decide.Decision(
+        action=ontology.ActionId("act_a"),
+        utility=0.8,
+        benefit=0.8,
+        cost=0.0,
+        novelty=1.0,
+        phase_fit=1.0,
+        situation_fit=1.0,
+    )
+    dec_suboptimal = decide.Decision(
+        action=ontology.ActionId("act_b"),
+        utility=0.5,
+        benefit=0.5,
+        cost=0.0,
+        novelty=1.0,
+        phase_fit=1.0,
+        situation_fit=1.0,
+    )
+    pool = [dec_best, dec_suboptimal]
+    discarded: dict[ontology.ActionId, str] = {}
+
+    trace = explain.build_trace(
+        exec_st,
+        p,
+        decision=dec_suboptimal,
+        pool=pool,
+        discarded=discarded,
+    )
+
+    assert trace.chosen == ontology.ActionId("act_b")
+    assert trace.runner_up == ontology.ActionId("act_a")
+    assert trace.margin is not None
+    assert trace.margin == pytest.approx(-0.3)
+    assert trace.margin < 0.0
+
+
+def test_explain_deliberation_con_must_address_filtra_candidatas_en_traza() -> None:
+    """explain_deliberation con must_address restringe candidates a las que atienden el eje (I-026).
+
+    Si solo una acción atiende el eje crítico indicado por must_address:
+    - trace.candidates debe contener ÚNICAMENTE esa acción.
+    - trace.runner_up debe ser None, dado que ninguna otra acción compitió de verdad.
+
+    Ancla contra mutación: omitir must_address en la llamada interna a _deliberate(...)
+    hace que la traza incluya acciones que decide() ya descartó antes de evaluar.
+    """
+    need_crit = _make_need("need_crit", initial=0.0)
+    need_other = _make_need("need_other", initial=0.0)
+    act_matches = _make_action("act_matches", satisfies={"need_crit": 0.6})
+    act_ignored = _make_action("act_ignored", satisfies={"need_other": 0.9})
+    p = _make_pack(needs=[need_crit, need_other], actions=[act_matches, act_ignored])
+    exec_st = _make_execution(p)
+
+    decision, trace = explain.explain_deliberation(
+        exec_st, p, must_address=ontology.NeedId("need_crit")
+    )
+    assert decision is not None
+    assert decision.action == ontology.ActionId("act_matches")
+    assert trace is not None
+    assert [c.action for c in trace.candidates] == [ontology.ActionId("act_matches")]
+    assert trace.runner_up is None
+    assert trace.margin is None
+

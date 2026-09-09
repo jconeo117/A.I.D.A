@@ -26,7 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from aida.agents.decide import Decision, _rank, candidates, critical_needs, decide
+from aida.agents.decide import Decision, _deliberate, _rank, critical_needs, decide
 from aida.engine.disposition import urgency
 from aida.engine.ontology import ActionId, NeedId, PhaseId, SituationId
 from aida.engine.pack import ContentPack
@@ -210,10 +210,10 @@ def build_trace(
     if len(ranked_pool) > 1:
         if ranked_pool[0].action == decision.action:
             runner_up = ranked_pool[1].action
-            margin = ranked_pool[0].utility - ranked_pool[1].utility
+            margin = decision.utility - ranked_pool[1].utility
         else:
             runner_up = ranked_pool[0].action
-            margin = abs(decision.utility - ranked_pool[0].utility)
+            margin = decision.utility - ranked_pool[0].utility
 
     need_urgencies: dict[NeedId, float] = {}
     need_weights: dict[NeedId, float] = {}
@@ -267,9 +267,16 @@ def explain_deliberation(
     """Ejecuta una deliberación y devuelve la decisión tomada junto con su traza.
 
     Retorna `(None, None)` si ninguna opción resulta elegible o ejecutable.
+
+    `pool` y `discarded` se obtienen de `_deliberate`, la misma función
+    interna que usa `decide()` para elegir. Es deliberado que se llame dos
+    veces al catálogo completo (una aquí, otra dentro de `decide()`): lo que
+    importa no es evitar el cálculo repetido, es que las dos veces se
+    calcule con el mismo filtro, para que la traza jamás describa una
+    alternativa que `must_address` ya había descartado.
     """
-    pool, discarded = candidates(
-        execution, pack, phase=phase, situations=situations
+    pool, discarded = _deliberate(
+        execution, pack, must_address=must_address, phase=phase, situations=situations
     )
     decision = decide(
         execution,
