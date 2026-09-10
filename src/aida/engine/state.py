@@ -15,7 +15,7 @@ exclusivamente en `disposition.py` como puerta canónica única.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from aida.engine.disposition import (
     Temperament,
@@ -23,6 +23,7 @@ from aida.engine.disposition import (
     compose_costs,
     compose_gains,
     compose_need_weights,
+    compose_tastes,
     compose_temperament,
     compute_strain,
 )
@@ -33,6 +34,7 @@ from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import (
     ActionId,
     AgentId,
+    AgentSpec,
     GoalId,
     GoalStatus,
     NeedId,
@@ -218,6 +220,17 @@ class AgentState:
     caps: dict[NeedId, float] = field(default_factory=dict)
     """Techo efectivo en cada eje. Derivado de rasgos (`compose_caps`)."""
 
+    tastes: dict[str, float] = field(default_factory=dict)
+    """Predilección o aversión hacia un objetivo concreto (hoy, siempre una
+    acción). Clave `str`, no `ActionId`: un gusto puede apuntar a distintos
+    espacios de identificadores según declare el pack, y unificar en texto
+    evita tener que resolver esa unión en el ciclo caliente de decisión.
+
+    A diferencia de `gains`, `costs` y `caps`, **no depende de los rasgos
+    actuales** y por eso `recompose` no lo toca: se fija una única vez, al
+    construir el agente (`from_spec`), a partir de lo que el pack declaró
+    para él."""
+
     temperament: Temperament | None = None
     """Configuración de decisión derivada de rasgos, desgaste y tuning
     (`compose_temperament`)."""
@@ -231,6 +244,49 @@ class AgentState:
     """Multiplicadores de expectativa sobre lo que cuestan las acciones,
     indexados por acción y necesidad. Mutado por `learn`. Arranca vacío; lo
     ausente representa 1.0."""
+
+    @classmethod
+    def from_spec(cls, pack: ContentPack, spec: AgentSpec) -> AgentState:
+        """Estado inicial de un agente a partir de sus condiciones de partida.
+
+        Puerta única de construcción: es la única función de todo el motor
+        que arma un `AgentState` leyendo un `AgentSpec`. Los diccionarios de
+        `spec` se copian, nunca se comparten — `AgentSpec` es inmutable en
+        sus atributos, pero eso no protege lo que hay dentro de un `dict`, y
+        compartirlo dejaría que la deriva de este agente en concreto
+        contaminase el pack, y con él, cualquier otro agente que naciera del
+        mismo fichero.
+
+        Las metas nacen `LOCKED` si dependen de otra (`requires_goal`), y
+        `ACTIVE` si no dependen de nada. Sin este arranque, una secuencia de
+        metas pensada para lograrse en orden empujaría todos sus eslabones a
+        la vez desde el primer instante.
+
+        Termina llamando a `recompose`: la misma puerta que ya usa cualquier
+        cambio posterior de rasgos. Así no hay una fórmula de pesos, aptitud,
+        temple, techos y temperamento para el arranque y otra distinta para
+        lo que viene después — sería la misma clase de error que ya costó
+        caro en unidades anteriores, dos sitios calculando lo mismo.
+        """
+        needs: dict[NeedId, float] = {need.id: need.initial for need in pack.needs}
+        needs.update(spec.initial_needs)
+
+        goals: dict[GoalId, GoalStatus] = {
+            goal.id: (
+                GoalStatus.LOCKED if goal.requires_goal is not None else GoalStatus.ACTIVE
+            )
+            for goal in spec.goals
+        }
+
+        agent = cls(
+            agent_id=spec.id,
+            needs=needs,
+            traits=dict(spec.traits),
+            goals=goals,
+            tastes=compose_tastes(spec.tastes),
+        )
+        agent.recompose(pack)
+        return agent
 
     # -- necesidades ----------------------------------------------------------
 
@@ -514,6 +570,26 @@ class AgentState:
             sorted(
                 goal_id for goal_id, status in self.goals.items() if status is GoalStatus.ACTIVE
             )
+        )
+
+    # -- qué está haciendo ------------------------------------------------
+
+    def advance(self) -> None:
+        """Consume un instante de lo que el agente esté haciendo, si hay algo.
+
+        Se detiene en 0 sin borrar `performing`: quien llama necesita ver
+        QUÉ acaba de terminar, para poder aplicarle su efecto. Ponerlo a
+        `None` aquí destruiría esa información justo antes de que alguien
+        la lea.
+
+        `PerformingAction` es inmutable (`frozen=True`), así que no se
+        decrementa: se reemplaza entero con `dataclasses.replace`.
+        """
+        performing = self.performing
+        if performing is None or performing.ticks_remaining == 0:
+            return
+        self.performing = replace(
+            performing, ticks_remaining=performing.ticks_remaining - 1
         )
 
     # -- recomposición y deriva --------------------------------------------

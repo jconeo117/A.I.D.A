@@ -28,6 +28,7 @@ import textwrap
 import pytest
 
 import aida.engine.disposition as disposition
+import aida.engine.ontology as ontology
 import aida.engine.state as state
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import (
@@ -1198,4 +1199,157 @@ def test_endure_con_delta_positivo_no_escala_por_aptitud_gains() -> None:
     assert agente.ledger is not None
     assert agente.ledger.passive[NeedId("n1")] == pytest.approx(0.2)
     assert NeedId("n1") not in agente.ledger.active
+
+
+# =====================================================================
+# Unidad U5a (§6.1 y §6.2 de 12-plan-u5a.md)
+# =====================================================================
+
+
+def test_from_spec_initial_needs_override_pack_default() -> None:
+    """AgentState.from_spec aplica initial_needs sobre el valor por defecto de NeedSpec.
+
+    Ancla de mutación 1: omitir 'needs.update(spec.initial_needs)' provoca que
+    el agente conserve el default del pack (0.2) en vez del override (0.85).
+    """
+    n1 = ontology.NeedSpec(
+        id=ontology.NeedId("n1"),
+        label="Necesidad 1",
+        decay_per_tick=0.1,
+        initial=0.2,
+    )
+    n2 = ontology.NeedSpec(
+        id=ontology.NeedId("n2"),
+        label="Necesidad 2",
+        decay_per_tick=0.1,
+        initial=0.5,
+    )
+    pack = _pack_para_recomposicion(needs=(n1, n2))
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agente_u5a"),
+        label="Agente U5a",
+        initial_needs={"n1": 0.85},
+    )
+
+    agente = state.AgentState.from_spec(pack, spec)
+    # n1 fue sobreescrito a 0.85 (no el 0.2 default del pack)
+    assert agente.needs[ontology.NeedId("n1")] == pytest.approx(0.85)
+    # n2 conservó el default del pack (0.5)
+    assert agente.needs[ontology.NeedId("n2")] == pytest.approx(0.5)
+
+
+def test_from_spec_goals_initialization_locked_vs_active() -> None:
+    """AgentState.from_spec inicia metas dependientes en LOCKED e independientes en ACTIVE.
+
+    Ancla de mutación 2: invertir la condición LOCKED/ACTIVE provoca que la meta independiente
+    nazca LOCKED y la dependiente nazca ACTIVE.
+    """
+    g_raiz = ontology.GoalSpec(
+        id=ontology.GoalId("meta_raiz"),
+        label="Meta Raíz",
+        need=ontology.NeedId("n1"),
+        at_least=0.8,
+        requires_goal=None,
+    )
+    g_dep = ontology.GoalSpec(
+        id=ontology.GoalId("meta_dependiente"),
+        label="Meta Dependiente",
+        need=ontology.NeedId("n1"),
+        at_least=0.8,
+        requires_goal=ontology.GoalId("meta_raiz"),
+    )
+    pack = _pack_para_recomposicion()
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agente_metas"),
+        label="Agente Metas",
+        goals=(g_raiz, g_dep),
+    )
+
+    agente = state.AgentState.from_spec(pack, spec)
+    assert agente.goals[ontology.GoalId("meta_raiz")] is ontology.GoalStatus.ACTIVE
+    assert agente.goals[ontology.GoalId("meta_dependiente")] is ontology.GoalStatus.LOCKED
+
+
+def test_from_spec_calls_recompose_and_initializes_temperament_and_tastes() -> None:
+    """AgentState.from_spec llama a recompose y copia diccionarios defensivamente.
+
+    Ancla de mutación 3: omitir 'agent.recompose(pack)' deja 'temperament is None'.
+    """
+    pack = _pack_para_recomposicion()
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agente_tastes"),
+        label="Agente Tastes",
+        traits={"t1": 0.5},
+        tastes=(ontology.TasteSpec(target="act1", multiplier=1.8),),
+    )
+
+    agente = state.AgentState.from_spec(pack, spec)
+    # Recompose fue invocado
+    assert agente.temperament is not None
+    assert agente.temperament.loss_aversion is not None
+    assert agente.need_weights != {}
+    assert agente.gains != {}
+    assert agente.costs != {}
+    assert agente.caps != {}
+
+    # Gustos compuestos correctamente
+    assert agente.tastes == {"act1": 1.8}
+
+    # Copia defensiva de rasgos
+    assert agente.traits == {ontology.TraitId("t1"): 0.5}
+    agente.traits[ontology.TraitId("t1")] = 0.9
+    assert spec.traits[ontology.TraitId("t1")] == 0.5
+
+
+def test_advance_decrements_ticks_remaining() -> None:
+    """AgentState.advance consume 1 tick de la acción en curso preservando performing.
+
+    Ancla de mutación 4: sustituir ticks_remaining - 1 por ticks_remaining - 2
+    produce ticks_remaining == 1 en lugar de 2.
+    """
+    agente = _agent({ontology.NeedId("n1"): 0.5})
+    agente.performing = state.PerformingAction(
+        action=ontology.ActionId("act1"),
+        ticks_remaining=3,
+        total_ticks=3,
+    )
+
+    agente.advance()
+
+    assert agente.performing is not None
+    assert agente.performing.ticks_remaining == 2
+    assert agente.performing.total_ticks == 3
+    assert agente.performing.action == ontology.ActionId("act1")
+
+
+def test_advance_guard_at_zero_preserves_performing_without_crashing() -> None:
+    """AgentState.advance no revienta y preserva performing cuando ticks_remaining == 0.
+
+    Ancla de mutación 5: omitir 'or performing.ticks_remaining == 0' de la guarda
+    intenta decrementar a 0 - 1 = -1, provocando fallo de validación en PerformingAction.
+    """
+    agente = _agent({ontology.NeedId("n1"): 0.5})
+    agente.performing = state.PerformingAction(
+        action=ontology.ActionId("act1"),
+        ticks_remaining=0,
+        total_ticks=3,
+    )
+
+    agente.advance()
+
+    # No debe levantarse excepción y performing debe permanecer intacto con ticks_remaining=0
+    assert agente.performing is not None
+    assert agente.performing.ticks_remaining == 0
+    assert agente.performing.action == ontology.ActionId("act1")
+
+
+def test_advance_with_performing_none_does_nothing() -> None:
+    """AgentState.advance cuando performing es None no revienta y mantiene performing=None."""
+    agente = _agent({ontology.NeedId("n1"): 0.5})
+    assert agente.performing is None
+
+    agente.advance()
+
+    assert agente.performing is None
 

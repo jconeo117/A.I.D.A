@@ -1080,3 +1080,89 @@ def test_critical_needs_modulado_por_avance_de_tarea_en_curso_y_switch_cost() ->
     )
     assert decide.critical_needs(exec_late, p) == []
 
+
+# =====================================================================
+# Unidad U5a (§6.3 de 12-plan-u5a.md — I-029 Gustos en la deliberación)
+# =====================================================================
+
+
+def test_tastes_positive_multiplier_scales_utility_proportionally() -> None:
+    """agent.tastes > 1.0 (predilección) modula la utilidad final proporcionalmente (I-029).
+
+    Dadas dos acciones A y B con idéntica utilidad base, un gusto de 1.5 hacia B
+    escala la utilidad de B exactamente por 1.5, haciendo que B gane sobre A.
+    Ancla de mutación 6: si se borra 'util *= agent.tastes.get(str(action.id), 1.0)',
+    las utilidades de A y B resultan idénticas y el test falla.
+    """
+    need_a = _make_need("need_a", initial=0.5, cap=1.0)
+    act_a = _make_action("action_a", satisfies={"need_a": 0.4})
+    act_b = _make_action("action_b", satisfies={"need_a": 0.4})
+    p = _make_pack(needs=[need_a], actions=[act_a, act_b])
+
+    exec_state = _make_execution(p)
+    # Gusto declarado hacia action_b
+    exec_state.agent.tastes = {"action_b": 1.5}
+
+    pool, _ = decide.candidates(exec_state, p)
+    by_id = {d.action: d for d in pool}
+
+    assert ontology.ActionId("action_a") in by_id
+    assert ontology.ActionId("action_b") in by_id
+
+    dec_a = by_id[ontology.ActionId("action_a")]
+    dec_b = by_id[ontology.ActionId("action_b")]
+
+    assert dec_a.utility > 0.0
+    # B está escalada exactamente por 1.5 sobre A
+    assert dec_b.utility == pytest.approx(dec_a.utility * 1.5)
+    assert dec_b.utility > dec_a.utility
+
+
+def test_tastes_aversion_scales_down_and_preserves_negative_sign() -> None:
+    """agent.tastes < 1.0 (aversión) reduce la utilidad proporcionalmente y preserva signo negativo.
+
+    Para una acción de utilidad neta negativa (solo coste), un gusto de 0.5 (aversión)
+    reduce el valor absoluto del coste pero la utilidad permanece estrictamente negativa
+    y más cercana a cero.
+    Para una acción positiva, reduce la utilidad en la proporción declarada.
+    Ancla de mutación 6: si se borra 'util *= agent.tastes.get(...)', ambas utilidades
+    quedan sin escalar y el test falla.
+    """
+    need_a = _make_need("need_a", initial=0.5, cap=1.0)
+    # Acción con solo coste -> utilidad base negativa: - loss_aversion * c
+    act_costly = _make_action("action_costly", costs={"need_a": 0.4})
+    # Acción con beneficio -> utilidad base positiva
+    act_gain = _make_action("action_gain", satisfies={"need_a": 0.4})
+    p = _make_pack(needs=[need_a], actions=[act_costly, act_gain])
+
+    # 1. Sin gustos: medir la utilidad base de ambas
+    exec_neutral = _make_execution(p)
+    pool_neutral, _ = decide.candidates(exec_neutral, p)
+    by_id_neutral = {d.action: d for d in pool_neutral}
+    base_util_costly = by_id_neutral[ontology.ActionId("action_costly")].utility
+    base_util_gain = by_id_neutral[ontology.ActionId("action_gain")].utility
+
+    assert base_util_costly < 0.0
+    assert base_util_gain > 0.0
+
+    # 2. Con aversión (0.5) en ambas
+    exec_averse = _make_execution(p)
+    exec_averse.agent.tastes = {"action_costly": 0.5, "action_gain": 0.5}
+
+    pool_averse, _ = decide.candidates(exec_averse, p)
+    by_id_averse = {d.action: d for d in pool_averse}
+
+    util_costly = by_id_averse[ontology.ActionId("action_costly")].utility
+    util_gain = by_id_averse[ontology.ActionId("action_gain")].utility
+
+    # La acción costosa sigue siendo negativa, pero más cercana a 0
+    assert util_costly == pytest.approx(base_util_costly * 0.5)
+    assert util_costly < 0.0
+    assert util_costly > base_util_costly
+
+    # La acción positiva escala a la baja por 0.5
+    assert util_gain == pytest.approx(base_util_gain * 0.5)
+    assert util_gain > 0.0
+    assert util_gain < base_util_gain
+
+

@@ -203,8 +203,13 @@ def candidates(
     los cinco factores aritméticos, calcula la utilidad y añade un `Decision`.
 
     Fórmula:
-        utilidad = beneficio * novedad * phase_fit * situation_fit
-                   - aversión_al_coste * coste
+        utilidad = (beneficio * novedad * phase_fit * situation_fit
+                     - aversión_al_coste * coste) * gusto
+
+    `gusto` (`agent.tastes`) multiplica la utilidad ya compuesta entera, no
+    un término aislado: es una predilección o aversión hacia ESA acción en
+    concreto, por encima de lo que le pasaría a cualquier agente con las
+    mismas necesidades. Lo ausente vale 1.0 — sin gusto declarado, neutral.
     """
     agent = execution.agent
     if agent.temperament is None:
@@ -230,6 +235,7 @@ def candidates(
         p_fit = phase_fit(action, phase)
         s_fit = situation_fit(action, sit_tuple)
         util = (b * nov * p_fit * s_fit) - agent.temperament.loss_aversion * c
+        util *= agent.tastes.get(str(action.id), 1.0)
 
         pool.append(
             Decision(
