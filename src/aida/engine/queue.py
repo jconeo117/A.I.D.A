@@ -9,6 +9,7 @@ todavía es superficie muerta esperando a que alguien la escriba mal.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from aida.engine.ontology import AgentId
@@ -81,3 +82,34 @@ class EventQueue:
 
     def __len__(self) -> int:
         return len(self._items)
+
+    @property
+    def next_seq(self) -> int:
+        """El próximo número de orden que se asignaría. Parte del estado que
+        hace falta guardar: sin él, un evento nuevo tras cargar podría repetir
+        el número de uno que ya se sacó de la cola antes de guardar."""
+        return self._next_seq
+
+    def pending(self) -> tuple[IncomingEvent, ...]:
+        """Instantánea de TODO lo que espera, venza o no, en orden de
+        llegada. No consume nada — a diferencia de `pop_ready`, es solo para
+        mirar. Es lo que hace falta para guardar el buzón entero, no solo lo
+        que ya está listo para procesarse."""
+        return tuple(self._items)
+
+    @classmethod
+    def restore(
+        cls, *, capacity: int, items: Iterable[IncomingEvent], next_seq: int
+    ) -> EventQueue:
+        """Reconstruye un buzón desde una instantánea guardada.
+
+        `next_seq` se recibe explícito y no se recalcula a partir de
+        `items`: un buzón vacío en el momento de guardar (`items=()`) no
+        puede perder la cuenta de cuántos eventos ya entraron y salieron, o
+        un evento nuevo tras cargar reutilizaría el número de uno que ya se
+        procesó antes de guardar.
+        """
+        queue = cls(capacity=capacity)
+        queue._items = deque(items)
+        queue._next_seq = next_seq
+        return queue
