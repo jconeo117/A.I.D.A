@@ -17,7 +17,6 @@ from pathlib import Path
 
 from aida import __version__
 from aida.engine.explain import explain_deliberation
-from aida.engine.ontology import GoalStatus
 from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
 
@@ -69,21 +68,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
 
             agent_spec = pack.agents[0]
-            needs = {
-                need.id: agent_spec.initial_needs.get(need.id, need.initial)
-                for need in sorted(pack.needs, key=lambda n: str(n.id))
-            }
-            goals = {
-                goal.id: (GoalStatus.LOCKED if goal.requires_goal else GoalStatus.ACTIVE)
-                for goal in agent_spec.goals
-            }
-            agent = AgentState(
-                agent_id=agent_spec.id,
-                needs=needs,
-                traits=dict(agent_spec.traits),
-                goals=goals,
-            )
-            agent.recompose(pack)
+            # `from_spec` es la puerta única de construcción de un agente desde
+            # el pack: necesidades iniciales, metas bloqueadas o activas según
+            # `requires_goal`, gustos y recomposición, todo en un solo sitio.
+            # Rehacerlo aquí a mano fue exactamente lo que dejó a `--explain`
+            # deliberando sin los gustos del agente (`I-044`).
+            agent = AgentState.from_spec(pack, agent_spec)
             execution = ExecutionState(agent=agent, tick=0)
             situations = execution.active_situations(pack.situations)
 

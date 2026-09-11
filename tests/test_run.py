@@ -219,3 +219,68 @@ def test_run_pack_no_invoca_sys_exit_directamente(
     assert main(["--pack", str(pack_file)]) == 0
     assert main(["--pack", str(tmp_path / "no_existe.yaml")]) == 1
 
+
+def test_explain_applies_agent_tastes(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """§6.2: `--explain` utiliza `AgentState.from_spec` y aplica los gustos del agente (I-044).
+
+    Con un gusto de 1.50 hacia `atender_b`, la deliberación mostrada en `--explain`
+    refleja la utilidad modulada (+0.112500 frente a +0.075000) y margen (+0.037500).
+    """
+    pack_yaml = """id: "pack_gusto"
+label: "Pack con gusto declarado"
+needs:
+  - id: "eje_a"
+    label: "Eje A"
+    decay_per_tick: 0.05
+    initial: 0.5
+    cap: 1.0
+  - id: "eje_b"
+    label: "Eje B"
+    decay_per_tick: 0.05
+    initial: 0.5
+    cap: 1.0
+actions:
+  - id: "atender_a"
+    label: "Atender A"
+    duration_ticks: 1
+    reversibility: "reversible"
+    satisfies:
+      eje_a: 0.30
+    effects:
+      eje_a: 0.30
+  - id: "atender_b"
+    label: "Atender B"
+    duration_ticks: 1
+    reversibility: "reversible"
+    satisfies:
+      eje_b: 0.30
+    effects:
+      eje_b: 0.30
+agents:
+  - id: "agente_01"
+    label: "Agente 01"
+    initial_needs:
+      eje_a: 0.50
+      eje_b: 0.50
+    tastes:
+      - target: "atender_b"
+        multiplier: 1.50
+tuning:
+  candidate_pool: 2
+  temperature: 0.01
+"""
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(pack_yaml, encoding="utf-8")
+
+    codigo = main(["--pack", str(pack_file), "--explain"])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "atender_b" in captured.out
+    assert "+0.112500" in captured.out
+    assert "+0.037500" in captured.out
+
+

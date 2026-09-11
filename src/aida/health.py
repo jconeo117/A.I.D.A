@@ -21,16 +21,17 @@ multiplicar por ella en vez de usar `days` tal cual.
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 
-from aida.agents.decide import critical_needs
+from aida.agents.decide import candidates, critical_needs
 from aida.engine.events import EventKind
 from aida.engine.loop import Loop
-from aida.engine.ontology import ActionId, ActionSpec, AgentId
+from aida.engine.ontology import ActionId, AgentSpec, NeedId
 from aida.engine.pack import ContentPack
+from aida.engine.rng import RngSource
+from aida.engine.state import AgentState, ExecutionState
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,10 +65,17 @@ class HealthReport:
     semilla."""
 
     differentiation: float | None = None
-    """Distancia L1 media entre los perfiles de actividad de cada par de
-    fichas de personalidad que el pack declare. `None` si el pack declara
-    menos de dos — no hay con qué comparar, y no es lo mismo que un `0.0`
-    medido de verdad."""
+    """Distancia L1 media entre las PREFERENCIAS de cada par de fichas de
+    personalidad, evaluadas sobre los mismos estados. `None` si el pack
+    declara menos de dos — no hay con qué comparar, y no es lo mismo que un
+    `0.0` medido de verdad.
+
+    Mide carácter, no conducta, y esa distinción no es un matiz: la
+    aleatoriedad se deriva por `agent_id`, así que dos fichas idénticas
+    ACTÚAN distinto por puro azar. Comparar lo que acabaron haciendo daba el
+    mismo número para dos personalidades opuestas que para dos gemelas
+    (`I-045`). Comparar lo que prefieren en el mismo estado da `0.0` exacto
+    entre gemelas."""
 
     def lines(self) -> list[str]:
         """Panel legible, para mirar mientras se calibra."""
@@ -87,29 +95,34 @@ class HealthReport:
         return out
 
 
-def _average_profile(
-    runs: list[Counter[ActionId]], actions: Mapping[ActionId, ActionSpec]
+def _utility_profile(
+    pack: ContentPack, spec: AgentSpec, needs: Mapping[NeedId, float]
 ) -> dict[ActionId, float]:
-    """Perfil de actividad normalizado, promediado entre semillas.
+    """Qué prefiere ESTA ficha de personalidad en ESTE estado, sin azar de por
+    medio.
 
-    Cada semilla se normaliza por separado ANTES de promediar —la fracción
-    que representó cada acción sobre el total de esa semilla, no el conteo
-    bruto—, para que una semilla que por azar completó más acciones no pese
-    más que otra solo por eso.
+    Nace un agente desde el pack, se le impone el estado dado y se leen las
+    utilidades que `candidates` calcula, normalizadas por la suma de sus
+    valores absolutos para que lo que se compare sea la forma de la
+    preferencia y no su escala.
+
+    No interviene el sorteo. Es lo que distingue esta medida de contar lo que
+    cada ficha acabó haciendo: el RNG se deriva por `agent_id`, así que dos
+    fichas idénticas actúan distinto por puro azar, y esa diferencia se colaba
+    entera en la métrica anterior (`I-045`). Aquí dos fichas idénticas dan
+    exactamente el mismo perfil, y cualquier diferencia que aparezca es
+    carácter.
     """
-    fractions: list[dict[ActionId, float]] = []
-    for counts in runs:
-        total = sum(counts.values())
-        if total == 0:
-            continue
-        fractions.append({aid: n / total for aid, n in counts.items()})
-    result: dict[ActionId, float] = {aid: 0.0 for aid in actions}
-    if not fractions:
-        return result
-    for profile in fractions:
-        for aid, frac in profile.items():
-            result[aid] = result.get(aid, 0.0) + frac
-    return {aid: v / len(fractions) for aid, v in result.items()}
+    agent = AgentState.from_spec(pack, spec)
+    agent.needs = dict(needs)
+    agent.refresh_state(pack.need_by_id)
+    agent.recompose(pack)
+    execution = ExecutionState(agent=agent, tick=0, rng=RngSource(0))
+    pool, _ = candidates(execution, pack)
+    norm = sum(abs(decision.utility) for decision in pool)
+    if norm == 0.0:
+        return {decision.action: 0.0 for decision in pool}
+    return {decision.action: decision.utility / norm for decision in pool}
 
 
 def _l1_distance(a: Mapping[ActionId, float], b: Mapping[ActionId, float]) -> float:
@@ -137,15 +150,20 @@ def measure(
     completed_total = 0
     aborted_total = 0
     ever_completed: set[ActionId] = set()
-    profiles: dict[AgentId, list[Counter[ActionId]]] = {}
+    fichas = sorted(pack.agents, key=lambda a: a.id)
+    sampled_states: list[dict[NeedId, float]] = []
 
-    for agent_spec in sorted(pack.agents, key=lambda a: a.id):
+    for agent_spec in fichas:
         for seed in total_seeds:
             loop = Loop.start(
                 pack, agent_spec, seed=seed, inbox_capacity=1, log_window=None
             )
             crisis_ticks = 0
-            completions: Counter[ActionId] = Counter()
+            # Los estados de UNA sola corrida, la de la primera ficha con la
+            # primera semilla, sirven de banco de pruebas común: todas las
+            # fichas se juzgan sobre los mismos estados, así que la
+            # comparación no hereda el azar de la corrida de cada una.
+            muestrear = agent_spec is fichas[0] and seed == total_seeds[0]
 
             for _ in range(total_days):
                 loop.step()
@@ -153,17 +171,17 @@ def measure(
                     crisis_ticks += 1
                 if loop.execution.agent.performing is None:
                     stalls += 1
+                if muestrear:
+                    sampled_states.append(dict(loop.execution.agent.needs))
 
             for event in loop.log:
                 if event.kind is EventKind.ACTION_COMPLETED and event.action is not None:
-                    completions[event.action] += 1
                     ever_completed.add(event.action)
                     completed_total += 1
                 elif event.kind is EventKind.ACTION_ABORTED:
                     aborted_total += 1
 
             crisis_fracs.append(crisis_ticks / total_days if total_days else 0.0)
-            profiles.setdefault(agent_spec.id, []).append(completions)
 
     crisis_time = sum(crisis_fracs) / len(crisis_fracs) if crisis_fracs else 0.0
     denom = completed_total + aborted_total
@@ -171,14 +189,14 @@ def measure(
     unused = frozenset(pack.action_by_id) - ever_completed
 
     differentiation: float | None = None
-    if len(profiles) >= 2:
-        avg_profiles = {
-            aid: _average_profile(runs, pack.action_by_id)
-            for aid, runs in profiles.items()
-        }
+    if len(fichas) >= 2 and sampled_states:
         distances = [
-            _l1_distance(avg_profiles[a], avg_profiles[b])
-            for a, b in combinations(sorted(avg_profiles), 2)
+            _l1_distance(
+                _utility_profile(pack, ficha_a, estado),
+                _utility_profile(pack, ficha_b, estado),
+            )
+            for estado in sampled_states
+            for ficha_a, ficha_b in combinations(fichas, 2)
         ]
         differentiation = sum(distances) / len(distances)
 
