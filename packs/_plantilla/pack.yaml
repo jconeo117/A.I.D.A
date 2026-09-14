@@ -231,6 +231,39 @@ agents:
         multiplier: 1.15
 
 # -----------------------------------------------------------------------------
+# Catálogo cerrado de intenciones (IntentSpec)
+# Frases de referencia contra las que se compara lo que escribe quien pide
+# algo. Reconocer una intención empuja de inmediato la necesidad declarada;
+# no reconocer nada dentro del umbral de confianza deja al agente decidir
+# libremente, como si nadie hubiera dicho nada.
+# -----------------------------------------------------------------------------
+intents:
+  - id: "pedir_liberar_espacio"
+    label: "Pide liberar espacio en disco"
+    need: "espacio_libre"
+    examples:
+      - "libera espacio en disco"
+      - "el disco esta lleno"
+      - "necesito mas espacio libre"
+      - "borra los archivos temporales"
+
+  - id: "pedir_renovar_certificados"
+    label: "Pide renovar certificados"
+    need: "certificados_vigentes"
+    examples:
+      - "renueva los certificados"
+      - "los certificados estan por vencer"
+      - "actualiza las credenciales de acceso"
+
+  - id: "pedir_escalar_replicas"
+    label: "Pide mas redundancia"
+    need: "replicas_al_dia"
+    examples:
+      - "agrega mas replicas"
+      - "el sistema necesita mas redundancia"
+      - "escala el servicio"
+
+# -----------------------------------------------------------------------------
 # Techo de autoridad (AuthoritySpec)
 # Hasta dónde llega el asistente por su cuenta. Lo que queda por encima no se
 # prohíbe: se propone y espera un visto bueno explícito.

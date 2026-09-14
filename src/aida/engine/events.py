@@ -1,7 +1,7 @@
 """Registro de eventos: la única ventana al estado.
 
 Regla dura: **nada muta el estado sin emitir un evento**. Es la fuente de la
-que se alimentará la memoria (U9) y el rastro de auditoría que exige la
+que se alimentará la memoria (U10) y el rastro de auditoría que exige la
 §5.5 del README: quién pidió qué, qué decidió el motor y por qué, qué
 herramienta se llamó con qué argumentos, qué devolvió.
 
@@ -9,7 +9,7 @@ Si un cambio no deja evento, para las capas de arriba ese cambio nunca
 ocurrió.
 
 El log es append-only y cada entrada lleva un `seq` monótono. Ese `seq` es el
-identificador con el que la memoria de U9 referenciará recuerdos, así que no
+identificador con el que la memoria de U10 referenciará recuerdos, así que no
 se reordena ni se reutiliza jamás.
 
 Todo evento tiene un `owner`, sin excepción y sin `None`. Es el criterio G7
@@ -42,7 +42,7 @@ from aida.engine.ontology import ActionId, AgentId
 type Payload = Mapping[str, str | int | float | bool]
 """Datos extra del evento. Deliberadamente plano y sin objetos: el log debe
 poder serializarse a JSONL sin ceremonia, y un briefing para un modelo
-pequeño (U6) se construye mucho mejor desde valores escalares."""
+pequeño (U7) se construye mucho mejor desde valores escalares."""
 
 NO_DATA: Payload = MappingProxyType({})
 """El payload de los eventos que no llevan ninguno, que son la mayoría.
@@ -129,6 +129,13 @@ class EventKind(StrEnum):
     contenido exacto. Es lo que hace verificable el determinismo — ver
     `Event.content` y `Event.digest`."""
 
+    INTENT_CLASSIFIED = "intent_classified"
+    """Se intentó reconocer una entrada del buzón contra el catálogo del
+    pack. `data={"intent": ...}` si se reconoció; sin `data` si quedó
+    desconocida — el silencio en el payload es la señal, igual que
+    `ACTION_EXPIRED` anota el silencio de quien no contesta a una
+    propuesta."""
+
 
 @dataclass(frozen=True, slots=True)
 class Event:
@@ -163,7 +170,7 @@ class Event:
     en `None`.
 
     Va en un campo propio y no dentro de `data`: `data` es un mapa de
-    escalares cortos pensado para un briefing (U6), y una entrada de fuera
+    escalares cortos pensado para un briefing (U7), y una entrada de fuera
     puede ser texto arbitrario y grande. Mezclarlos arriesgaría que un
     consumidor de `data` trunque o normalice sin querer el único registro
     que tiene que sobrevivir intacto.
@@ -258,12 +265,12 @@ la ventana retenga un poco más de lo pedido, nunca menos."""
 class EventLog:
     """Append-only, con un índice por dueño para la consulta que el motor
     hará de verdad: "¿qué le ha pasado a este dueño?". Es la base del
-    aislamiento entre dueños y de la memoria episódica de U9. Construirlo al
+    aislamiento entre dueños y de la memoria episódica de U10. Construirlo al
     insertar cuesta nada; reconstruirlo después obliga a recorrer el log
     entero en cada consulta.
 
     **La ventana.** Con `window` en ticks, el log conserva solo lo reciente.
-    No es solo un apaño de memoria: la memoria de U9 va a leer de aquí, y
+    No es solo un apaño de memoria: la memoria de U10 va a leer de aquí, y
     nada se recuerda indefinidamente. Se saca lo saliente de una ventana, no
     de un archivo perpetuo.
 
@@ -327,7 +334,7 @@ class EventLog:
         event = Event(
             # `_evicted +` y no `len(self._events)` a secas: lo segundo
             # reiniciaría la numeración cada vez que la ventana descarta, y
-            # `seq` es la clave con la que la memoria de U9 referenciará
+            # `seq` es la clave con la que la memoria de U10 referenciará
             # recuerdos.
             seq=self._evicted + len(self._events),
             tick=tick,
@@ -412,7 +419,7 @@ class EventLog:
 
     def by_owner(self, owner: AgentId) -> list[Event]:
         """Todo lo que le ha pasado a este dueño. Base de la memoria
-        episódica (U9) y del aislamiento entre dueños."""
+        episódica (U10) y del aislamiento entre dueños."""
         return [self[seq] for seq in self._by_owner.get(owner, ())]
 
     def since(self, tick: int) -> list[Event]:

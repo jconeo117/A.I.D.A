@@ -31,6 +31,7 @@ import aida.engine.events as events
 import aida.engine.loop as loop
 import aida.engine.ontology as ontology
 import aida.engine.pack as pack
+from aida.intent.classify import build_classifier
 
 
 def _make_need(
@@ -95,6 +96,7 @@ def _make_pack(
     loss_aversion: float = 1.0,
     strain_multipliers: dict[ontology.TemperamentKnob, float] | None = None,
     agent_spec: ontology.AgentSpec | None = None,
+    intents: list[ontology.IntentSpec] | None = None,
 ) -> pack.ContentPack:
     tuning = ontology.TuningSpec(
         critical_need_threshold=critical_need_threshold,
@@ -118,6 +120,7 @@ def _make_pack(
         actions=actions,
         agents=[agent_spec],
         tuning=tuning,
+        intents=intents or [],
     )
 
 
@@ -906,5 +909,316 @@ def test_loop_expiration_cycle_emits_event_and_reproposes_if_needed() -> None:
     assert props[1].tick == 3
     assert props[1].data == {"expires_at": 5}
     assert assist.authority.pending[ontology.ActionId("peligrosa")] == 5
+
+
+# ---------------------------------------------------------------------------
+# Puerto de intención (U6)
+# ---------------------------------------------------------------------------
+
+
+def test_step_intent_forces_must_address() -> None:
+    """Una intención reconocida en el buzón fuerza deliberación con must_address.
+
+    Protege las mutaciones M11 y M12: en ausencia de intención, el agente elegiría
+    la acción de mayor utilidad (act_a para satisfacer n_a). n_a arranca en 0.45,
+    por encima del umbral crítico por defecto (0.4), para que no sea la emergencia
+    quien gane: así se aísla que el cambio de elección venga solo de la petición.
+    Al clasificar un mensaje que coincide con la intención hacia n_b, forced toma
+    el valor de requested y la deliberación se restringe a acciones que satisfagan
+    n_b (act_b), emitiendo INTENT_CLASSIFIED con el id de la intención.
+    """
+    n_a = _make_need("n_a", initial=0.45, decay_per_tick=0.01)
+    n_b = _make_need("n_b", initial=0.9, decay_per_tick=0.01)
+    act_a = _make_action("act_a", duration_ticks=1, satisfies={"n_a": 0.8}, effects={"n_a": 0.8})
+    act_b = _make_action("act_b", duration_ticks=1, satisfies={"n_b": 0.8}, effects={"n_b": 0.8})
+
+    intent_b = ontology.IntentSpec(
+        id=ontology.IntentId("intent_b"),
+        label="Peticion B",
+        need=ontology.NeedId("n_b"),
+        examples=("atender necesidad b",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_a": 0.45, "n_b": 0.9},
+    )
+    p = _make_pack([n_a, n_b], [act_a, act_b], agent_spec=spec, intents=[intent_b])
+    classifier = build_classifier(p)
+    assist = loop.Loop.start(p, spec, seed=42, inbox_capacity=5, intent=classifier)
+
+    # Empuja al buzón texto que coincide con intent_b para el tick 1
+    assist.inbox.push(tick=1, owner=spec.id, content="atender necesidad b")
+    assist.step()
+
+    # Verifica emisión de INTENT_CLASSIFIED con data={"intent": "intent_b"}
+    intent_events = assist.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+    assert len(intent_events) == 1
+    assert intent_events[0].data == {"intent": "intent_b"}
+
+    # Verifica que arrancó act_b (forzada por must_address) y no act_a
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 1
+    assert started_events[0].action == ontology.ActionId("act_b")
+
+
+def test_step_intent_unknown_input_does_not_force() -> None:
+    """Una entrada desconocida no fuerza ninguna necesidad y el agente delibera libre.
+
+    Protege la mutación M11: el clasificador emite INTENT_CLASSIFIED con data={}
+    (silencio en el payload al no superar el umbral de confianza), forced queda en None,
+    y el agente arranca la acción de mayor utilidad libre (act_a para aliviar n_a).
+    """
+    n_a = _make_need("n_a", initial=0.1, decay_per_tick=0.01)
+    n_b = _make_need("n_b", initial=0.9, decay_per_tick=0.01)
+    act_a = _make_action("act_a", duration_ticks=1, satisfies={"n_a": 0.8}, effects={"n_a": 0.8})
+    act_b = _make_action("act_b", duration_ticks=1, satisfies={"n_b": 0.8}, effects={"n_b": 0.8})
+
+    intent_b = ontology.IntentSpec(
+        id=ontology.IntentId("intent_b"),
+        label="Peticion B",
+        need=ontology.NeedId("n_b"),
+        examples=("atender necesidad b",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_a": 0.1, "n_b": 0.9},
+    )
+    p = _make_pack([n_a, n_b], [act_a, act_b], agent_spec=spec, intents=[intent_b])
+    classifier = build_classifier(p)
+    assist = loop.Loop.start(p, spec, seed=42, inbox_capacity=5, intent=classifier)
+
+    # Empuja al buzón texto no relacionado
+    assist.inbox.push(tick=1, owner=spec.id, content="mensaje completamente desconocido")
+    assist.step()
+
+    # Verifica INTENT_CLASSIFIED sin payload
+    intent_events = assist.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+    assert len(intent_events) == 1
+    assert intent_events[0].data == {}
+
+    # Deliberación libre: gana act_a
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 1
+    assert started_events[0].action == ontology.ActionId("act_a")
+
+
+def test_step_intent_emergency_overrides_intent() -> None:
+    """Una emergencia crítica tiene prioridad absoluta y sobreescribe una intención reconocida.
+
+    Protege la mutación M13: si coincide en el mismo tick una intención reconocida
+    hacia la necesidad C con una caída de la necesidad D por debajo del umbral crítico,
+    el agente aborta la acción en curso por la emergencia (ACTION_ABORTED con data={"need": "n_d"}),
+    y forced toma el valor de la necesidad crítica urgente, haciendo que arranque
+    la acción de alivio de D y no la de C.
+    """
+    n_work = _make_need("n_work", initial=0.5, decay_per_tick=0.01)
+    n_crit = _make_need("n_d", initial=0.8, decay_per_tick=0.25, urgent_when_low=True)
+    n_intent = _make_need("n_c", initial=0.5, decay_per_tick=0.01)
+
+    act_work = _make_action(
+        "act_work",
+        duration_ticks=5,
+        interruptible=True,
+        satisfies={"n_work": 0.8},
+        effects={"n_work": 0.8},
+    )
+    act_relief = _make_action(
+        "act_relief",
+        duration_ticks=1,
+        interruptible=True,
+        satisfies={"n_d": 0.5},
+        effects={"n_d": 0.5},
+    )
+    act_intent = _make_action(
+        "act_intent",
+        duration_ticks=1,
+        interruptible=True,
+        satisfies={"n_c": 0.5},
+        effects={"n_c": 0.5},
+    )
+
+    intent_c = ontology.IntentSpec(
+        id=ontology.IntentId("intent_c"),
+        label="Intent C",
+        need=ontology.NeedId("n_c"),
+        examples=("solicitar c",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_work": 0.5, "n_d": 0.8, "n_c": 0.5},
+        tastes=(ontology.TasteSpec(target="act_work", multiplier=5.0),),
+    )
+    p = _make_pack(
+        [n_work, n_crit, n_intent],
+        [act_work, act_relief, act_intent],
+        critical_need_threshold=0.4,
+        switch_cost=0.0,
+        agent_spec=spec,
+        intents=[intent_c],
+    )
+    classifier = build_classifier(p)
+    assist = loop.Loop.start(p, spec, seed=42, inbox_capacity=5, intent=classifier)
+
+    # Tick 1: arranca act_work (larga)
+    assist.step()
+    assert assist.execution.agent.performing is not None
+    assert assist.execution.agent.performing.action == ontology.ActionId("act_work")
+
+    # Tick 2: entra petición para intent_c y n_d decae a 0.30 (< 0.40 crítico)
+    assist.inbox.push(tick=2, owner=spec.id, content="solicitar c")
+    assist.step()
+
+    # Verifica que se abortó por n_d
+    aborted_events = assist.log.of_kind(events.EventKind.ACTION_ABORTED)
+    assert len(aborted_events) == 1
+    assert aborted_events[0].data == {"need": "n_d"}
+
+    # Verifica que la nueva acción iniciada atiende n_d (act_relief) y no n_c (act_intent)
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 2
+    assert started_events[1].action == ontology.ActionId("act_relief")
+
+
+def test_step_stopped_agent_emergency_beats_recognized_request() -> None:
+    """I-053 (opción A): con el agente parado, una necesidad crítica gana a
+    una petición reconocida en el mismo tick.
+
+    Sin esto, el bloque de _begin al final de step() usaría `forced =
+    requested` sin más, y una intención reconocida ganaría a una emergencia
+    con el agente ya parado (a diferencia del caso con acción en curso, que
+    el aborto ya cubre).
+    """
+    n_d = _make_need("n_d", initial=0.1, decay_per_tick=0.01, urgent_when_low=True)
+    n_c = _make_need("n_c", initial=0.5, decay_per_tick=0.01)
+    act_relief = _make_action("act_relief", duration_ticks=1, satisfies={"n_d": 0.5})
+    act_intent = _make_action("act_intent", duration_ticks=1, satisfies={"n_c": 0.5})
+
+    intent_c = ontology.IntentSpec(
+        id=ontology.IntentId("intent_c"),
+        label="Intent C",
+        need=ontology.NeedId("n_c"),
+        examples=("solicitar c",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_d": 0.1, "n_c": 0.5},
+    )
+    p = _make_pack(
+        [n_d, n_c],
+        [act_relief, act_intent],
+        critical_need_threshold=0.4,
+        agent_spec=spec,
+        intents=[intent_c],
+    )
+    classifier = build_classifier(p)
+    assist = loop.Loop.start(p, spec, seed=42, inbox_capacity=5, intent=classifier)
+
+    assist.inbox.push(tick=1, owner=spec.id, content="solicitar c")
+    assist.step()
+
+    intent_events = assist.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+    assert len(intent_events) == 1
+    assert intent_events[0].data == {"intent": "intent_c"}
+
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 1
+    assert started_events[0].action == ontology.ActionId("act_relief")
+
+
+def test_step_unmapped_intent_id_forces_nothing() -> None:
+    """I-055: un id de intención fuera del catálogo del pack no fuerza nada.
+
+    Un clasificador de prueba que siempre devuelve un id inexistente no debe
+    colar por defecto la primera intención del pack (`pack.intents[0]`):
+    debe comportarse como si no hubiera reconocido nada.
+    """
+
+    class _ClasificadorInventado:
+        def classify(self, utterance: str) -> str | None:
+            return "intent_inexistente"
+
+    n_a = _make_need("n_a", initial=0.45, decay_per_tick=0.01)
+    n_b = _make_need("n_b", initial=0.9, decay_per_tick=0.01)
+    act_a = _make_action("act_a", duration_ticks=1, satisfies={"n_a": 0.8}, effects={"n_a": 0.8})
+    act_b = _make_action("act_b", duration_ticks=1, satisfies={"n_b": 0.8}, effects={"n_b": 0.8})
+
+    intent_b = ontology.IntentSpec(
+        id=ontology.IntentId("intent_b"),
+        label="Peticion B",
+        need=ontology.NeedId("n_b"),
+        examples=("atender necesidad b",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_a": 0.45, "n_b": 0.9},
+    )
+    p = _make_pack([n_a, n_b], [act_a, act_b], agent_spec=spec, intents=[intent_b])
+    assist = loop.Loop.start(
+        p, spec, seed=42, inbox_capacity=5, intent=_ClasificadorInventado()
+    )
+
+    assist.inbox.push(tick=1, owner=spec.id, content="cualquier cosa")
+    assist.step()
+
+    intent_events = assist.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+    assert len(intent_events) == 1
+    assert intent_events[0].data == {}
+
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 1
+    assert started_events[0].action == ontology.ActionId("act_a")
+
+
+def test_step_without_intent_classifier_leaves_behavior_unchanged() -> None:
+    """Sin clasificador en Loop.start (intent=None), la deliberación opera como en U5a/U8.
+
+    Si llega un mensaje al buzón cuya frase coincidiría si hubiese clasificador,
+    se emite INPUT_OBSERVED pero jamás INTENT_CLASSIFIED, y el agente delibera
+    libremente por máxima utilidad.
+    """
+    n_a = _make_need("n_a", initial=0.1, decay_per_tick=0.01)
+    n_b = _make_need("n_b", initial=0.9, decay_per_tick=0.01)
+    act_a = _make_action("act_a", duration_ticks=1, satisfies={"n_a": 0.8}, effects={"n_a": 0.8})
+    act_b = _make_action("act_b", duration_ticks=1, satisfies={"n_b": 0.8}, effects={"n_b": 0.8})
+
+    intent_b = ontology.IntentSpec(
+        id=ontology.IntentId("intent_b"),
+        label="Peticion B",
+        need=ontology.NeedId("n_b"),
+        examples=("atender necesidad b",),
+    )
+
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agent_01"),
+        label="A1",
+        initial_needs={"n_a": 0.1, "n_b": 0.9},
+    )
+    p = _make_pack([n_a, n_b], [act_a, act_b], agent_spec=spec, intents=[intent_b])
+
+    # Loop sin clasificador (intent=None)
+    assist = loop.Loop.start(p, spec, seed=42, inbox_capacity=5, intent=None)
+
+    assist.inbox.push(tick=1, owner=spec.id, content="atender necesidad b")
+    assist.step()
+
+    # Se observó la entrada pero no se clasificó
+    assert len(assist.log.of_kind(events.EventKind.INPUT_OBSERVED)) == 1
+    assert len(assist.log.of_kind(events.EventKind.INTENT_CLASSIFIED)) == 0
+
+    # Arrancó la acción de mayor utilidad libre (act_a)
+    started_events = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(started_events) == 1
+    assert started_events[0].action == ontology.ActionId("act_a")
+
 
 

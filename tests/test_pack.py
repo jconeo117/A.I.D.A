@@ -777,6 +777,246 @@ def test_check_taste_refs_admite_gusto_hacia_accion_o_agente() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 15. Intenciones (IntentSpec y _check_intents_are_actionable)
+# ---------------------------------------------------------------------------
+
+
+def test_pack_with_valid_intents_loads_and_indexes_by_id() -> None:
+    """Un pack con intenciones válidas carga correctamente y se indexa en intent_by_id.
+
+    Verifica que la propiedad cacheada exponga un mapeo por IntentId al IntentSpec
+    correspondiente.
+    """
+    p = build_pack(
+        intents=[
+            {
+                "id": "pedir_cpu",
+                "label": "Pide optimizar CPU",
+                "need": "cpu",
+                "examples": ["optimiza la cpu", "el procesador esta al limite"],
+            }
+        ]
+    )
+    assert len(p.intents) == 1
+    intent = p.intent_by_id[ontology.IntentId("pedir_cpu")]
+    assert intent.need == ontology.NeedId("cpu")
+    assert len(intent.examples) == 2
+
+
+def test_pack_duplicate_intent_ids_rejected() -> None:
+    """Dos intenciones con el mismo identificador son rechazadas por unicidad.
+
+    Protege la mutación M7: si _check_unique_ids omite la colección de intenciones,
+    identificadores repetidos colisionarían en intent_by_id silenciosamente.
+    """
+    expect_rejection(
+        "id duplicado",
+        intents=[
+            {
+                "id": "intent_duplicado",
+                "label": "Intencion 1",
+                "need": "cpu",
+                "examples": ["frase uno"],
+            },
+            {
+                "id": "intent_duplicado",
+                "label": "Intencion 2",
+                "need": "cpu",
+                "examples": ["frase dos"],
+            },
+        ],
+    )
+
+
+def test_pack_intent_with_unknown_need_rejected() -> None:
+    """Una intención que referencia una necesidad desconocida es rechazada.
+
+    Protege la mutación M8: si _check_need_refs omite las intenciones, se permitiría
+    crear intenciones que apuntan a necesidades que no existen en el pack.
+    """
+    expect_rejection(
+        "necesidad desconocida",
+        intents=[
+            {
+                "id": "intent_huerfano",
+                "label": "Intencion huerfana",
+                "need": "necesidad_inexistente",
+                "examples": ["peticion huerfana"],
+            }
+        ],
+    )
+
+
+def test_pack_intent_with_unreachable_need_rejected() -> None:
+    """Una intención cuya necesidad no es aumentada por ninguna acción es rechazada.
+
+    Protege las mutaciones M9 y M10: reconocer una intención que ninguna acción
+    sube dejaría al agente bloqueado. Requiere sobreescribir actions para aislar
+    una acción que solo sube 'cpu' (y baja 'memoria' con delta=-0.1), sobreescribir
+    health={} para evitar que _check_health_refs falle antes por may_go_unused,
+    y apuntar la intención a 'memoria'.
+    """
+    actions_cpu_only = [a for a in base_pack_dict()["actions"] if a["id"] == "optimizar_cpu"]
+    expect_rejection(
+        "nunca llevaría a nada",
+        actions=actions_cpu_only,
+        health={},
+        intents=[
+            {
+                "id": "pedir_memoria_inalcanzable",
+                "label": "Pide memoria pero nadie la sube",
+                "need": "memoria",
+                "examples": ["necesito mas memoria"],
+            }
+        ],
+    )
+
+
+def test_pack_intent_with_need_only_moved_by_effects_rejected() -> None:
+    """Una intención hacia un eje que solo sube por `effects` (nunca por
+    `satisfies`) es rechazada: reconocerla activaría `must_address`, pero
+    `_deliberate` filtra por `satisfies` y el agente se quedaría parado.
+
+    Protege I-052: `_check_intents_are_actionable` debe filtrar por
+    `satisfies`, no por `effects`.
+    """
+    expect_rejection(
+        "nunca llevaría a nada",
+        needs=[
+            {"id": "n_a", "label": "N A", "decay_per_tick": 0.01, "initial": 0.5},
+            {"id": "n_b", "label": "N B", "decay_per_tick": 0.01, "initial": 0.5},
+        ],
+        actions=[
+            {
+                "id": "act_a",
+                "label": "Act A",
+                "duration_ticks": 1,
+                "reversibility": "reversible",
+                "satisfies": {"n_a": 0.8},
+                "effects": {"n_a": 0.8},
+            },
+            {
+                "id": "act_b",
+                "label": "Act B",
+                "duration_ticks": 1,
+                "reversibility": "reversible",
+                "satisfies": {},
+                "effects": {"n_b": 0.8},
+            },
+        ],
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "initial_needs": {"n_a": 0.5, "n_b": 0.5},
+            }
+        ],
+        traits=[],
+        phases=[],
+        situations=[],
+        goals=[],
+        health={},
+        intents=[
+            {
+                "id": "intent_b",
+                "label": "Intencion B",
+                "need": "n_b",
+                "examples": ["pedir b"],
+            }
+        ],
+    )
+
+
+def test_pack_intent_with_need_only_moved_by_negative_satisfies_rejected() -> None:
+    """Una intención hacia un eje que solo `satisfies` en negativo es rechazada.
+
+    `ActionSpec` admite `satisfies` negativo, y `_deliberate` solo deja pasar
+    acciones con `satisfies.get(need, 0.0) > 0.0`. Si la carga contara
+    cualquier valor distinto de cero (`!= 0.0`), daría por atendible una
+    intención que en ejecución deja al agente parado (I-059).
+    """
+    expect_rejection(
+        "nunca llevaría a nada",
+        needs=[
+            {"id": "n_a", "label": "N A", "decay_per_tick": 0.01, "initial": 0.5},
+            {"id": "n_b", "label": "N B", "decay_per_tick": 0.01, "initial": 0.5},
+        ],
+        actions=[
+            {
+                "id": "act_a",
+                "label": "Act A",
+                "duration_ticks": 1,
+                "reversibility": "reversible",
+                "satisfies": {"n_a": 0.8},
+                "effects": {"n_a": 0.8},
+            },
+            {
+                "id": "act_b",
+                "label": "Act B",
+                "duration_ticks": 1,
+                "reversibility": "reversible",
+                "satisfies": {"n_b": -0.5},
+                "effects": {"n_b": 0.8},
+            },
+        ],
+        agents=[
+            {
+                "id": "agente_monitor",
+                "label": "Monitor",
+                "initial_needs": {"n_a": 0.5, "n_b": 0.5},
+            }
+        ],
+        traits=[],
+        phases=[],
+        situations=[],
+        goals=[],
+        health={},
+        intents=[
+            {
+                "id": "intent_b",
+                "label": "Intencion B",
+                "need": "n_b",
+                "examples": ["pedir b"],
+            }
+        ],
+    )
+
+
+def test_intent_spec_empty_examples_raises_validation_error() -> None:
+    """IntentSpec con tupla vacía de ejemplos viola la restricción min_length=1.
+
+    Sin ejemplos no hay contra qué comparar; pydantic debe rechazar de raíz
+    la construcción directa sin necesidad de llegar a la validación del pack.
+    """
+    with pytest.raises(ValidationError):
+        ontology.IntentSpec(
+            id=ontology.IntentId("intent_sin_ejemplos"),
+            label="Sin ejemplos",
+            need=ontology.NeedId("cpu"),
+            examples=(),
+        )
+
+
+def test_pack_intent_with_blank_example_rejected() -> None:
+    """Una intención con un ejemplo compuesto exclusivamente por espacios es rechazada.
+
+    Protege la mutación M6: un ejemplo en blanco nunca coincidiría con una
+    entrada real de usuario y fallaría en silencio en ejecución si no se valida.
+    """
+    expect_rejection(
+        "está en blanco",
+        intents=[
+            {
+                "id": "intent_ejemplo_blanco",
+                "label": "Ejemplo en blanco",
+                "need": "cpu",
+                "examples": ["   \t  "],
+            }
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # 10. _check_costs_are_declared
 # ---------------------------------------------------------------------------
 
@@ -1037,7 +1277,17 @@ def test_describe_pack_retorna_conteo_exacto_por_coleccion() -> None:
         "phases": 1,
         "situations": 1,
         "goals": 1,
+        "intents": 0,
     }
+
+
+def test_describe_pack_plantilla_reporta_tres_intenciones() -> None:
+    """I-056.3: describe_pack cuenta las intenciones reales del pack de
+    plantilla, no un valor fijo.
+    """
+    ruta_plantilla = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
+    p = pack.load_pack(ruta_plantilla)
+    assert pack.describe_pack(p)["intents"] == 3
 
 
 def test_load_pack_carga_pack_valido_desde_archivo(tmp_path: Path) -> None:

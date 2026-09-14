@@ -31,6 +31,8 @@ from aida.engine.ontology import (
     GoalId,
     GoalSpec,
     HealthSpec,
+    IntentId,
+    IntentSpec,
     NeedId,
     NeedSpec,
     PhaseId,
@@ -62,6 +64,7 @@ class ContentPack(Spec):
     phases: tuple[PhaseSpec, ...] = ()
     situations: tuple[SituationSpec, ...] = ()
     goals: tuple[GoalSpec, ...] = ()
+    intents: tuple[IntentSpec, ...] = ()
 
     authority: AuthoritySpec = Field(default_factory=AuthoritySpec)
     health: HealthSpec = Field(default_factory=HealthSpec)
@@ -107,6 +110,10 @@ class ContentPack(Spec):
     def goal_by_id(self) -> dict[GoalId, GoalSpec]:
         return {goal.id: goal for goal in self.goals}
 
+    @cached_property
+    def intent_by_id(self) -> dict[IntentId, IntentSpec]:
+        return {intent.id: intent for intent in self.intents}
+
     # -------------------------------------------------------------------------
     # Métodos auxiliares de validación
     # -------------------------------------------------------------------------
@@ -135,7 +142,7 @@ class ContentPack(Spec):
         ]
 
     # -------------------------------------------------------------------------
-    # Las 14 comprobaciones deterministas
+    # Las 15 comprobaciones deterministas
     # -------------------------------------------------------------------------
 
     def _check_unique_ids(self) -> list[str]:
@@ -148,6 +155,7 @@ class ContentPack(Spec):
             *self._duplicates("franjas", (p.id for p in self.phases)),
             *self._duplicates("situaciones", (s.id for s in self.situations)),
             *self._duplicates("metas", (g.id for g in self.goals)),
+            *self._duplicates("intenciones", (i.id for i in self.intents)),
         ]
         for agent in self.agents:
             problems += self._duplicates(f"metas de {agent.id!r}", (g.id for g in agent.goals))
@@ -224,6 +232,12 @@ class ContentPack(Spec):
             problems += self._unknown_keys(
                 f"agente {agent.id!r}.initial_needs", "necesidad", agent.initial_needs, known
             )
+
+        for intent in self.intents:
+            if str(intent.need) not in known:
+                problems.append(
+                    f"intención {intent.id!r}: necesidad desconocida {intent.need!r}"
+                )
 
         return problems
 
@@ -414,6 +428,31 @@ class ContentPack(Spec):
 
         return problems
 
+    def _check_intents_are_actionable(self) -> list[str]:
+        """Toda intención reconocida debe poder atenderse: alguna acción
+        tiene que subir el eje que declara, o reconocerla nunca llevaría a
+        nada — el agente se quedaría parado el tick en que alguien la
+        dijera, esperando una acción que el catálogo no tiene.
+
+        Se filtra por `satisfies`, no por `effects`: reconocer la intención
+        activa `must_address`, y `_deliberate` (`src/aida/agents/decide.py`)
+        filtra por `satisfies`. Una acción que solo sube el eje en `effects`
+        nunca entra en ese filtro, así que comprobar `effects` aquí daría
+        por válido un pack que en ejecución deja al agente parado.
+        """
+        movidas = {
+            need
+            for action in self.actions
+            for need, delta in action.satisfies.items()
+            if delta > 0.0
+        }
+        return [
+            f"intención {intent.id!r}: ninguna acción sube {intent.need!r}, así "
+            f"que reconocerla nunca llevaría a nada"
+            for intent in self.intents
+            if intent.need not in movidas
+        ]
+
     def _check_taste_refs(self) -> list[str]:
         """Todo gusto apunta a una acción o agente que existe."""
         known = (
@@ -560,6 +599,7 @@ class ContentPack(Spec):
             *self._check_situation_refs(),
             *self._check_goal_refs(),
             *self._check_goals_are_reachable(),
+            *self._check_intents_are_actionable(),
             *self._check_taste_refs(),
             *self._check_costs_are_declared(),
             *self._check_requirements_cover_what_they_spend(),
@@ -605,4 +645,5 @@ def describe_pack(pack: ContentPack) -> Mapping[str, int]:
         "phases": len(pack.phases),
         "situations": len(pack.situations),
         "goals": len(pack.goals),
+        "intents": len(pack.intents),
     }

@@ -23,8 +23,9 @@ from aida.agents.decide import critical_need, decide
 from aida.engine.authority import Authority
 from aida.engine.clock import next_wake
 from aida.engine.events import EventKind, EventLog
-from aida.engine.ontology import ActionId, AgentSpec, NeedId
+from aida.engine.ontology import ActionId, AgentSpec, IntentId, NeedId
 from aida.engine.pack import ContentPack
+from aida.engine.ports import IntentClassifier
 from aida.engine.queue import EventQueue
 from aida.engine.rng import RngSource
 from aida.engine.state import AgentState, ExecutionState, PerformingAction
@@ -39,6 +40,14 @@ class Loop:
     log: EventLog
     inbox: EventQueue
     authority: Authority
+    intent: IntentClassifier | None = None
+    """Quien clasifica el contenido del buzón contra el catálogo del pack.
+    `None` si no hay ninguno: `Loop` no construye uno por su cuenta —
+    `aida.intent.classify.build_classifier(pack)` vive fuera del motor y
+    quien instancia el `Loop` decide si lo pasa, igual que ya pasa con
+    `Authority`/`AuthoritySpec`. Así `engine/` nunca importa `aida.intent`,
+    solo el `Protocol` que ya declaraba `ports.py`.
+    """
 
     @classmethod
     def start(
@@ -49,6 +58,7 @@ class Loop:
         seed: int,
         inbox_capacity: int,
         log_window: int | None = None,
+        intent: IntentClassifier | None = None,
     ) -> Loop:
         """Arranca un agente nuevo a partir de lo que el pack declaró para él."""
         agent = AgentState.from_spec(pack, spec)
@@ -59,6 +69,7 @@ class Loop:
             log=EventLog(log_window),
             inbox=EventQueue(capacity=inbox_capacity),
             authority=Authority(spec=pack.authority),
+            intent=intent,
         )
 
     def next_wake(self) -> int:
@@ -72,6 +83,7 @@ class Loop:
         agent = self.execution.agent
         pack = self.pack
 
+        requested: NeedId | None = None
         for item in self.inbox.pop_ready(tick):
             self.log.emit(
                 tick=tick,
@@ -79,6 +91,28 @@ class Loop:
                 owner=agent.agent_id,
                 content=item.content,
             )
+            if self.intent is None:
+                continue
+            intent_id = self.intent.classify(item.content)
+            matched = (
+                pack.intent_by_id.get(IntentId(intent_id))
+                if intent_id is not None
+                else None
+            )
+            if matched is not None:
+                requested = matched.need
+                self.log.emit(
+                    tick=tick,
+                    kind=EventKind.INTENT_CLASSIFIED,
+                    owner=agent.agent_id,
+                    data={"intent": str(matched.id)},
+                )
+            else:
+                self.log.emit(
+                    tick=tick,
+                    kind=EventKind.INTENT_CLASSIFIED,
+                    owner=agent.agent_id,
+                )
 
         for caducada in self.authority.expired(tick):
             self.log.emit(
@@ -96,7 +130,7 @@ class Loop:
         agent.refresh_state(pack.need_by_id)
         agent.recompose(pack)
 
-        forced: NeedId | None = None
+        forced: NeedId | None = requested
         performing = agent.performing
         if performing is not None:
             agent.advance()
@@ -113,6 +147,12 @@ class Loop:
                     forced = urgent
 
         if self.execution.agent.performing is None:
+            # El aborto de arriba ya hace ganar a la emergencia cuando hay
+            # algo en curso; esto cubre el caso del agente parado.
+            if requested is not None and forced == requested:
+                urgent = critical_need(self.execution, pack)
+                if urgent is not None:
+                    forced = urgent
             self._begin(forced)
 
     def approve(self, action_id: ActionId) -> bool:

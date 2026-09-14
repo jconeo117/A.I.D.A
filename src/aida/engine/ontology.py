@@ -32,6 +32,7 @@ SituationId = NewType("SituationId", str)
 ActionId = NewType("ActionId", str)
 AgentId = NewType("AgentId", str)
 Tag = NewType("Tag", str)
+IntentId = NewType("IntentId", str)
 
 PositiveFactor = Annotated[float, Field(gt=0.0)]
 """Multiplicador estrictamente positivo.
@@ -639,6 +640,53 @@ class AgentSpec(Spec):
 
 
 # ---------------------------------------------------------------------------
+# Intención
+# ---------------------------------------------------------------------------
+class IntentSpec(Spec):
+    """Una entrada reconocible del catálogo cerrado de lo que alguien puede
+    pedir. No una acción: una intención dice QUÉ NECESIDAD atender con
+    urgencia, nunca qué acción concreta ejecutar — de eso sigue encargándose
+    `decide()`, con el mismo criterio de utilidad que usa siempre.
+
+    Reconocerla no ejecuta nada por sí sola: empuja al agente a deliberar
+    con esa necesidad como `must_address` en el instante en que se
+    reconoce. Si el agente sigue con algo en curso y nada lo interrumpe, la
+    petición no se guarda para más tarde — se pierde ese tick, igual que
+    pasaría con cualquier `must_address` que hoy no tiene ninguna opción que
+    lo satisfaga.
+    """
+
+    id: IntentId
+    label: str
+
+    need: NeedId
+    """Qué eje se pide atender al reconocer esta intención. La misma
+    necesidad que ya usa `must_address` en `decide()` — no hay un segundo
+    mecanismo, solo una fuente nueva para el que ya existe.
+    """
+
+    examples: tuple[str, ...] = Field(min_length=1)
+    """Frases de referencia contra las que se compara lo que escribe quien
+    pide algo. Es el catálogo cerrado en sentido literal: reconocer
+    significa "esto se parece a una de estas frases", nunca "el modelo cree
+    que...". Sin al menos una, no hay contra qué comparar.
+    """
+
+    @model_validator(mode="after")
+    def _examples_are_not_blank(self) -> IntentSpec:
+        """Una frase en blanco no compara contra nada: sería una entrada del
+        catálogo que ninguna entrada de usuario podría alcanzar nunca, y
+        fallaría en silencio en vez de al cargar el pack.
+        """
+        blank = [i for i, ex in enumerate(self.examples) if not ex.strip()]
+        if blank:
+            raise ValueError(
+                f"intención {self.id!r}: examples[{blank[0]}] está en blanco"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Franjas
 # ---------------------------------------------------------------------------
 class PhaseSpec(Spec):
@@ -1076,4 +1124,15 @@ class TuningSpec(Spec):
 
     0.0 desactiva las interrupciones: se termina siempre lo que se empieza,
     aunque algo se esté hundiendo.
+    """
+
+    intent_confidence_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    """Puntuación mínima de similitud para dar una intención por reconocida.
+
+    Por debajo, la entrada es "desconocida" y el agente decide libremente,
+    como si nadie hubiera dicho nada — nunca se fuerza la coincidencia más
+    cercana. Vive aquí y no en el clasificador: es una perilla de
+    calibración de ESTE pack, con su propio catálogo de frases, y un umbral
+    clavado en código pelearía contra ajustarlo sin desplegar, el mismo
+    argumento que ya vale para el resto de `TuningSpec`.
     """

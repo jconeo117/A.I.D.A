@@ -112,7 +112,10 @@ def _load_template_pack_identifiers() -> set[str]:
     if isinstance(raw, dict):
         if "id" in raw:
             ids.add(str(raw["id"]))
-        for section in ("needs", "traits", "phases", "situations", "actions", "agents", "goals"):
+        for section in (
+            "needs", "traits", "phases", "situations", "actions", "agents",
+            "goals", "intents",
+        ):
             for item in raw.get(section, []) or []:
                 if isinstance(item, dict) and "id" in item:
                     ids.add(str(item["id"]))
@@ -272,6 +275,30 @@ def test_agnosticism_catches_all_template_pack_identifiers() -> None:
             escapados.append(identifier)
 
     assert not escapados, f"Los siguientes identificadores del pack no son detectados: {escapados}"
+
+
+def test_agnosticism_catches_all_ids_read_independently_from_yaml() -> None:
+    """I-054: ancla independiente del cargador. Si `_load_template_pack_identifiers`
+    pierde una sección, el patrón la pierde en los dos lados y el test anterior
+    no lo notaría — este lee el YAML por su cuenta con `yaml.safe_load`.
+    """
+    raw = yaml.safe_load(TEMPLATE_PACK_PATH.read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+
+    known_ids = _load_template_pack_identifiers()
+    missing: list[str] = []
+
+    for section in sorted(raw):
+        value = raw[section]
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, dict) and "id" in item:
+                item_id = str(item["id"])
+                if item_id not in known_ids:
+                    missing.append(item_id)
+
+    assert not missing, f"Ids del pack de plantilla ausentes de known_ids: {sorted(missing)}"
 
 
 def test_agnosticism_catches_compounds_and_plurals() -> None:
