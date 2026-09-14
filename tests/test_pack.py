@@ -1261,3 +1261,48 @@ def test_plantilla_pack_yaml_ejercita_requisitos_de_u2() -> None:
 
     # Salud
     assert p.health is not None
+
+
+def test_pack_authority_defaults_to_reversible_and_48_ttl() -> None:
+    """La autoridad por defecto es la más restrictiva para evitar permisos accidentales.
+
+    Si el pack no declara autoridad explícitamente, autonomous_up_to debe ser REVERSIBLE
+    (el techo más estrecho) y confirmation_ttl_ticks debe ser 48.
+    """
+    spec = ontology.AuthoritySpec()
+    assert spec.autonomous_up_to is ontology.Reversibility.REVERSIBLE
+    assert spec.confirmation_ttl_ticks == 48
+
+    p_dict = base_pack_dict()
+    assert "authority" not in p_dict
+    p = pack.ContentPack(**p_dict)
+    assert p.authority.autonomous_up_to is ontology.Reversibility.REVERSIBLE
+    assert p.authority.confirmation_ttl_ticks == 48
+
+
+def test_pack_loads_declared_authority_from_yaml() -> None:
+    """Un pack que declara sección de autoridad carga fielmente los valores configurados.
+
+    Verifica sobre packs/_plantilla/pack.yaml que se lea autonomous_up_to como
+    reversible_with_cost y confirmation_ttl_ticks como 48.
+    """
+    ruta_plantilla = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
+    p = pack.load_pack(ruta_plantilla)
+    assert p.authority.autonomous_up_to is ontology.Reversibility.REVERSIBLE_WITH_COST
+    assert p.authority.confirmation_ttl_ticks == 48
+
+
+def test_pack_authority_ttl_zero_raises_validation_error() -> None:
+    """Un TTL de 0 instantes viola la restricción ge=1 y rechaza la construcción del pack.
+
+    Una propuesta con TTL=0 nacería ya expirada, lo que constituye una configuración
+    inválida e incoherente para el ciclo de confirmación.
+    """
+    with pytest.raises(ValidationError):
+        ontology.AuthoritySpec(confirmation_ttl_ticks=0)
+
+    p_dict = base_pack_dict()
+    p_dict["authority"] = {"confirmation_ttl_ticks": 0}
+    with pytest.raises((ValidationError, pack.PackError)):
+        pack.ContentPack(**p_dict)
+

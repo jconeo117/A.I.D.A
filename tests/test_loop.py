@@ -20,6 +20,10 @@ Protege las 5 mutaciones del bucle:
 
 from __future__ import annotations
 
+import signal
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import pytest
 
 import aida.engine.disposition as disposition
@@ -664,4 +668,243 @@ def test_loop_inbox_observed_seq_precedes_action_started() -> None:
     assert len(input_events) == 1
     assert len(action_events) == 1
     assert input_events[0].seq < action_events[0].seq
+
+
+@contextmanager
+def _time_limit(seconds: int = 2) -> Iterator[None]:
+    def _handle_timeout(signum: int, frame: object) -> None:
+        raise TimeoutError(
+            f"Operación excedió el límite de {seconds}s (posible bucle infinito en deliberación)"
+        )
+
+    old_handler = signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+def _make_u8_setup(
+    *,
+    autonomous_up_to: ontology.Reversibility = ontology.Reversibility.REVERSIBLE,
+    ttl: int = 48,
+) -> tuple[pack.ContentPack, ontology.AgentSpec]:
+    n_a = ontology.NeedSpec(
+        id=ontology.NeedId("n_a"),
+        label="Need A",
+        initial=0.8,
+        decay_per_tick=0.02,
+        cap=1.0,
+    )
+    n_b = ontology.NeedSpec(
+        id=ontology.NeedId("n_b"),
+        label="Need B",
+        initial=0.1,
+        decay_per_tick=0.02,
+        cap=1.0,
+    )
+    rutina = ontology.ActionSpec(
+        id=ontology.ActionId("rutina"),
+        label="Rutina",
+        duration_ticks=1,
+        reversibility=ontology.Reversibility.REVERSIBLE,
+        satisfies={ontology.NeedId("n_a"): 0.2},
+        costs={},
+        effects={ontology.NeedId("n_a"): 0.2},
+    )
+    peligrosa = ontology.ActionSpec(
+        id=ontology.ActionId("peligrosa"),
+        label="Peligrosa",
+        duration_ticks=1,
+        reversibility=ontology.Reversibility.IRREVERSIBLE,
+        satisfies={ontology.NeedId("n_b"): 0.9},
+        costs={},
+        effects={ontology.NeedId("n_b"): 0.9},
+    )
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agente_01"),
+        label="Agente U8",
+        initial_needs={ontology.NeedId("n_a"): 0.8, ontology.NeedId("n_b"): 0.1},
+    )
+    tuning = ontology.TuningSpec(
+        candidate_pool=1,
+        temperature=0.01,
+    )
+    authority = ontology.AuthoritySpec(
+        autonomous_up_to=autonomous_up_to,
+        confirmation_ttl_ticks=ttl,
+    )
+    p = pack.ContentPack(
+        id="pack_u8_test",
+        label="Pack U8 Test",
+        needs=[n_a, n_b],
+        actions=[rutina, peligrosa],
+        agents=[spec],
+        tuning=tuning,
+        authority=authority,
+    )
+    return p, spec
+
+
+def test_loop_propose_and_keep_working() -> None:
+    """El bucle propone la acción irreversible y ejecuta de inmediato la reversible.
+
+    Un techo estrecho no detiene al agente: la mejor opción se eleva como propuesta
+    asíncrona con su tiempo límite de confirmación, mientras la deliberación rediseña
+    el plan para mantener la operatividad con las opciones autónomas viables.
+    """
+    p, spec = _make_u8_setup()
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    with _time_limit(2):
+        assist.step()
+
+    # Se emitieron la propuesta y el inicio de la alternativa permitida
+    props = assist.log.of_kind(events.EventKind.ACTION_PROPOSED)
+    starts = assist.log.of_kind(events.EventKind.ACTION_STARTED)
+    assert len(props) == 1
+    assert props[0].action == ontology.ActionId("peligrosa")
+    assert props[0].data == {"expires_at": 49}
+    assert props[0].tick == 1
+
+    assert len(starts) == 1
+    assert starts[0].action == ontology.ActionId("rutina")
+    assert starts[0].tick == 1
+
+    # Estado de autoridad y ejecución
+    assert assist.authority.pending == {ontology.ActionId("peligrosa"): 49}
+    assert assist.execution.agent.performing is not None
+    assert assist.execution.agent.performing.action == ontology.ActionId("rutina")
+
+
+def test_loop_deduplication_does_not_repropose_while_pending() -> None:
+    """Instantes subsiguientes no re-proponen una acción con solicitud viva.
+
+    Evita inundar el registro de eventos con propuestas redundantes idénticas
+    mientras la inicial espera respuesta o caducidad.
+    """
+    p, spec = _make_u8_setup()
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    assist.step()
+    assist.step()
+    assist.step()
+
+    props = assist.log.of_kind(events.EventKind.ACTION_PROPOSED)
+    assert len(props) == 1
+    assert props[0].action == ontology.ActionId("peligrosa")
+
+
+def test_loop_high_ceiling_starts_directly_without_proposal() -> None:
+    """Un techo permisivo permite ejecutar directamente sin proponer ni esperar visto bueno.
+
+    Cuando el pack otorga autonomía suficiente, las acciones irreversibles
+    se inician de inmediato sin intermediación ni generación de propuestas.
+    """
+    p, spec = _make_u8_setup(autonomous_up_to=ontology.Reversibility.IRREVERSIBLE)
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    assist.step()
+
+    props = assist.log.of_kind(events.EventKind.ACTION_PROPOSED)
+    assert len(props) == 0
+    assert len(assist.authority.pending) == 0
+
+    assert assist.execution.agent.performing is not None
+    assert assist.execution.agent.performing.action == ontology.ActionId("peligrosa")
+
+
+def test_loop_approve_cycle_authorizes_and_consumes_permission() -> None:
+    """Aprobar una propuesta emite ACTION_AUTHORIZED y permite ejecutarla en el siguiente tick.
+
+    El visto bueno es un hecho auditable independiente del arranque, y su consumo
+    es de un único uso: tras iniciarse la acción, la autorización queda extinguida.
+    """
+    p, spec = _make_u8_setup()
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    # Tick 1: propone 'peligrosa' y arranca 'rutina'
+    assist.step()
+    assert assist.execution.tick == 1
+
+    # Autorización explícita en tick 1
+    assert assist.approve(ontology.ActionId("peligrosa")) is True
+    # Re-autorizar o autorizar no propuesta falla
+    assert assist.approve(ontology.ActionId("peligrosa")) is False
+    assert assist.approve(ontology.ActionId("otra")) is False
+
+    auth_events = assist.log.of_kind(events.EventKind.ACTION_AUTHORIZED)
+    assert len(auth_events) == 1
+    assert auth_events[0].action == ontology.ActionId("peligrosa")
+    assert auth_events[0].tick == 1
+
+    # Tick 2: 'rutina' finaliza y 'peligrosa' puede arrancar con el permiso concedido
+    assist.step()
+    assert assist.execution.tick == 2
+    assert assist.execution.agent.performing is not None
+    assert assist.execution.agent.performing.action == ontology.ActionId("peligrosa")
+
+    # Permiso gastado: approved y pending quedan limpios
+    assert len(assist.authority.approved) == 0
+    assert ontology.ActionId("peligrosa") not in assist.authority.pending
+
+
+def test_loop_deny_cycle_cancels_proposal_and_clears_pending() -> None:
+    """Denegar una propuesta emite ACTION_DENIED y limpia la solicitud sin otorgar permiso.
+
+    El rechazo explícito formaliza en la auditoría el veto a la propuesta y libera
+    el estado pendiente sin conceder ninguna ejecución.
+    """
+    p, spec = _make_u8_setup()
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    assist.step()
+    assert ontology.ActionId("peligrosa") in assist.authority.pending
+
+    assert assist.deny(ontology.ActionId("peligrosa")) is True
+    assert assist.deny(ontology.ActionId("peligrosa")) is False
+
+    denied_events = assist.log.of_kind(events.EventKind.ACTION_DENIED)
+    assert len(denied_events) == 1
+    assert denied_events[0].action == ontology.ActionId("peligrosa")
+    assert denied_events[0].tick == 1
+
+    assert len(assist.authority.pending) == 0
+
+
+def test_loop_expiration_cycle_emits_event_and_reproposes_if_needed() -> None:
+    """Al vencer el TTL sin respuesta, se emite ACTION_EXPIRED y se re-propone si persiste el deseo.
+
+    El silencio opera como una denegación implícita auditable; al expirar la propuesta,
+    el agente es libre de insistir en la necesidad si sigue siendo su mejor opción.
+    """
+    p, spec = _make_u8_setup(ttl=2)
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    # Tick 1: propone 'peligrosa' (expira en 1 + 2 = 3) y arranca 'rutina'
+    assist.step()
+    assert assist.authority.pending[ontology.ActionId("peligrosa")] == 3
+
+    # Tick 2: avanza 'rutina' sin haber expirado aún la propuesta
+    assist.step()
+    assert len(assist.log.of_kind(events.EventKind.ACTION_EXPIRED)) == 0
+
+    # Tick 3: vence en tick 3 -> emite ACTION_EXPIRED y redelibera re-proponiendo con vencimiento 5
+    assist.step()
+
+    exp_events = assist.log.of_kind(events.EventKind.ACTION_EXPIRED)
+    assert len(exp_events) == 1
+    assert exp_events[0].action == ontology.ActionId("peligrosa")
+    assert exp_events[0].tick == 3
+
+    # Re-propuesta en el mismo tick 3 con nueva caducidad 3 + 2 = 5
+    props = assist.log.of_kind(events.EventKind.ACTION_PROPOSED)
+    assert len(props) == 2
+    assert props[1].action == ontology.ActionId("peligrosa")
+    assert props[1].tick == 3
+    assert props[1].data == {"expires_at": 5}
+    assert assist.authority.pending[ontology.ActionId("peligrosa")] == 5
+
 

@@ -84,6 +84,20 @@ class EventKind(StrEnum):
     """La acción dejó de ser válida a mitad. Sin esto, depurar algo atascado
     es adivinar."""
 
+    ACTION_PROPOSED = "action_proposed"
+    """El asistente quiso empezar algo que su techo de autoridad no le deja
+    empezar solo. No es un fallo: es la mitad asíncrona de la confirmación."""
+
+    ACTION_AUTHORIZED = "action_authorized"
+    """Alguien con autoridad dijo que sí. Evento propio y no una nota dentro
+    de `ACTION_STARTED`: el permiso y la ejecución ocurren en instantes
+    distintos, y auditar quién autorizó qué exige que consten por separado."""
+
+    ACTION_DENIED = "action_denied"
+    ACTION_EXPIRED = "action_expired"
+    """Nadie contestó a tiempo. Se anota como hecho: el silencio también es
+    una respuesta, y tiene que poder rastrearse."""
+
     NEED_CRITICAL = "need_critical"
     """Un eje cruzó su umbral hacia abajo (`TuningSpec.critical_need_threshold`)."""
 

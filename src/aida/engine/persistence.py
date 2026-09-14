@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from aida.engine.authority import Authority
 from aida.engine.disposition import compose_tastes
 from aida.engine.events import EventLog
 from aida.engine.loop import Loop
@@ -203,4 +204,10 @@ def load(path: Path, pack: ContentPack, *, log_window: int | None = None) -> Loo
         execution=execution,
         log=EventLog(log_window),
         inbox=inbox,
+        # La autoridad NO se guarda, y es a propósito: un permiso concedido
+        # antes de apagar no puede sobrevivir al reinicio, o sería una
+        # autorización que nadie dio en esta ejecución. Las propuestas vivas
+        # tampoco: al reanudar, el asistente vuelve a proponer y vuelve a
+        # preguntar. Volver a preguntar es seguro; recordar un sí, no.
+        authority=Authority(spec=pack.authority),
     )

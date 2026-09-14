@@ -231,6 +231,15 @@ agents:
         multiplier: 1.15
 
 # -----------------------------------------------------------------------------
+# Techo de autoridad (AuthoritySpec)
+# Hasta dónde llega el asistente por su cuenta. Lo que queda por encima no se
+# prohíbe: se propone y espera un visto bueno explícito.
+# -----------------------------------------------------------------------------
+authority:
+  autonomous_up_to: "reversible_with_cost"
+  confirmation_ttl_ticks: 48
+
+# -----------------------------------------------------------------------------
 # Contrato de salud (HealthSpec)
 # Bandas de validación de diseño para integración continua.
 # No son parámetros que modifiquen la ejecución: son aserciones comprobables

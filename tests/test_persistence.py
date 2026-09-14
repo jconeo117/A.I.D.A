@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+import aida.engine.events as events
 import aida.engine.loop as loop
 import aida.engine.ontology as ontology
 import aida.engine.pack as pack
@@ -747,3 +748,109 @@ sys.stdout.buffer.write(out_path.read_bytes())
     )
     assert outputs[0] == outputs[1], diff_msg_01
     assert outputs[1] == outputs[2], diff_msg_12
+
+
+def test_persistence_authority_not_saved_and_requires_reproposal(tmp_path: Path) -> None:
+    """La autoridad no se persiste: tras load, el asistente vuelve a proponer en vez de arrancar.
+
+    Garantiza la propiedad de seguridad de §3.2: un permiso previo concedido en tiempo de
+    ejecución anterior no sobrevive al reinicio de proceso. Al reanudar, authority.approved
+    y authority.pending deben estar limpios, forzando una nueva propuesta y deliberación.
+    """
+    n_a = ontology.NeedSpec(
+        id=ontology.NeedId("n_a"),
+        label="Need A",
+        initial=0.8,
+        decay_per_tick=0.02,
+        cap=1.0,
+    )
+    n_b = ontology.NeedSpec(
+        id=ontology.NeedId("n_b"),
+        label="Need B",
+        initial=0.1,
+        decay_per_tick=0.02,
+        cap=1.0,
+    )
+    rutina = ontology.ActionSpec(
+        id=ontology.ActionId("rutina"),
+        label="Rutina",
+        duration_ticks=1,
+        reversibility=ontology.Reversibility.REVERSIBLE,
+        satisfies={ontology.NeedId("n_a"): 0.2},
+        costs={},
+        effects={ontology.NeedId("n_a"): 0.2},
+    )
+    peligrosa = ontology.ActionSpec(
+        id=ontology.ActionId("peligrosa"),
+        label="Peligrosa",
+        duration_ticks=1,
+        reversibility=ontology.Reversibility.IRREVERSIBLE,
+        satisfies={ontology.NeedId("n_b"): 0.9},
+        costs={},
+        effects={ontology.NeedId("n_b"): 0.9},
+    )
+    spec = ontology.AgentSpec(
+        id=ontology.AgentId("agente_01"),
+        label="Agente U8",
+        initial_needs={ontology.NeedId("n_a"): 0.8, ontology.NeedId("n_b"): 0.1},
+    )
+    tuning = ontology.TuningSpec(
+        candidate_pool=1,
+        temperature=0.01,
+    )
+    authority = ontology.AuthoritySpec(
+        autonomous_up_to=ontology.Reversibility.REVERSIBLE,
+        confirmation_ttl_ticks=48,
+    )
+    p = pack.ContentPack(
+        id="pack_persist_u8",
+        label="Pack Persist U8",
+        needs=[n_a, n_b],
+        actions=[rutina, peligrosa],
+        agents=[spec],
+        tuning=tuning,
+        authority=authority,
+    )
+
+    assist = loop.Loop.start(p, spec, seed=7, inbox_capacity=2)
+
+    # Tick 1: propone 'peligrosa' y arranca 'rutina'
+    assist.step()
+    assert assist.execution.tick == 1
+    assert ontology.ActionId("peligrosa") in assist.authority.pending
+
+    # Autorizamos 'peligrosa' antes de guardar
+    assert assist.approve(ontology.ActionId("peligrosa")) is True
+    assert ontology.ActionId("peligrosa") in assist.authority.approved
+
+    # Guardamos estado en archivo
+    save_file = tmp_path / "saved_state.json"
+    persistence.save(assist, save_file)
+
+    # 1. El JSON guardado no menciona autoridad ni propuestas
+    raw_content = save_file.read_text(encoding="utf-8")
+    saved_data = json.loads(raw_content)
+    assert "authority" not in saved_data
+    assert "peligrosa" not in str(saved_data.get("authority", {}))
+    assert "approved" not in raw_content
+
+    # 2. Tras load, la autoridad está completamente vacía
+    loaded = persistence.load(save_file, p)
+    assert len(loaded.authority.pending) == 0
+    assert len(loaded.authority.approved) == 0
+
+    # 3. Un step() sobre el bucle cargado no arranca peligrosa sino que vuelve a proponerla
+    loaded.step()
+    assert loaded.execution.tick == 2
+    assert loaded.execution.agent.performing is not None
+    assert loaded.execution.agent.performing.action == ontology.ActionId("rutina")
+    assert ontology.ActionId("peligrosa") in loaded.authority.pending
+
+    reproposed = [
+        ev
+        for ev in loaded.log.of_kind(events.EventKind.ACTION_PROPOSED)
+        if ev.tick == 2
+    ]
+    assert len(reproposed) == 1
+    assert reproposed[0].action == ontology.ActionId("peligrosa")
+

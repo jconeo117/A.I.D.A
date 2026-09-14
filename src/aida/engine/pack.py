@@ -27,6 +27,7 @@ from aida.engine.ontology import (
     ActionSpec,
     AgentId,
     AgentSpec,
+    AuthoritySpec,
     GoalId,
     GoalSpec,
     HealthSpec,
@@ -62,6 +63,7 @@ class ContentPack(Spec):
     situations: tuple[SituationSpec, ...] = ()
     goals: tuple[GoalSpec, ...] = ()
 
+    authority: AuthoritySpec = Field(default_factory=AuthoritySpec)
     health: HealthSpec = Field(default_factory=HealthSpec)
     tuning: TuningSpec = Field(default_factory=TuningSpec)
 

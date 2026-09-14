@@ -258,6 +258,7 @@ def _deliberate(
     must_address: NeedId | None = None,
     phase: PhaseId | None = None,
     situations: Iterable[SituationId] = (),
+    forbidden: frozenset[ActionId] = frozenset(),
 ) -> tuple[list[Decision], dict[ActionId, str]]:
     """Candidatas y descartes reales que `decide` va a considerar.
 
@@ -269,6 +270,8 @@ def _deliberate(
     lista.
     """
     pool, discarded = candidates(execution, pack, phase=phase, situations=situations)
+    if forbidden:
+        pool = [d for d in pool if d.action not in forbidden]
     if must_address is not None:
         pool = [
             d
@@ -284,6 +287,7 @@ def decide(
     must_address: NeedId | None = None,
     phase: PhaseId | None = None,
     situations: Iterable[SituationId] = (),
+    forbidden: frozenset[ActionId] = frozenset(),
 ) -> Decision | None:
     """Selecciona la acción a ejecutar mediante deliberación determinista.
 
@@ -309,7 +313,12 @@ def decide(
         )
 
     pool, _ = _deliberate(
-        execution, pack, must_address=must_address, phase=phase, situations=situations
+        execution,
+        pack,
+        must_address=must_address,
+        phase=phase,
+        situations=situations,
+        forbidden=forbidden,
     )
 
     if not pool:

@@ -20,9 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aida.agents.decide import critical_need, decide
+from aida.engine.authority import Authority
 from aida.engine.clock import next_wake
 from aida.engine.events import EventKind, EventLog
-from aida.engine.ontology import AgentSpec, NeedId
+from aida.engine.ontology import ActionId, AgentSpec, NeedId
 from aida.engine.pack import ContentPack
 from aida.engine.queue import EventQueue
 from aida.engine.rng import RngSource
@@ -37,6 +38,7 @@ class Loop:
     execution: ExecutionState
     log: EventLog
     inbox: EventQueue
+    authority: Authority
 
     @classmethod
     def start(
@@ -56,6 +58,7 @@ class Loop:
             execution=execution,
             log=EventLog(log_window),
             inbox=EventQueue(capacity=inbox_capacity),
+            authority=Authority(spec=pack.authority),
         )
 
     def next_wake(self) -> int:
@@ -75,6 +78,14 @@ class Loop:
                 kind=EventKind.INPUT_OBSERVED,
                 owner=agent.agent_id,
                 content=item.content,
+            )
+
+        for caducada in self.authority.expired(tick):
+            self.log.emit(
+                tick=tick,
+                kind=EventKind.ACTION_EXPIRED,
+                owner=agent.agent_id,
+                action=caducada,
             )
 
         agent.decay(pack.need_by_id)
@@ -104,12 +115,57 @@ class Loop:
         if self.execution.agent.performing is None:
             self._begin(forced)
 
+    def approve(self, action_id: ActionId) -> bool:
+        """Concede UNA ejecución de lo propuesto. `False` si no había propuesta."""
+        if not self.authority.approve(action_id):
+            return False
+        self.log.emit(
+            tick=self.execution.tick,
+            kind=EventKind.ACTION_AUTHORIZED,
+            owner=self.execution.agent.agent_id,
+            action=action_id,
+        )
+        return True
+
+    def deny(self, action_id: ActionId) -> bool:
+        """Retira lo propuesto sin conceder nada. `False` si no había propuesta."""
+        if not self.authority.deny(action_id):
+            return False
+        self.log.emit(
+            tick=self.execution.tick,
+            kind=EventKind.ACTION_DENIED,
+            owner=self.execution.agent.agent_id,
+            action=action_id,
+        )
+        return True
+
     def _begin(self, must_address: NeedId | None) -> None:
         agent = self.execution.agent
-        decision = decide(self.execution, self.pack, must_address=must_address)
-        if decision is None:
-            return
-        action = self.pack.action_by_id[decision.action]
+        vetadas: set[ActionId] = set()
+        while True:
+            decision = decide(
+                self.execution,
+                self.pack,
+                must_address=must_address,
+                forbidden=frozenset(vetadas),
+            )
+            if decision is None:
+                return
+            action = self.pack.action_by_id[decision.action]
+            if self.authority.may_start(action):
+                break
+            # Propone y sigue: el techo de autoridad no deja al asistente
+            # parado esperando: descarta esta opción y vuelve a deliberar
+            # con lo que sí puede hacer solo.
+            if self.authority.propose(action, self.execution.tick):
+                self.log.emit(
+                    tick=self.execution.tick,
+                    kind=EventKind.ACTION_PROPOSED,
+                    owner=agent.agent_id,
+                    action=action.id,
+                    data={"expires_at": self.authority.pending[action.id]},
+                )
+            vetadas.add(action.id)
         agent.performing = PerformingAction(
             action=action.id,
             ticks_remaining=action.duration_ticks,

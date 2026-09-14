@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class MemoryStore(Protocol):
-    """Memoria episódica: un hecho fechado que caduca. Se implementa en U9.
+    """Memoria episódica: un hecho fechado que caduca. Se implementa en U10.
 
     `owner` obligatorio en toda firma, sin excepción y sin valor por
     defecto: es lo que hace estructuralmente imposible el bug de
@@ -47,7 +47,7 @@ class MemoryStore(Protocol):
 
     El tipo de retorno se deja como `object` a propósito: la forma exacta de
     un recuerdo (qué conserva de qué evento, cómo se pondera su importancia
-    con el tiempo) es contenido de U9, no de esta costura.
+    con el tiempo) es contenido de U10, no de esta costura.
     """
 
     def remember(self, *, owner: AgentId, event: Event, importance: float) -> object | None:
@@ -65,7 +65,7 @@ class MemoryStore(Protocol):
 @runtime_checkable
 class SemanticStore(Protocol):
     """Preferencias sin fecha: una regla que se refuerza o se refuta. Se
-    implementa en U9.
+    implementa en U10.
 
     Primitiva separada de `MemoryStore` y no un mismo registro con un campo
     de texto libre que diga de cuál de las dos se trata: un hecho fechado y
@@ -94,7 +94,7 @@ class SemanticStore(Protocol):
 @runtime_checkable
 class IntentClassifier(Protocol):
     """Clasifica una entrada del usuario contra el catálogo cerrado que
-    declara el pack. Se implementa en U5, por embeddings locales, sin LLM.
+    declara el pack. Se implementa en U6, por embeddings locales, sin LLM.
 
     Debe poder responder que no reconoce nada: `None` es "desconocida", y el
     motor la trata como tal. Lo que no puede hacer es forzar la
@@ -108,7 +108,7 @@ class IntentClassifier(Protocol):
 
 @runtime_checkable
 class CognitionProvider(Protocol):
-    """Puerta única al modelo de lenguaje. Se implementa en U6.
+    """Puerta única al modelo de lenguaje. Se implementa en U7.
 
     Contrato que hace posible cambiar de proveedor sin cambiar lo que AIDA
     decide:
@@ -130,8 +130,8 @@ class CognitionProvider(Protocol):
 
 @runtime_checkable
 class ToolPort(Protocol):
-    """Ejecuta una acción del catálogo de un pack. Se implementa en U8,
-    detrás de la puerta dura de autoridad (U7): no se abre hasta que esa
+    """Ejecuta una acción del catálogo de un pack. Se implementa en U9,
+    detrás de la puerta dura de autoridad (U8): no se abre hasta que esa
     capa esté terminada y validada.
 
     **Síncrono a propósito**, aunque el adaptador real hable con MCP o REST
@@ -144,7 +144,7 @@ class ToolPort(Protocol):
     puede fallar por causas ajenas a quien la pide: latencia variable, fallo
     parcial, credencial expirada, cuota agotada. Cómo se representa ese
     fallo —excepción tipada, resultado con estado, o ambos— se decide al
-    implementar el puerto en U8; aquí solo se declara la frontera.
+    implementar el puerto en U9; aquí solo se declara la frontera.
     """
 
     def execute(self, *, action: ActionId, arguments: Mapping[str, object]) -> object: ...

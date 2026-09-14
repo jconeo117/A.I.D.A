@@ -879,6 +879,26 @@ class ActionSpec(Spec):
         return self
 
 
+class AuthoritySpec(Spec):
+    """Hasta dónde puede llegar el asistente por su cuenta.
+
+    Puerta dura, no rasgo: no se compensa con utilidad suficiente y no hay
+    modo experto que la desactive. Lo que queda por encima del techo no se
+    prohíbe — se propone y espera un visto bueno explícito.
+    """
+
+    autonomous_up_to: Reversibility = Reversibility.REVERSIBLE
+    """Clasificación máxima que el asistente puede empezar solo. El valor por
+    defecto es el más estrecho de los tres: quien quiera conceder más tiene
+    que escribirlo en el pack, porque un olvido no puede acabar en el techo
+    más permisivo."""
+
+    confirmation_ttl_ticks: int = Field(default=48, ge=1)
+    """Cuántos instantes vive una propuesta sin respuesta antes de caducar.
+    Una propuesta eterna es una autorización diferida: si nadie contesta, la
+    respuesta es no."""
+
+
 # ---------------------------------------------------------------------------
 # Salud
 # ---------------------------------------------------------------------------
