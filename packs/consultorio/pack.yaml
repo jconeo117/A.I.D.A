@@ -1,0 +1,116 @@
+# =============================================================================
+# Pack: Asistente de agenda y recordatorios — fase 1
+#
+# Modela la presión de mantener una agenda médica al día: confirmaciones de
+# citas próximas y revisión periódica de la agenda del día. No hay citas
+# concretas todavía — eso llega con el puerto de herramientas (fase 2), que
+# es lo único capaz de alimentar estos ejes con datos de un calendario real.
+# =============================================================================
+
+id: "consultorio_fase1"
+label: "Asistente de agenda y recordatorios — fase 1"
+
+needs:
+  # Cuán al día está la confirmación de citas próximas. Decae solo: si nadie
+  # llama, la proporción de citas sin confirmar sube con el tiempo.
+  - id: "confirmaciones_al_dia"
+    label: "Confirmaciones de citas al día"
+    initial: 0.75
+    cap: 1.0
+    decay_per_tick: 0.006
+    max_debt: 0.30
+    escalates_after: 15
+
+  # Cuán reciente es la última revisión de la agenda del día.
+  - id: "agenda_revisada"
+    label: "Agenda revisada recientemente"
+    initial: 0.80
+    cap: 1.0
+    decay_per_tick: 0.01
+    max_debt: 0.0
+    escalates_after: 0
+
+traits:
+  - id: "meticuloso"
+    label: "Perfil meticuloso"
+    need_weight_multipliers:
+      agenda_revisada: 1.25
+
+  - id: "comunicativo"
+    label: "Perfil comunicativo"
+    gain_multipliers:
+      confirmaciones_al_dia: 1.20
+
+phases:
+  - id: "horario_de_consulta"
+    label: "Horario de atención al paciente"
+    starts_at: 0
+
+  - id: "fuera_de_horario"
+    label: "Fuera de horario de atención"
+    starts_at: 60
+
+actions:
+  - id: "enviar_recordatorios"
+    label: "Enviar recordatorios de confirmación"
+    reversibility: "reversible"
+    duration_ticks: 1
+    interruptible: true
+    satisfies:
+      confirmaciones_al_dia: 0.40
+    costs: {}
+    effects:
+      confirmaciones_al_dia: 0.40
+    phase_multipliers:
+      horario_de_consulta: 1.20
+      fuera_de_horario: 0.50
+    saturation_gain: 0.15
+    tags:
+      - "administrativo"
+
+  - id: "revisar_agenda_del_dia"
+    label: "Revisar la agenda del día"
+    reversibility: "reversible"
+    duration_ticks: 1
+    interruptible: true
+    satisfies:
+      agenda_revisada: 0.50
+    costs: {}
+    effects:
+      agenda_revisada: 0.50
+    phase_multipliers:
+      horario_de_consulta: 1.10
+    saturation_gain: 0.10
+    tags:
+      - "administrativo"
+
+agents:
+  - id: "asistente_01"
+    label: "Asistente de agenda"
+    traits:
+      meticuloso: 0.50
+      comunicativo: 0.40
+    initial_needs:
+      confirmaciones_al_dia: 0.75
+      agenda_revisada: 0.80
+    tastes:
+      - target: "enviar_recordatorios"
+        multiplier: 1.10
+
+authority:
+  autonomous_up_to: "reversible"
+  confirmation_ttl_ticks: 48
+
+health:
+  days: 7
+  seeds:
+    - 1312
+    - 7
+    - 99
+  min_crisis: 0.0
+  max_crisis: 0.85
+  max_abort_ratio: 0.30
+  min_differentiation: 0.05
+
+tuning:
+  critical_need_threshold: 0.20
