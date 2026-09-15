@@ -26,6 +26,7 @@ from aida.engine.events import EventLog
 from aida.engine.loop import Loop
 from aida.engine.ontology import ActionId, AgentId, GoalId, GoalStatus, NeedId, SituationId, TraitId
 from aida.engine.pack import ContentPack
+from aida.engine.ports import IntentClassifier
 from aida.engine.queue import EventQueue, IncomingEvent
 from aida.engine.rng import RngSource
 from aida.engine.state import AgentState, ExecutionState, PerformingAction
@@ -93,7 +94,13 @@ def save(loop: Loop, path: Path) -> None:
     path.write_text(json.dumps(datos, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
-def load(path: Path, pack: ContentPack, *, log_window: int | None = None) -> Loop:
+def load(
+    path: Path,
+    pack: ContentPack,
+    *,
+    log_window: int | None = None,
+    intent: IntentClassifier | None = None,
+) -> Loop:
     """Reconstruye un `Loop` desde `path`, sobre el pack dado.
 
     El pack puede no ser exactamente el que se guardó — es el caso normal
@@ -210,4 +217,5 @@ def load(path: Path, pack: ContentPack, *, log_window: int | None = None) -> Loo
         # tampoco: al reanudar, el asistente vuelve a proponer y vuelve a
         # preguntar. Volver a preguntar es seguro; recordar un sí, no.
         authority=Authority(spec=pack.authority),
+        intent=intent,
     )

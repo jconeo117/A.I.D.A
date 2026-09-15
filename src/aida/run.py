@@ -11,12 +11,16 @@ del test.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from aida import __version__
+from aida.cognition.providers import build_provider
+from aida.cognition.session import Session
 from aida.engine.explain import explain_deliberation
+from aida.engine.loop import Loop
 from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
 
@@ -43,6 +47,19 @@ def _construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="delibera una vez con el agente del pack e imprime la traza causal",
     )
+    parser.add_argument(
+        "--converse",
+        action="store_true",
+        help="abre una conversación por línea de comandos con el agente del pack",
+    )
+    parser.add_argument(
+        "--llm",
+        metavar="PROVEEDOR",
+        default=None,
+        help="fuerza el proveedor de voz (claude|gemini|ollama); por defecto, "
+        "AIDA_LLM_PROVIDER o 'gemini'",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="semilla del generador determinista")
     return parser
 
 
@@ -61,6 +78,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         except PackError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+
+        if args.converse:
+            if not pack.agents:
+                print("El pack no declara ningún agente.", file=sys.stderr)
+                return 1
+            from aida.intent.classify import build_classifier
+
+            agent_spec = pack.agents[0]
+            loop = Loop.start(
+                pack,
+                agent_spec,
+                seed=args.seed,
+                inbox_capacity=64,
+                intent=build_classifier(pack),
+            )
+            provider_name = args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")
+            # Transparencia: si falta la credencial o el proveedor no existe,
+            # advertir que opera en modo sin voz.
+            provider = build_provider(provider_name)
+            session = Session(loop=loop, provider=provider)
+            if provider is None:
+                print(
+                    f"(sin voz: el proveedor {provider_name!r} no está disponible; "
+                    "escribe 'salir' para terminar)"
+                )
+            else:
+                print(f"(voz: {provider_name}; escribe 'salir' para terminar)")
+            while True:
+                try:
+                    linea = input("> ")
+                except EOFError:
+                    break
+                if linea.strip().lower() == "salir":
+                    break
+                print(session.turn(linea))
+            return 0
 
         if args.explain:
             if not pack.agents:

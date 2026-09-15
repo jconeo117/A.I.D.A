@@ -39,6 +39,8 @@ import aida.engine.pack as pack
 import aida.engine.persistence as persistence
 import aida.engine.state as state
 
+_TEMPLATE_PACK = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
+
 
 def _make_need(
     id_: str,
@@ -853,4 +855,50 @@ def test_persistence_authority_not_saved_and_requires_reproposal(tmp_path: Path)
     ]
     assert len(reproposed) == 1
     assert reproposed[0].action == ontology.ActionId("peligrosa")
+
+
+def test_persistence_load_with_intent_preserves_classifier_and_classifies_events(
+    tmp_path: Path,
+) -> None:
+    """I-057 / V1: la carga de bucle debe permitir inyectar el clasificador de intenciones
+    para que la sesión reanudada conserve la capacidad de comprender lenguaje natural
+    y clasificar peticiones del buzón de entrada tras una parada técnica.
+    """
+    from aida.intent.classify import build_classifier
+
+    loaded_pack = pack.load_pack(_TEMPLATE_PACK)
+    classifier = build_classifier(loaded_pack)
+    assert classifier is not None
+
+    agent = loaded_pack.agents[0]
+    assist = loop.Loop.start(
+        loaded_pack,
+        agent,
+        seed=7,
+        inbox_capacity=10,
+        intent=classifier,
+    )
+    assist.step()
+
+    save_path = tmp_path / "persisted_with_intent.json"
+    persistence.save(assist, save_path)
+
+    restored_loop = persistence.load(save_path, loaded_pack, intent=classifier)
+    assert restored_loop.intent is classifier
+
+    next_tick = restored_loop.execution.tick + 1
+    restored_loop.inbox.push(
+        tick=next_tick,
+        owner=agent.id,
+        content="libera espacio en disco",
+    )
+    restored_loop.step()
+
+    classified_events = [
+        ev
+        for ev in restored_loop.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+        if ev.tick == restored_loop.execution.tick
+    ]
+    assert len(classified_events) == 1
+    assert classified_events[0].data == {"intent": "pedir_liberar_espacio"}
 
