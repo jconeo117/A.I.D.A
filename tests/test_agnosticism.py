@@ -45,13 +45,20 @@ FORBIDDEN_MODEL_IMPORT_ROOTS = frozenset(
         "llama_index",
         "mcp",
         "modelcontextprotocol",
+        "faster_whisper",
+        "whisper",
+        "ctranslate2",
+        "onnxruntime",
+        "tokenizers",
+        "pytesseract",
+        "PIL",
     }
 )
 
 # Directorios donde SÍ está permitido lo anterior — la costura entre el motor
 # determinista y el modelo de lenguaje. No existen todavía en esta unidad,
 # pero `ENGINE_ROOT` cubre `src/aida` entero y U6/U8 los crearán ahí dentro.
-EXEMPT_DIR_NAMES = frozenset({"cognition", "intent"})
+EXEMPT_DIR_NAMES = frozenset({"cognition", "intent", "consult"})
 
 # Raíces y términos de vocabulario prohibido (con flexiones comunes y compuestos).
 FORBIDDEN_BASE_PATTERNS = [
@@ -383,6 +390,16 @@ def test_g4_guardian_exime_cognition_e_intent() -> None:
     assert not _is_exempt(Path("src/aida/engine/pack.py"))
 
 
+def test_g4_guardian_exime_consult() -> None:
+    """`consult/` es la costura declarada para captura local (STT/OCR) de U9:
+    `EXEMPT_DIR_NAMES` lo incluye y `_is_exempt` lo reconoce.
+    """
+    assert "consult" in EXEMPT_DIR_NAMES
+    assert _is_exempt(Path("src/aida/consult/capture.py"))
+    assert _is_exempt(Path("src/aida/consult/consultation.py"))
+    assert not _is_exempt(Path("src/aida/textmatch.py"))
+
+
 # ---------------------------------------------------------------------------
 # I-009 — el guardián no degrada en silencio si el pack no parsea
 # ---------------------------------------------------------------------------
@@ -400,4 +417,110 @@ def test_load_template_pack_identifiers_propaga_error_de_parseo(
 
     with pytest.raises(yaml.YAMLError):
         _load_template_pack_identifiers()
+
+
+# ---------------------------------------------------------------------------
+# I-072 — G4 debe morder ante los runtimes de modelo traídos por U9 (§4.1)
+# ---------------------------------------------------------------------------
+
+NEW_RUNTIME_MODEL_IMPORT_ROOTS = (
+    "faster_whisper",
+    "whisper",
+    "ctranslate2",
+    "onnxruntime",
+    "tokenizers",
+    "pytesseract",
+    "PIL",
+)
+
+
+def test_g4_guardian_catches_runtime_model_imports(tmp_path: Path) -> None:
+    """I-072 (§4.1): Verifica que el guardián G4 muerde ante los runtimes y librerías
+    de modelo traídos por U9 (faster_whisper, whisper, ctranslate2, onnxruntime,
+    tokenizers, pytesseract, PIL).
+
+    Tanto la forma 'import root' como 'from root import X' deben ser marcadas
+    como ofensores en módulos no exentos del motor.
+    """
+    for root in sorted(NEW_RUNTIME_MODEL_IMPORT_ROOTS):
+        for content in (f"import {root}\n", f"from {root} import SomeClass\n"):
+            modulo = tmp_path / f"modulo_{root}.py"
+            modulo.write_text(content, encoding="utf-8")
+
+            offenders = _model_import_offenders(modulo)
+            assert offenders, (
+                f"El guardián G4 no detectó import prohibido de {root!r}: {content!r}"
+            )
+
+
+def test_g4_guardian_forbidden_set_contains_all_runtime_roots() -> None:
+    """I-072 (§4.1): Verifica que todas las 7 raíces de runtimes de modelo
+    agregadas en U9 están registradas en FORBIDDEN_MODEL_IMPORT_ROOTS.
+    Si se retira cualquiera de ellas, este test falla indicando el nombre faltante.
+    """
+    missing = sorted(set(NEW_RUNTIME_MODEL_IMPORT_ROOTS) - FORBIDDEN_MODEL_IMPORT_ROOTS)
+    assert not missing, (
+        f"Raíces de runtimes de modelo ausentes de FORBIDDEN_MODEL_IMPORT_ROOTS: {missing}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# I-073 — Agnóstico de dominio: src/aida/consult/ no fija términos médicos en código
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_MEDICAL_PATTERNS = [
+    r"paciente(s)?",
+    r"consulta(s)?\s+m[eé]dica(s)?",
+    r"diagn[oó]stico(s)?",
+    r"cefalea(s)?",
+    r"historia(s)?\s+cl[ií]nica(s)?",
+]
+
+MEDICAL_PATTERN = re.compile(
+    r"(?<![a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ])(?:"
+    + "|".join(FORBIDDEN_MEDICAL_PATTERNS)
+    + r")(?![a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ])",
+    re.IGNORECASE,
+)
+
+
+def _consult_sources() -> list[Path]:
+    consult_dir = ENGINE_ROOT / "consult"
+    return sorted(
+        path
+        for path in consult_dir.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+
+def test_consult_sources_exist() -> None:
+    """Evita falsos verdes asegurando que se encuentran archivos en src/aida/consult."""
+    assert _consult_sources(), f"No se encontró código de consulta en {ENGINE_ROOT / 'consult'}"
+
+
+@pytest.mark.parametrize("source", _consult_sources(), ids=lambda p: p.name)
+def test_consult_has_no_medical_domain_literals(source: Path) -> None:
+    """I-073 (§4.2): El código del módulo `consult/` no debe contener vocabulario
+    fijo del dominio médico ('paciente', 'consulta médica', 'diagnóstico',
+    'cefalea', 'historia clínica').
+
+    El agnosticismo de AIDA exige que los términos de dominio sean inyectados
+    como datos o configuración (e.g. vía `SummaryWording`), nunca codificados
+    como literales en la tubería ni identificadores internos.
+    Se utiliza una lista explícita de patrones médicos y se escanea vía `_scannable`
+    para inspeccionar identificadores y literales de cadena reales excluyendo
+    docstrings y comentarios.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    offenders = [
+        f"  {source.name}:{lineno} -> {match.group(0)!r} en {text!r}"
+        for lineno, text in _scannable(tree)
+        if (match := MEDICAL_PATTERN.search(text))
+    ]
+    assert not offenders, (
+        f"Literales de dominio médico encontrados en código de {source.name}:\n"
+        + "\n".join(offenders)
+        + "\n\nEl vocabulario médico debe ser inyectado (vía SummaryWording), no codificado."
+    )
+
 

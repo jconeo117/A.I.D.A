@@ -136,6 +136,13 @@ class EventKind(StrEnum):
     `ACTION_EXPIRED` anota el silencio de quien no contesta a una
     propuesta."""
 
+    CATALOG_MATCHED = "catalog_matched"
+    """Un texto se cotejó contra un catálogo cerrado externo al pack —el
+    de intenciones tiene su propio tipo, `INTENT_CLASSIFIED`, porque
+    mezclar los dos audits impediría distinguirlos después. `data={"codes":
+    "..."}` con lo encontrado, separado por comas; sin `data` si nada
+    alcanzó el umbral."""
+
 
 @dataclass(frozen=True, slots=True)
 class Event:

@@ -18,47 +18,16 @@ no de un `set`): más vale no depender de ese detalle.
 
 from __future__ import annotations
 
-import math
-import re
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from aida.engine.ontology import IntentId
 from aida.engine.pack import ContentPack
+from aida.textmatch import cosine, tokenize, vectorize
 
-_TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ]+")
-
-
-def _tokenize(text: str) -> tuple[str, ...]:
-    """Palabras en minúscula, sin puntuación. Nada de raíces ni sinónimos:
-    ver §1 del plan sobre por qué eso queda fuera de esta unidad."""
-    return tuple(match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text))
-
-
-def _vectorize(text: str) -> dict[str, int]:
-    """Recuento de palabras. Vacío si el texto no tiene ningún token."""
-    vector: dict[str, int] = {}
-    for token in _tokenize(text):
-        vector[token] = vector.get(token, 0) + 1
-    return vector
-
-
-def _norm(vector: Mapping[str, int]) -> float:
-    return math.sqrt(sum(vector[key] ** 2 for key in sorted(vector)))
-
-
-def _cosine(a: Mapping[str, int], b: Mapping[str, int]) -> float:
-    """Similitud coseno entre dos bolsas de palabras. 0.0 si no comparten
-    ningún token o si alguna de las dos está vacía."""
-    shared = sorted(set(a) & set(b))
-    if not shared:
-        return 0.0
-    dot = sum(a[key] * b[key] for key in shared)
-    norm_a = _norm(a)
-    norm_b = _norm(b)
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
+# Alias para pruebas existentes de U6
+_tokenize = tokenize
+_vectorize = vectorize
+_cosine = cosine
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,13 +53,13 @@ class BagOfWordsClassifier:
         conserva el mejor resultado, nunca un `float` compara para decidir
         el empate.
         """
-        query = _vectorize(utterance)
+        query = vectorize(utterance)
         if not query:
             return None
         best_score = 0.0
         best_id: IntentId | None = None
         for intent_id, example_vector in self.references:
-            score = _cosine(query, example_vector)
+            score = cosine(query, example_vector)
             if score > best_score:
                 best_score = score
                 best_id = intent_id
@@ -105,7 +74,7 @@ def build_classifier(pack: ContentPack) -> BagOfWordsClassifier | None:
     if not pack.intents:
         return None
     references = tuple(
-        (intent.id, _vectorize(example))
+        (intent.id, vectorize(example))
         for intent in sorted(pack.intents, key=lambda i: str(i.id))
         for example in intent.examples
     )

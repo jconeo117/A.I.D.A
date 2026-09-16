@@ -10,10 +10,23 @@ requires-python = ">=3.12"
 # El motor decide sin LLM. A propósito: el modelo solo entra por los puertos
 # de intención y cognición, en unidades posteriores, nunca como dependencia
 # del núcleo (criterio G4).
+# La captura local (STT/OCR) es opcional y se instala con:
+# `uv sync --extra capture`
+# pytesseract es un envoltorio: exige el binario `tesseract-ocr` instalado
+# en el sistema operativo (ej. `apt install tesseract-ocr tesseract-ocr-spa`
+# en Debian/Ubuntu). `uv sync` no lo instala — es un requisito de
+# despliegue, no una dependencia de Python.
 dependencies = [
     "pydantic>=2.9",
     "pyyaml>=6.0",
     "httpx>=0.27",
+    "cryptography>=43",
+]
+
+[project.optional-dependencies]
+capture = [
+    "faster-whisper>=1.0",
+    "pytesseract>=0.3",
 ]
 
 [project.scripts]
@@ -41,6 +54,11 @@ python_version = "3.12"
 strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
+
+# PIL llega como transitiva del extra 'capture', capture.py la importa de forma diferida, y sin el extra mypy no puede resolverla.
+[[tool.mypy.overrides]]
+module = "PIL.*"
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
