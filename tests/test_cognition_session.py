@@ -18,11 +18,20 @@ from typing import cast
 
 import pytest
 
+import aida.engine.events as events
 import aida.engine.loop as loop
 import aida.engine.ontology as ontology
 import aida.engine.pack as pack
+from aida.cognition.briefing import (
+    FREE_CHAT_INSTRUCTIONS,
+    OPERATIONAL_INSTRUCTIONS,
+    fallback_free_chat_reply,
+    fallback_reply,
+)
 from aida.cognition.session import Session
+from aida.engine.ports import IntentClassifier
 from aida.engine.queue import EventQueue, IncomingEvent
+from aida.intent.classify import build_classifier
 
 
 class _ProveedorFijo:
@@ -58,13 +67,16 @@ def _crear_pack_sesion(
     *,
     con_acciones: bool = True,
     duration_ticks: int = 1,
+    initial_need: float = 0.5,
+    critical_need_threshold: float = 0.15,
+    intents: list[ontology.IntentSpec] | None = None,
 ) -> pack.ContentPack:
     """Construye un content pack abstracto para pruebas de Session."""
     necesidad = ontology.NeedSpec(
         id=ontology.NeedId("n1"),
         label="Necesidad Alfa",
         decay_per_tick=0.01,
-        initial=0.5,
+        initial=initial_need,
         cap=1.0,
     )
     acciones: list[ontology.ActionSpec] = []
@@ -84,9 +96,13 @@ def _crear_pack_sesion(
     agente = ontology.AgentSpec(
         id=ontology.AgentId("agent_01"),
         label="Agente Alfa",
-        initial_needs={necesidad.id: 0.5},
+        initial_needs={necesidad.id: initial_need},
     )
-    tuning = ontology.TuningSpec(candidate_pool=max(len(acciones), 1), temperature=0.01)
+    tuning = ontology.TuningSpec(
+        candidate_pool=max(len(acciones), 1),
+        temperature=0.01,
+        critical_need_threshold=critical_need_threshold,
+    )
     return pack.ContentPack(
         id="pack_session_test",
         label="Pack Session Test",
@@ -94,12 +110,15 @@ def _crear_pack_sesion(
         actions=acciones,
         agents=[agente],
         tuning=tuning,
-        intents=[],
+        intents=intents or [],
     )
 
 
-def _iniciar_loop(p: pack.ContentPack) -> loop.Loop:
-    return loop.Loop.start(p, p.agents[0], seed=42, inbox_capacity=32)
+def _iniciar_loop(
+    p: pack.ContentPack,
+    intent: IntentClassifier | None = None,
+) -> loop.Loop:
+    return loop.Loop.start(p, p.agents[0], seed=42, inbox_capacity=32, intent=intent)
 
 
 def test_session_turn_con_proveedor_fijo_devuelve_su_texto() -> None:
@@ -229,3 +248,172 @@ def test_session_turn_with_failing_provider_falls_back_without_raising() -> None
 
     response = session.turn("Iniciar acción")
     assert response == "Empezó a hacer: Acción Alfa."
+
+
+def test_session_free_chat_activado_sin_urgencia_ni_intencion_usa_redact_free_chat() -> None:
+    """Caso 1 (§6.3): free_chat_enabled=True, sin intención ni necesidad crítica
+    usa _redact_free_chat.
+    """
+    p = _crear_pack_sesion(con_acciones=False, initial_need=0.5, critical_need_threshold=0.15)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("Hola, ¿cómo estás?")
+    assert len(espia.briefings) == 1
+    assert FREE_CHAT_INSTRUCTIONS in espia.briefings[0]
+    assert OPERATIONAL_INSTRUCTIONS not in espia.briefings[0]
+
+
+def test_session_free_chat_con_necesidad_critica_fuerza_modo_operativo() -> None:
+    """Caso 2 (§6.3): free_chat_enabled=True, pero necesidad por debajo del umbral crítico
+    usa _redact_operational.
+    """
+    p = _crear_pack_sesion(con_acciones=False, initial_need=0.05, critical_need_threshold=0.50)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("Hola, ¿cómo estás?")
+    assert len(espia.briefings) == 1
+    assert OPERATIONAL_INSTRUCTIONS in espia.briefings[0]
+    assert FREE_CHAT_INSTRUCTIONS not in espia.briefings[0]
+
+
+def test_session_free_chat_con_intencion_reconocida_fuerza_modo_operativo() -> None:
+    """Caso 3 (§6.3): free_chat_enabled=True, pero la entrada dispara un IntentSpec
+    usa _redact_operational.
+    """
+    necesidad_id = ontology.NeedId("n1")
+    intencion = ontology.IntentSpec(
+        id=ontology.IntentId("int_alfa"),
+        label="Peticion Alfa",
+        need=necesidad_id,
+        examples=("peticion alfa", "ejecutar accion"),
+    )
+    p = _crear_pack_sesion(con_acciones=True, intents=[intencion])
+    clasificador = build_classifier(p)
+    lp = _iniciar_loop(p, intent=clasificador)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("ejecutar accion")
+    assert len(espia.briefings) == 1
+    assert OPERATIONAL_INSTRUCTIONS in espia.briefings[0]
+    assert FREE_CHAT_INSTRUCTIONS not in espia.briefings[0]
+
+
+def test_session_free_chat_emite_reply_given_modo_libre() -> None:
+    """Caso 4 (§6.3): free_chat_enabled=True en charla libre emite EventKind.REPLY_GIVEN
+    con mode='libre'.
+    """
+    p = _crear_pack_sesion(con_acciones=False)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("Charla informal sin tareas")
+    eventos_reply = sesion.loop.log.of_kind(events.EventKind.REPLY_GIVEN)
+    assert len(eventos_reply) == 1
+    assert eventos_reply[0].data == {"mode": "libre"}
+
+
+def test_session_free_chat_con_urgencia_o_intencion_emite_reply_given_modo_operativo() -> None:
+    """Caso 5 (§6.3): free_chat_enabled=True en turno operativo emite EventKind.REPLY_GIVEN
+    con mode='operativo'.
+    """
+    p = _crear_pack_sesion(con_acciones=False, initial_need=0.05, critical_need_threshold=0.50)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("Hola")
+    eventos_reply = sesion.loop.log.of_kind(events.EventKind.REPLY_GIVEN)
+    assert len(eventos_reply) == 1
+    assert eventos_reply[0].data == {"mode": "operativo"}
+
+
+def test_session_free_chat_desactivado_no_emite_reply_given() -> None:
+    """Caso 6 (§6.3): free_chat_enabled=False (default) no emite ningún REPLY_GIVEN en el log."""
+    p = _crear_pack_sesion(con_acciones=False)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia)
+
+    sesion.turn("Hola, no deberia emitir reply_given")
+    eventos_reply = sesion.loop.log.of_kind(events.EventKind.REPLY_GIVEN)
+    assert len(eventos_reply) == 0
+
+
+def test_session_sin_proveedor_free_chat_activado_devuelve_fallback_free_chat() -> None:
+    """Caso 7 (§6.3): sin proveedor y free_chat_enabled=True devuelve fallback_free_chat_reply
+    exacto.
+    """
+    p = _crear_pack_sesion(con_acciones=False)
+    lp = _iniciar_loop(p)
+    sesion = Session(loop=lp, provider=None, free_chat_enabled=True)
+
+    respuesta = sesion.turn("Hola")
+    assert respuesta == fallback_free_chat_reply()
+    assert respuesta != fallback_reply(["No hay novedades desde el último turno."])
+
+
+def test_session_intencion_no_reconocida_permite_charla_libre() -> None:
+    """Protección M7: un clasificador activo con intención no reconocida emite INTENT_CLASSIFIED
+    sin 'intent' en data, lo que NO debe abortar la charla libre."""
+    necesidad_id = ontology.NeedId("n1")
+    intencion = ontology.IntentSpec(
+        id=ontology.IntentId("int_alfa"),
+        label="Peticion Alfa",
+        need=necesidad_id,
+        examples=("peticion alfa",),
+    )
+    p = _crear_pack_sesion(con_acciones=True, intents=[intencion])
+    clasificador = build_classifier(p)
+    lp = _iniciar_loop(p, intent=clasificador)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("texto que no tiene relacion con la intencion")
+    eventos_intent = sesion.loop.log.of_kind(events.EventKind.INTENT_CLASSIFIED)
+    assert len(eventos_intent) == 1
+    assert "intent" not in eventos_intent[0].data
+
+    assert len(espia.briefings) == 1
+    assert FREE_CHAT_INSTRUCTIONS in espia.briefings[0]
+    assert OPERATIONAL_INSTRUCTIONS not in espia.briefings[0]
+    eventos_reply = sesion.loop.log.of_kind(events.EventKind.REPLY_GIVEN)
+    assert len(eventos_reply) == 1
+    assert eventos_reply[0].data == {"mode": "libre"}
+
+
+def test_session_free_chat_incluye_guia_de_caracter_en_briefing() -> None:
+    """I-083: Session.turn() en modo charla libre debe incluir el temperamento traducido
+    a guía de estilo en el briefing del proveedor (ancla que describe_temperament llegue
+    efectivamente al LLM).
+    """
+    p = _crear_pack_sesion(con_acciones=False)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    sesion.turn("Hola, ¿cómo estás?")
+    assert len(espia.briefings) == 1
+    assert "Carácter de quien habla" in espia.briefings[0]
+    assert "metódico, casi nunca improvisa" in espia.briefings[0]
+
+
+def test_session_free_chat_incluye_utterance_literal_en_briefing() -> None:
+    """I-084: Session.turn() en modo charla libre debe incluir el texto literal del usuario
+    (utterance) en el briefing del proveedor.
+    """
+    p = _crear_pack_sesion(con_acciones=False)
+    lp = _iniciar_loop(p)
+    espia = _ProveedorEspia()
+    sesion = Session(loop=lp, provider=espia, free_chat_enabled=True)
+
+    entrada = "cuentame un chiste sobre pinguinos"
+    sesion.turn(entrada)
+    assert len(espia.briefings) == 1
+    assert entrada in espia.briefings[0]
+

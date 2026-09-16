@@ -16,7 +16,7 @@ import json
 import httpx
 import pytest
 
-from aida.cognition.briefing import SYSTEM_PROMPT, SpokenReply
+from aida.cognition.briefing import UNIVERSAL_SYSTEM_PROMPT, SpokenReply
 from aida.cognition.providers import (
     ClaudeProvider,
     GeminiProvider,
@@ -268,7 +268,7 @@ def test_claude_request_payload_contains_system_prompt_and_briefing() -> None:
     provider.think(briefing_text, SpokenReply)
 
     system_field = str(captured_payload.get("system", ""))
-    assert SYSTEM_PROMPT in system_field
+    assert UNIVERSAL_SYSTEM_PROMPT in system_field
     messages = captured_payload.get("messages")
     assert isinstance(messages, list)
     assert len(messages) > 0
@@ -304,7 +304,7 @@ def test_gemini_request_payload_contains_system_instruction_path_and_briefing() 
     assert isinstance(system_instruction, dict)
     parts = system_instruction.get("parts")
     assert isinstance(parts, list)
-    assert parts[0].get("text") == SYSTEM_PROMPT
+    assert parts[0].get("text") == UNIVERSAL_SYSTEM_PROMPT
 
     contents = captured_payload.get("contents")
     assert isinstance(contents, list)
@@ -336,7 +336,7 @@ def test_ollama_request_payload_contains_system_prompt_and_briefing() -> None:
     provider.think(briefing_text, SpokenReply)
 
     prompt_field = str(captured_payload.get("prompt", ""))
-    assert SYSTEM_PROMPT in prompt_field
+    assert UNIVERSAL_SYSTEM_PROMPT in prompt_field
     assert briefing_text in prompt_field
 
 

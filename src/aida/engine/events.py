@@ -143,6 +143,14 @@ class EventKind(StrEnum):
     "..."}` con lo encontrado, separado por comas; sin `data` si nada
     alcanzó el umbral."""
 
+    REPLY_GIVEN = "reply_given"
+    """La voz produjo una respuesta para quien habla. `data={"mode":
+    "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el
+    contenido exacto de una respuesta es trabajo de la memoria (U10), no
+    del journal de auditoría mínima. Solo lo emite `Session` cuando la
+    charla libre está activada (`free_chat_enabled=True`) — con la
+    bandera apagada, el comportamiento de U7 no cambia ni un evento."""
+
 
 @dataclass(frozen=True, slots=True)
 class Event:

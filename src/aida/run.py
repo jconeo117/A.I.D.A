@@ -59,6 +59,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="fuerza el proveedor de voz (claude|gemini|ollama); por defecto, "
         "AIDA_LLM_PROVIDER o 'gemini'",
     )
+    parser.add_argument(
+        "--free-chat",
+        action="store_true",
+        help="permite charla libre cuando no hay nada urgente ni una petición reconocida",
+    )
     parser.add_argument("--seed", type=int, default=0, help="semilla del generador determinista")
     return parser
 
@@ -97,7 +102,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Transparencia: si falta la credencial o el proveedor no existe,
             # advertir que opera en modo sin voz.
             provider = build_provider(provider_name)
-            session = Session(loop=loop, provider=provider)
+            session = Session(
+                loop=loop, provider=provider, free_chat_enabled=args.free_chat
+            )
             if provider is None:
                 print(
                     f"(sin voz: el proveedor {provider_name!r} no está disponible; "

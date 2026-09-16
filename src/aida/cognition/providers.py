@@ -20,7 +20,7 @@ from typing import cast
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from aida.cognition.briefing import SYSTEM_PROMPT
+from aida.cognition.briefing import UNIVERSAL_SYSTEM_PROMPT
 
 
 def _validate(raw: str, schema: type) -> object | None:
@@ -47,7 +47,7 @@ class ClaudeProvider:
                     "model": self._model,
                     "max_tokens": 512,
                     "system": (
-                        f"{SYSTEM_PROMPT}\n"
+                        f"{UNIVERSAL_SYSTEM_PROMPT}\n"
                         f"Responde SOLO con JSON válido de esta forma: {schema_json}"
                     ),
                     "messages": [{"role": "user", "content": briefing}],
@@ -73,7 +73,7 @@ class GeminiProvider:
             response = self._client.post(
                 f"/v1beta/models/{self._model}:generateContent",
                 json={
-                    "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                    "system_instruction": {"parts": [{"text": UNIVERSAL_SYSTEM_PROMPT}]},
                     "contents": [{"parts": [{"text": briefing}]}],
                     "generationConfig": {
                         "responseMimeType": "application/json",
@@ -102,7 +102,7 @@ class OllamaProvider:
                 "/api/generate",
                 json={
                     "model": self._model,
-                    "prompt": f"{SYSTEM_PROMPT}\n\n{briefing}",
+                    "prompt": f"{UNIVERSAL_SYSTEM_PROMPT}\n\n{briefing}",
                     "format": cast(type[BaseModel], schema).model_json_schema(),
                     "stream": False,
                 },

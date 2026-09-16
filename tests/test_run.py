@@ -17,6 +17,7 @@ import pytest
 
 import aida.engine.loop as loop
 from aida import __version__
+from aida.cognition.briefing import fallback_free_chat_reply
 from aida.run import main
 
 _TEMPLATE_PACK = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
@@ -552,6 +553,31 @@ def test_converse_banner_indicates_provider_availability(
     assert codigo_mock == 0
     assert "(voz: " in captured_mock.out
     assert "sin voz" not in captured_mock.out
+
+
+def test_converse_free_chat_sin_credenciales_devuelve_fallback_charla_libre(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 1 / M9: --converse --free-chat sin credenciales devuelve fallback_free_chat_reply,
+    distinta de la respuesta operativa de fallback.
+    """
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("hola, qué tal\nsalir\n"))
+
+    codigo = main(["--pack", str(pack_file), "--converse", "--free-chat"])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    frase_charla = fallback_free_chat_reply()
+    assert frase_charla in captured.out
+    assert "Empezó a hacer" not in captured.out
+    assert "No hay novedades" not in captured.out
+
 
 
 
