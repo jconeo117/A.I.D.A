@@ -192,14 +192,136 @@ def _scannable(tree: ast.AST) -> list[tuple[int, str]]:
                 | ast.ClassDef(name=name)
             ):
                 found.append((node.lineno, name))
+            case ast.Call(
+                func=ast.Attribute(attr="join"),
+                args=[ast.List(elts=elts) | ast.Tuple(elts=elts)],
+            ) if elts and all(
+                isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                for elt in elts
+            ):
+                sep = ""
+                if isinstance(node.func, ast.Attribute) and isinstance(
+                    node.func.value, ast.Constant
+                ) and isinstance(node.func.value.value, str):
+                    sep = node.func.value.value
+                joined = sep.join(
+                    elt.value
+                    for elt in elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                )
+                found.append((node.lineno, joined))
+            case ast.BinOp(
+                left=ast.Constant(value=str() as left_str),
+                op=ast.Add(),
+                right=ast.Constant(value=str() as right_str),
+            ):
+                found.append((node.lineno, left_str + right_str))
 
     return found
 
 
-def _imported_module_roots(tree: ast.AST) -> list[tuple[int, str]]:
-    """(línea, raíz del módulo) de cada `import` — para el guardián de G4.
+def _detect_concatenated_literal_evasions(tree: ast.AST) -> list[tuple[int, str]]:
+    """Detecta concatenación de literales de cadena para formar palabras (como
+    `"".join(["c", "pu"])` o `join` con lista/tupla de `ast.Constant`, o suma
+    binaria de constantes de cadena).
 
-    Solo la raíz importa: `import openai.types` y `from openai import X`
+    Estas construcciones existen únicamente para eludir los guardianes
+    sintácticos (vocabulario de ambientación y términos médicos).
+    """
+    offenders: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and node.args
+            and isinstance(node.args[0], (ast.List, ast.Tuple))
+        ):
+            elts = node.args[0].elts
+            if elts and all(
+                isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                for elt in elts
+            ):
+                sep = ""
+                if isinstance(node.func.value, ast.Constant) and isinstance(
+                    node.func.value.value, str
+                ):
+                    sep = node.func.value.value
+                joined = sep.join(
+                    elt.value
+                    for elt in elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                )
+                offenders.append((node.lineno, joined))
+        elif (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Add)
+            and isinstance(node.left, ast.Constant)
+            and isinstance(node.left.value, str)
+            and isinstance(node.right, ast.Constant)
+            and isinstance(node.right.value, str)
+        ):
+            offenders.append((node.lineno, node.left.value + node.right.value))
+    return offenders
+
+
+def _extract_dynamic_import_root(node: ast.Call) -> str | None:
+    """Extrae la raíz del módulo de llamadas a importlib.import_module o __import__.
+
+    Cubre argumentos constantes posicionales o por clave (name=...).
+    """
+    target: str | None = None
+
+    # 1. __import__("...") o __import__(name="...")
+    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            target = node.args[0].value
+        else:
+            for kw in node.keywords:
+                if (
+                    kw.arg == "name"
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                ):
+                    target = kw.value.value
+                    break
+
+    # 2. importlib.import_module("...") o import_module("...")
+    is_import_module = (
+        (isinstance(node.func, ast.Attribute) and node.func.attr == "import_module")
+        or (isinstance(node.func, ast.Name) and node.func.id == "import_module")
+    )
+    if is_import_module:
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            target = node.args[0].value
+        else:
+            for kw in node.keywords:
+                if (
+                    kw.arg == "name"
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                ):
+                    target = kw.value.value
+                    break
+
+    if target is not None:
+        return target.lstrip(".").split(".")[0]
+    return None
+
+
+def _imported_module_roots(tree: ast.AST) -> list[tuple[int, str]]:
+    """(línea, raíz del módulo) de cada `import` estático o dinámico — para el guardián de G4.
+
+    Solo la raíz importa: `import openai.types`, `from openai import X`,
+    `importlib.import_module("openai.types")` y `__import__("openai")`
     dependen los dos del mismo paquete de terceros, así que ambos deben
     marcarse con el mismo nombre.
     """
@@ -210,6 +332,10 @@ def _imported_module_roots(tree: ast.AST) -> list[tuple[int, str]]:
                 found.append((node.lineno, alias.name.split(".")[0]))
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             found.append((node.lineno, node.module.split(".")[0]))
+        elif isinstance(node, ast.Call):
+            root = _extract_dynamic_import_root(node)
+            if root:
+                found.append((node.lineno, root))
     return found
 
 
@@ -264,6 +390,25 @@ def test_engine_has_no_model_client_imports(source: Path) -> None:
         + "\n".join(offenders)
         + "\n\nG4: si el proveedor cae, AIDA sigue decidiendo; esa dependencia "
         "solo puede vivir en src/aida/cognition/ o src/aida/intent/."
+    )
+
+
+@pytest.mark.parametrize("source", _engine_sources(), ids=lambda p: p.name)
+def test_engine_has_no_concatenated_literal_evasions(source: Path) -> None:
+    """I-092 / §4.2: Ningún módulo de `src/aida/` elude los guardianes
+    mediante la concatenación de literales de cadena (como `"".join(["c", "pu"])`
+    o `join` con lista de `ast.Constant`).
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    offenders = [
+        f"  {source.name}:{lineno} -> concatenación elusiva evaluada como {text!r}"
+        for lineno, text in _detect_concatenated_literal_evasions(tree)
+    ]
+    assert not offenders, (
+        f"Elusión de guardián detectada en {source.name}:\n"
+        + "\n".join(offenders)
+        + "\n\nLas palabras deben escribirse completas y en datos si son de dominio, "
+        "nunca fragmentadas en código para esconderlas del análisis sintáctico."
     )
 
 
@@ -355,6 +500,23 @@ def test_scannable_sigue_detectando_def_y_class_ordinarios() -> None:
 
     assert any(PATTERN.search(text) for _, text in _scannable(tree_def))
     assert any(PATTERN.search(text) for _, text in _scannable(tree_class))
+
+
+def test_scannable_reconstituye_literales_partidos_con_join() -> None:
+    """Demuestra que la fragmentación de cadenas con join no burla el escaneo."""
+    code = 'device = "".join(["c", "pu"])'
+    tree = ast.parse(code)
+    textos = [text for _, text in _scannable(tree)]
+    assert "cpu" in textos
+    assert any(PATTERN.search(t) for t in textos)
+
+
+def test_detecta_concatenacion_de_literales_elusiva() -> None:
+    """Demuestra que _detect_concatenated_literal_evasions caza la elusión."""
+    code = 'device = "".join(["c", "pu"])'
+    tree = ast.parse(code)
+    offenders = _detect_concatenated_literal_evasions(tree)
+    assert offenders == [(1, "cpu")]
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +624,64 @@ def test_g4_guardian_forbidden_set_contains_all_runtime_roots() -> None:
     assert not missing, (
         f"Raíces de runtimes de modelo ausentes de FORBIDDEN_MODEL_IMPORT_ROOTS: {missing}"
     )
+
+
+# ---------------------------------------------------------------------------
+# I-095 — Detección de imports dinámicos en el guardián G4 (§4.2)
+# ---------------------------------------------------------------------------
+
+
+def test_g4_guardian_detecta_importlib_import_module_con_raiz_prohibida(tmp_path: Path) -> None:
+    """I-095 (§4.2): El guardián G4 detecta llamadas a `importlib.import_module("...")`
+    y `from importlib import import_module; import_module("...")` con argumento constante
+    cuya raíz pertenezca a FORBIDDEN_MODEL_IMPORT_ROOTS.
+    """
+    variantes = (
+        'import importlib\nimportlib.import_module("faster_whisper")\n',
+        'from importlib import import_module\nimport_module("faster_whisper")\n',
+        'import importlib\nimportlib.import_module("openai.types")\n',
+        'import importlib\nimportlib.import_module(name="faster_whisper")\n',
+    )
+    for content in variantes:
+        modulo = tmp_path / "modulo_mutado_importlib.py"
+        modulo.write_text(content, encoding="utf-8")
+
+        offenders = _model_import_offenders(modulo)
+        assert offenders, f"El guardián de G4 no detectó llamada a import_module: {content!r}"
+
+
+def test_g4_guardian_detecta_dunder_import_con_raiz_prohibida(tmp_path: Path) -> None:
+    """I-095 (§4.2): El guardián G4 detecta llamadas a `__import__("...")`
+    con argumento constante cuya raíz pertenezca a FORBIDDEN_MODEL_IMPORT_ROOTS.
+    """
+    variantes = (
+        '__import__("faster_whisper")\n',
+        '__import__("openai.types")\n',
+        '__import__(name="faster_whisper")\n',
+    )
+    for content in variantes:
+        modulo = tmp_path / "modulo_mutado_dunder.py"
+        modulo.write_text(content, encoding="utf-8")
+
+        offenders = _model_import_offenders(modulo)
+        assert offenders, f"El guardián de G4 no detectó llamada a __import__: {content!r}"
+
+
+def test_g4_guardian_permite_imports_dinamicos_no_prohibidos(tmp_path: Path) -> None:
+    """I-095 (§4.2): Llamadas a importlib.import_module o __import__ de paquetes
+    no prohibidos (como 'json' o 'math') no activan el guardián G4.
+    """
+    variantes = (
+        'import importlib\nimportlib.import_module("json")\n',
+        '__import__("math")\n',
+    )
+    for content in variantes:
+        modulo = tmp_path / "modulo_legitimo_dinamico.py"
+        modulo.write_text(content, encoding="utf-8")
+
+        offenders = _model_import_offenders(modulo)
+        assert not offenders, f"Falso positivo en import dinámico permitido: {content!r}"
+
 
 
 # ---------------------------------------------------------------------------

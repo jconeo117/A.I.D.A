@@ -55,3 +55,14 @@ class LocalTesseractOCR:
                 return raw.strip()
         except Exception as exc:
             raise OCRError(f"no se pudo leer {image_path}: {exc}") from exc
+
+
+def build_local_capture() -> tuple[LocalWhisperSTT, LocalTesseractOCR]:
+    """Construye STT y OCR locales. Vive aquí y no en `run.py` porque este
+    directorio es la costura declarada hacia los runtimes de modelo: el
+    guardián de G4 exime `consult/`, y `run.py` no."""
+    import pytesseract  # type: ignore[import-untyped]
+    from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+
+    return LocalWhisperSTT(WhisperModel("small")), LocalTesseractOCR(pytesseract)
+

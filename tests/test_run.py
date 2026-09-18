@@ -12,12 +12,14 @@ import sys
 import tomllib
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
+from cryptography.fernet import Fernet
 
 import aida.engine.loop as loop
 from aida import __version__
-from aida.cognition.briefing import fallback_free_chat_reply
+from aida.cognition.briefing import SpokenReply, fallback_free_chat_reply
 from aida.run import main
 
 _TEMPLATE_PACK = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
@@ -577,6 +579,362 @@ def test_converse_free_chat_sin_credenciales_devuelve_fallback_charla_libre(
     assert frase_charla in captured.out
     assert "Empezó a hacer" not in captured.out
     assert "No hay novedades" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# CLI --consultation (Unidad U9 / 31-plan-consultorio-cli)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_sin_audio_ni_history_devuelve_uno_y_menciona_banderas_en_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """§6.1 Caso 1: `--consultation` sin `--audio` ni `--history` debe devolver
+    código 1 e informar por stderr mencionando ambas banderas.
+    """
+    # Sin ninguna de las dos banderas
+    codigo = main(["--consultation"])
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "--audio" in captured.err
+    assert "--history" in captured.err
+
+    # Con solo --audio
+    codigo_solo_audio = main(["--consultation", "--audio", "consulta.wav"])
+    captured_audio = capsys.readouterr()
+    assert codigo_solo_audio == 1
+    assert "--history" in captured_audio.err
+
+    # Con solo --history
+    codigo_solo_history = main(["--consultation", "--history", "historia.png"])
+    captured_history = capsys.readouterr()
+    assert codigo_solo_history == 1
+    assert "--audio" in captured_history.err
+
+
+def test_consultation_sin_cache_key_devuelve_uno_y_menciona_variable_en_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§6.1 Caso 2: `--consultation --audio x --history y` sin AIDA_CONSULT_CACHE_KEY
+    en el entorno devuelve código 1 y menciona la variable por stderr.
+    """
+    monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+
+    codigo = main(["--consultation", "--audio", "audio.wav", "--history", "historia.png"])
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "AIDA_CONSULT_CACHE_KEY" in captured.err
+
+
+def test_consultation_clave_invalida_falla_sin_cargar_catalogo_ni_whisper(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§6.1 Caso 3: `--consultation --audio x --history y` con clave Fernet no válida
+    devuelve código 1, menciona por stderr que la clave no es válida, y nunca
+    intenta cargar el catálogo CIE-10 ni el modelo de Whisper.
+    """
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", "no-es-una-clave-valida")
+
+    catalogo_llamado = False
+
+    def spy_load_catalog(*args: Any, **kwargs: Any) -> Any:
+        nonlocal catalogo_llamado
+        catalogo_llamado = True
+        raise AssertionError("load_catalog no debe ser llamado con clave inválida")
+
+    monkeypatch.setattr("aida.consult.codes.load_catalog", spy_load_catalog)
+
+    whisper_llamado = False
+
+    def spy_whisper_model(*args: Any, **kwargs: Any) -> Any:
+        nonlocal whisper_llamado
+        whisper_llamado = True
+        raise AssertionError("WhisperModel no debe ser llamado con clave inválida")
+
+    try:
+        import importlib
+
+        faster_whisper = importlib.import_module("faster_whisper")
+        monkeypatch.setattr(faster_whisper, "WhisperModel", spy_whisper_model)
+    except ImportError:
+        pass
+
+    codigo = main(["--consultation", "--audio", "audio.wav", "--history", "historia.png"])
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "AIDA_CONSULT_CACHE_KEY" in captured.err
+    assert "no es una clave" in captured.err or "válida" in captured.err
+    assert not catalogo_llamado
+    assert not whisper_llamado
+
+
+def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.1 Caso 4: Con el extra `capture` instalado y clave Fernet real,
+    una ejecución completa contra un audio y un documento de prueba da
+    código 0 e imprime el resumen en Markdown por stdout.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Mock del backend de Whisper para aislar la prueba de descargas y latencia
+    class _MockWhisperBackend:
+        def __init__(
+            self, text: str = "El paciente refiere cefalea intensa y dolor de cabeza."
+        ) -> None:
+            self.text = text
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            mock_seg = MagicMock()
+            mock_seg.text = self.text
+            return [mock_seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+
+    # Mock de pytesseract para no depender de archivos traineddata del sistema
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: cefalea tensional recurrente.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cli",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "- El paciente dijo:" in captured.out
+    assert "- La historia registra:" in captured.out
+    assert "El paciente refiere cefalea" in captured.out
+    assert "cefalea tensional" in captured.out
+    assert captured.err == ""
+
+    # Comprueba que el caché cifrado fue escrito en disco y es descifrable con la clave
+    cache_file = tmp_path / ".cache" / "aida" / "consultas" / "paciente_test_cli.cache"
+    assert cache_file.exists()
+    contenido_descifrado = Fernet(key.encode()).decrypt(cache_file.read_bytes()).decode("utf-8")
+    assert "- El paciente dijo:" in contenido_descifrado
+
+
+def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-092 (§4.1): `--consultation` cablea el proveedor devuelto por
+    `build_provider`. Si el proveedor devuelve un `SpokenReply`, su texto
+    debe aparecer al inicio de la salida en stdout.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def __init__(
+            self, text: str = "El paciente refiere cefalea intensa y dolor de cabeza."
+        ) -> None:
+            self.text = text
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            mock_seg = MagicMock()
+            mock_seg.text = self.text
+            return [mock_seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: cefalea tensional recurrente.",
+    )
+
+    mock_provider = MagicMock()
+    mock_provider.think.return_value = SpokenReply(text="VOZ DEL MODELO EN EL RESUMEN")
+    monkeypatch.setattr("aida.run.build_provider", lambda *args, **kwargs: mock_provider)
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cli",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert captured.out.startswith("VOZ DEL MODELO EN EL RESUMEN")
+    assert captured.err == ""
+
+
+def test_default_summary_wording_desde_cwd_arbitrario_no_lanza_filenotfound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-094 (§2): `default_summary_wording()` carga el YAML de redacción por defecto
+    sin importar el directorio de trabajo (cwd).
+    """
+    from aida.consult.wording import default_summary_wording
+
+    monkeypatch.chdir(tmp_path)
+    wording = default_summary_wording()
+    assert wording.system_prompt
+    assert wording.said_template
+
+
+def test_consultation_con_cwd_arbitrario_clave_invalida_falla_por_clave_y_no_por_archivo(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-094 (§4.1): Desde un directorio de trabajo ajeno a la raíz del repositorio,
+    `--consultation` con clave Fernet inválida debe fallar con código 1 indicando
+    que la clave no es válida (y no con FileNotFoundError).
+    """
+    otro_directorio = tmp_path / "otro_cwd"
+    otro_directorio.mkdir()
+    monkeypatch.chdir(otro_directorio)
+
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", "clave-invalida-no-fernet")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            "audio.wav",
+            "--history",
+            "historia.png",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "AIDA_CONSULT_CACHE_KEY no es una clave Fernet válida" in captured.err
+
+
+def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-094 (§4.1): Desde un directorio de trabajo ajeno a la raíz del repositorio
+    (simulado con monkeypatch.chdir(tmp_path)), `--consultation` con clave válida
+    y mocks completos debe completar con código 0 e imprimir el markdown en stdout,
+    sin fallar con FileNotFoundError por las rutas del catálogo CIE-10 ni por las
+    del archivo de redacción (wording).
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    otro_directorio = tmp_path / "otro_cwd"
+    otro_directorio.mkdir()
+    monkeypatch.chdir(otro_directorio)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def __init__(
+            self, text: str = "El paciente refiere cefalea intensa y dolor de cabeza."
+        ) -> None:
+            self.text = text
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            mock_seg = MagicMock()
+            mock_seg.text = self.text
+            return [mock_seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: cefalea tensional recurrente.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cwd",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "- El paciente dijo:" in captured.out
+    assert "- La historia registra:" in captured.out
+    assert "El paciente refiere cefalea" in captured.out
+    assert "cefalea tensional" in captured.out
+    assert captured.err == ""
+
+
+
 
 
 

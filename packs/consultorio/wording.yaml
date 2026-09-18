@@ -1,0 +1,5 @@
+system_prompt: "Organiza en Markdown la información de una consulta médica:"
+said_template: "El paciente dijo: {}"
+history_template: "La historia registra: {}"
+matched_template: "Códigos de referencia cotejados, NO diagnósticos: {}"
+no_match_text: "Ningún código del catálogo alcanzó el umbral de cotejo."

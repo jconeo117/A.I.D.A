@@ -27,6 +27,8 @@ from aida.engine.state import AgentState, ExecutionState
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
 
+_RAIZ = Path(__file__).resolve().parents[2]
+
 
 def _construir_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -53,6 +55,21 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="abre una conversación por línea de comandos con el agente del pack",
     )
     parser.add_argument(
+        "--consultation",
+        action="store_true",
+        help="ejecuta el brazo de consulta: transcribe, coteja CIE-10, redacta un resumen",
+    )
+    parser.add_argument("--audio", metavar="RUTA", help="audio de la consulta (--consultation)")
+    parser.add_argument(
+        "--history", metavar="RUTA", help="documento de historia clínica (--consultation)"
+    )
+    parser.add_argument(
+        "--owner",
+        metavar="ID",
+        default="paciente_01",
+        help="identificador del paciente, para aislamiento del caché (--consultation)",
+    )
+    parser.add_argument(
         "--llm",
         metavar="PROVEEDOR",
         default=None,
@@ -74,6 +91,63 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.version:
         print(f"aida {__version__}")
+        return 0
+
+    if args.consultation:
+        if not args.audio or not args.history:
+            print("aida: error: --consultation requiere --audio y --history", file=sys.stderr)
+            return 1
+
+        key = os.environ.get("AIDA_CONSULT_CACHE_KEY")
+        if not key:
+            print(
+                "aida: error: falta AIDA_CONSULT_CACHE_KEY (clave Fernet del caché cifrado)",
+                file=sys.stderr,
+            )
+            return 1
+
+        from cryptography.fernet import Fernet
+
+        from aida.consult.cache import ConsultationCache
+        from aida.consult.capture import build_local_capture
+        from aida.consult.codes import load_catalog
+        from aida.consult.consultation import Consultation
+        from aida.consult.match import build_index
+        from aida.consult.wording import default_summary_wording
+        from aida.engine.events import EventLog
+        from aida.engine.ontology import AgentId
+
+        try:
+            Fernet(key.encode())
+        except ValueError:
+            print(
+                "aida: error: AIDA_CONSULT_CACHE_KEY no es una clave Fernet válida",
+                file=sys.stderr,
+            )
+            return 1
+
+        catalog = load_catalog(
+            _RAIZ / "data" / "cie10" / "codes.json",
+            _RAIZ / "data" / "cie10" / "cie-10.csv",
+        )
+        stt, ocr = build_local_capture()
+        consultation = Consultation(
+            wording=default_summary_wording(),
+            stt=stt,
+            ocr=ocr,
+            catalog_index=build_index(catalog),
+            provider=build_provider(args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")),
+            cache=ConsultationCache(
+                Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
+            ),
+            log=EventLog(),
+        )
+        result = consultation.run(
+            owner=AgentId(args.owner),
+            audio_path=Path(args.audio),
+            history_path=Path(args.history),
+        )
+        print(result.summary_markdown)
         return 0
 
     if args.pack:
