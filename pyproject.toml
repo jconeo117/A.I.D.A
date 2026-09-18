@@ -21,6 +21,7 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.27",
     "cryptography>=43",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,7 @@ capture = [
     "faster-whisper>=1.0",
     "pytesseract>=0.3",
     "pypdfium2>=4.0",
+    "sounddevice>=0.5",
 ]
 
 [project.scripts]
@@ -65,7 +67,7 @@ ignore_missing_imports = true
 # la instalación por defecto: sin el override, mypy no los resuelve ahí. Un
 # '# type: ignore' no vale — arregla una instalación y rompe la otra (I-080).
 [[tool.mypy.overrides]]
-module = ["pypdfium2.*", "pytesseract.*", "faster_whisper.*"]
+module = ["pypdfium2.*", "pytesseract.*", "faster_whisper.*", "sounddevice.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

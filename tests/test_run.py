@@ -934,6 +934,368 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
     assert captured.err == ""
 
 
+# ---------------------------------------------------------------------------
+# CLI --converse --mic (Unidad U10 / 33-plan-consultorio-voz)
+# ---------------------------------------------------------------------------
+
+
+class _DummyMicrophoneSource:
+    def __init__(self, max_chunks: int = 500) -> None:
+        self._chunks_yielded = 0
+        self._max_chunks = max_chunks
+
+    def __enter__(self) -> _DummyMicrophoneSource:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    def __call__(self) -> Any:
+        import numpy as np
+
+        self._chunks_yielded += 1
+        if self._chunks_yielded > self._max_chunks:
+            raise AssertionError(
+                "Flujo de micrófono excedido: el bucle no terminó tras procesar "
+                "los trozos esperados"
+            )
+        return np.zeros(512, dtype=np.float32)
+
+
+def _scripted_vad_factory() -> Any:
+    import numpy as np
+
+    turn_chunks = 0
+
+    def vad(tail: np.ndarray) -> np.ndarray:
+        nonlocal turn_chunks
+        if len(tail) == 512:
+            turn_chunks = 0
+        turn_chunks += 1
+        if turn_chunks <= 2:
+            return np.array([0.9])
+        return np.array([0.0])
+
+    return vad
+
+
+def test_converse_mic_salir_termina_con_cero_sin_llamar_session_turn(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 1: --converse --mic sin --history: un guion que transcribe
+    a 'salir' termina con código 0 sin llamar a Session.turn.
+    """
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _DummyMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    class MockSegment:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    script = iter(["salir"])
+
+    class MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[MockSegment], None]:
+            return [MockSegment(next(script))], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", MockWhisper)
+
+    turn_called = False
+
+    def spy_turn(self: Any, utterance: str) -> str:
+        nonlocal turn_called
+        turn_called = True
+        return "respuesta"
+
+    monkeypatch.setattr("aida.cognition.session.Session.turn", spy_turn)
+
+    codigo = main(["--pack", str(pack_file), "--converse", "--mic"])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert not turn_called
+    assert "(escuchando; di 'salir' para terminar)" in captured.out
+
+
+def test_converse_mic_hola_llama_session_turn_una_vez(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 2: --converse --mic: un guion que transcribe a 'hola'
+    llama a Session.turn('hola') una vez antes de recibir 'salir'.
+    """
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _DummyMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    class MockSegment:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    script = iter(["hola", "salir"])
+
+    class MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[MockSegment], None]:
+            return [MockSegment(next(script))], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", MockWhisper)
+
+    recorded_turns: list[str] = []
+
+    def spy_turn(self: Any, utterance: str) -> str:
+        recorded_turns.append(utterance)
+        return f"Respuesta a {utterance}"
+
+    monkeypatch.setattr("aida.cognition.session.Session.turn", spy_turn)
+
+    codigo = main(["--pack", str(pack_file), "--converse", "--mic"])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert recorded_turns == ["hola"]
+    assert "Respuesta a hola" in captured.out
+
+
+def test_converse_mic_history_inexistente_falla_antes_de_cargar_whisper(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 3 / Mata M10: --converse --mic --history inexistente.pdf
+    devuelve código 1, mensaje con la ruta, antes de cargar Whisper.
+    """
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    def crashing_whisper(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("WhisperModel no debe construirse si la ruta de historia no existe")
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", crashing_whisper)
+
+    inexistente = tmp_path / "historia_inexistente.pdf"
+    codigo = main(
+        ["--pack", str(pack_file), "--converse", "--mic", "--history", str(inexistente)]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "no existe" in captured.err
+    assert str(inexistente) in captured.err
+
+
+def test_converse_sin_mic_no_importa_sounddevice(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 4: --converse sin --mic no importa sounddevice."""
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("salir\n"))
+    monkeypatch.delitem(sys.modules, "sounddevice", raising=False)
+
+    codigo = main(["--pack", str(pack_file), "--converse"])
+    assert codigo == 0
+    assert "sounddevice" not in sys.modules
+
+
+def test_converse_mic_modo_consulta_delega_en_consultation_no_en_session_turn(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.4 Caso 5 / Mata M9: Con --history y comando 'modo consulta',
+    se entra en modo consulta llamando a consultation.run_with_history y no a
+    session.turn.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    historia_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(historia_path)
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _DummyMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    # El operador dice "modo consulta", el consultado dice "dolor de cabeza",
+    # luego operador dice "salir"
+    script = iter(["modo consulta", "dolor de cabeza", "salir"])
+
+    class MockSegment:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[MockSegment], None]:
+            return [MockSegment(next(script))], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", MockWhisper)
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa del paciente.",
+    )
+
+    turn_calls: list[str] = []
+
+    def spy_turn(self: Any, utterance: str) -> str:
+        turn_calls.append(utterance)
+        return f"Turn: {utterance}"
+
+    monkeypatch.setattr("aida.cognition.session.Session.turn", spy_turn)
+
+    codigo = main(
+        [
+            "--pack",
+            str(pack_file),
+            "--converse",
+            "--mic",
+            "--history",
+            str(historia_path),
+            "--owner",
+            "paciente_voz_01",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    # Session.turn no debe ser llamado para "modo consulta" ni en la consulta
+    assert "modo consulta" not in turn_calls
+    assert len(turn_calls) == 0
+    # La salida debe mostrar el cambio de modo y el resumen
+    assert "(modo consulta: escuchando)" in captured.out
+    assert "- El paciente dijo:" in captured.out
+    assert "dolor de cabeza" in captured.out
+    assert "(de vuelta en conversación)" in captured.out
+
+
+def test_converse_mic_sin_extra_capture_devuelve_uno_con_mensaje_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-102: si el extra capture no está disponible, --mic devuelve 1
+    e imprime el mensaje de error tratado por stderr."""
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    monkeypatch.setattr("aida.voice.listen.check_capture_available", lambda: False)
+
+    codigo = main(["--pack", str(pack_file), "--converse", "--mic"])
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert (
+        "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)"
+        in captured.err
+    )
+
+
+def test_converse_mic_keyboard_interrupt_termina_con_cero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """I-106: KeyboardInterrupt durante la escucha en --converse --mic termina con código 0."""
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    class _MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            return [], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", _MockWhisper)
+
+    class _InterruptMicrophoneSource:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def __call__(self) -> Any:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _InterruptMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    codigo = main(["--pack", str(pack_file), "--converse", "--mic"])
+    assert codigo == 0
+
+
+def test_switch_to_consult_phrases_uses_subject_noun(tmp_path: Path) -> None:
+    """I-103: switch_to_consult_phrases utiliza el subject_noun del wording."""
+    from aida.consult.wording import switch_to_consult_phrases
+
+    wording_file = tmp_path / "wording.yaml"
+    wording_file.write_text("subject_noun: cliente\n", encoding="utf-8")
+    phrases = switch_to_consult_phrases(wording_file)
+    assert "escucha al cliente" in phrases
+
+
+def test_switch_to_consult_phrases_missing_subject_noun_raises(tmp_path: Path) -> None:
+    """I-103: si falta subject_noun en el wording, se lanza KeyError o ValueError."""
+    from aida.consult.wording import switch_to_consult_phrases
+
+    wording_file = tmp_path / "wording.yaml"
+    wording_file.write_text("system_prompt: algo\n", encoding="utf-8")
+    with pytest.raises((KeyError, ValueError)):
+        switch_to_consult_phrases(wording_file)
+
+
+def test_conversation_silence_seconds_is_one_point_five() -> None:
+    """I-107: ancla que CONVERSATION_SILENCE_SECONDS es 1.5."""
+    from aida.run import CONVERSATION_SILENCE_SECONDS
+
+    assert CONVERSATION_SILENCE_SECONDS == 1.5
+
+
+
+
 
 
 

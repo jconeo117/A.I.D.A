@@ -15,6 +15,7 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from aida import __version__
 from aida.cognition.providers import build_provider
@@ -23,6 +24,9 @@ from aida.engine.explain import explain_deliberation
 from aida.engine.loop import Loop
 from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
+
+if TYPE_CHECKING:
+    from aida.consult.consultation import Consultation
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
@@ -61,13 +65,13 @@ def _construir_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--audio", metavar="RUTA", help="audio de la consulta (--consultation)")
     parser.add_argument(
-        "--history", metavar="RUTA", help="documento de historia clínica (--consultation)"
+        "--history", metavar="RUTA", help="documento de antecedentes previos (--consultation)"
     )
     parser.add_argument(
         "--owner",
         metavar="ID",
-        default="paciente_01",
-        help="identificador del paciente, para aislamiento del caché (--consultation)",
+        default="sujeto_01",
+        help="identificador del sujeto, para aislamiento del caché (--consultation)",
     )
     parser.add_argument(
         "--llm",
@@ -81,8 +85,205 @@ def _construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="permite charla libre cuando no hay nada urgente ni una petición reconocida",
     )
+    parser.add_argument(
+        "--mic",
+        action="store_true",
+        help="con --converse: escucha por micrófono en vez de leer del teclado (extra 'capture')",
+    )
+    parser.add_argument(
+        "--silence-seconds",
+        type=float,
+        default=8.0,
+        help="segundos de silencio que terminan la escucha en modo consulta",
+    )
+    parser.add_argument(
+        "--max-seconds", type=float, default=180.0, help="tope de escucha en modo consulta"
+    )
     parser.add_argument("--seed", type=int, default=0, help="semilla del generador determinista")
     return parser
+
+
+def _check_consult_cache_key() -> str | None:
+    key = os.environ.get("AIDA_CONSULT_CACHE_KEY")
+    if not key:
+        print(
+            "aida: error: falta AIDA_CONSULT_CACHE_KEY (clave Fernet del caché cifrado)",
+            file=sys.stderr,
+        )
+        return None
+
+    from cryptography.fernet import Fernet
+
+    try:
+        Fernet(key.encode())
+    except ValueError:
+        print(
+            "aida: error: AIDA_CONSULT_CACHE_KEY no es una clave Fernet válida",
+            file=sys.stderr,
+        )
+        return None
+    return key
+
+
+def _build_consultation(
+    args: argparse.Namespace, *, stt: object, ocr: object, key: str | None = None
+) -> Consultation | None:
+    """`None` tras imprimir el error si falta o no vale AIDA_CONSULT_CACHE_KEY.
+    Recibe STT y OCR ya construidos: quien llama decide si los comparte
+    con el bucle de conversación (rama --mic) o los crea solo para esto.
+    """
+    if key is None:
+        key = _check_consult_cache_key()
+        if key is None:
+            return None
+
+    from aida.consult.cache import ConsultationCache
+    from aida.consult.capture import LocalTesseractOCR, LocalWhisperSTT
+    from aida.consult.codes import load_catalog
+    from aida.consult.consultation import Consultation
+    from aida.consult.match import build_index
+    from aida.consult.wording import default_summary_wording
+    from aida.engine.events import EventLog
+
+    catalog = load_catalog(
+        _RAIZ / "data" / "cie10" / "codes.json",
+        _RAIZ / "data" / "cie10" / "cie-10.csv",
+    )
+    return Consultation(
+        wording=default_summary_wording(),
+        stt=stt if isinstance(stt, LocalWhisperSTT) else cast(Any, stt),
+        ocr=ocr if isinstance(ocr, LocalTesseractOCR) else cast(Any, ocr),
+        catalog_index=build_index(catalog),
+        provider=build_provider(args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")),
+        cache=ConsultationCache(
+            Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
+        ),
+        log=EventLog(),
+    )
+
+
+CONVERSATION_SILENCE_SECONDS = 1.5
+CONVERSATION_MAX_SECONDS = 30.0
+
+
+def _check_mic_dependencies() -> bool:
+    import importlib.util
+
+    for name in ("sounddevice", "faster_whisper"):
+        if sys.modules.get(name) is None and name in sys.modules:
+            print(
+                "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)",
+                file=sys.stderr,
+            )
+            return False
+        try:
+            if importlib.util.find_spec(name) is None:
+                print(
+                    "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)",
+                    file=sys.stderr,
+                )
+                return False
+        except (ValueError, AttributeError):
+            print(
+                "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)",
+                file=sys.stderr,
+            )
+            return False
+
+    try:
+        from aida.voice.listen import check_capture_available
+
+        if not check_capture_available():
+            print(
+                "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)",
+                file=sys.stderr,
+            )
+            return False
+    except ImportError:
+        print(
+            "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
+    if not _check_mic_dependencies():
+        return 1
+
+    import tempfile
+
+    from aida.consult.capture import build_local_capture
+    from aida.engine.ontology import AgentId
+    from aida.voice.commands import CommandCatalog, OperatorCommand
+    from aida.voice.listen import (
+        MicrophoneSource,
+        SilenceGatedListener,
+        vad_from_faster_whisper,
+        write_wav,
+    )
+
+    phrases: dict[OperatorCommand, tuple[str, ...]] = {
+        OperatorCommand.EXIT: ("salir", "terminar", "hasta luego"),
+    }
+
+    consultation = None
+    history_text = ""
+    if args.history:
+        history_path = Path(args.history)
+        if not history_path.exists():
+            print(f"aida: error: no existe {history_path}", file=sys.stderr)
+            return 1
+
+        from aida.consult.wording import switch_to_consult_phrases
+
+        stt, ocr = build_local_capture()
+        consultation = _build_consultation(args, stt=stt, ocr=ocr)
+        if consultation is None:
+            return 1
+        history_text = ocr.read(history_path)  # una sola vez, antes de escuchar a nadie
+        phrases[OperatorCommand.SWITCH_MODE] = switch_to_consult_phrases()
+    else:
+        stt, _ocr = build_local_capture()
+
+    commands = CommandCatalog.from_phrases(phrases)
+    tmp = Path(tempfile.mkdtemp(prefix="aida-voz-"))
+
+    try:
+        with MicrophoneSource() as source:
+            listener = SilenceGatedListener(chunk_source=source, vad=vad_from_faster_whisper())
+            print("(escuchando; di 'salir' para terminar)")
+            while True:
+                audio = listener.listen(
+                    silence_seconds=CONVERSATION_SILENCE_SECONDS,
+                    max_seconds=CONVERSATION_MAX_SECONDS,
+                )
+                if audio.size == 0:
+                    continue
+                utterance = stt.transcribe(write_wav(audio, tmp / "operador.wav"))
+                command = commands.recognize(utterance)
+                if command is OperatorCommand.EXIT:
+                    return 0
+                if command is OperatorCommand.SWITCH_MODE and consultation is not None:
+                    print("(modo consulta: escuchando)")
+                    consulted_audio = listener.listen(
+                        silence_seconds=args.silence_seconds, max_seconds=args.max_seconds
+                    )
+                    if consulted_audio.size == 0:
+                        print("(no se oyó nada)")
+                        continue
+                    result = consultation.run_with_history(
+                        owner=AgentId(args.owner),
+                        audio_path=write_wav(consulted_audio, tmp / "consultado.wav"),
+                        history_text=history_text,
+                    )
+                    print(result.summary_markdown)
+                    print("(de vuelta en conversación)")
+                    continue
+                print(session.turn(utterance))
+    except KeyboardInterrupt:
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -98,50 +299,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("aida: error: --consultation requiere --audio y --history", file=sys.stderr)
             return 1
 
-        key = os.environ.get("AIDA_CONSULT_CACHE_KEY")
+        key = _check_consult_cache_key()
         if not key:
-            print(
-                "aida: error: falta AIDA_CONSULT_CACHE_KEY (clave Fernet del caché cifrado)",
-                file=sys.stderr,
-            )
             return 1
 
-        from cryptography.fernet import Fernet
-
-        from aida.consult.cache import ConsultationCache
         from aida.consult.capture import build_local_capture
-        from aida.consult.codes import load_catalog
-        from aida.consult.consultation import Consultation
-        from aida.consult.match import build_index
-        from aida.consult.wording import default_summary_wording
-        from aida.engine.events import EventLog
         from aida.engine.ontology import AgentId
 
-        try:
-            Fernet(key.encode())
-        except ValueError:
-            print(
-                "aida: error: AIDA_CONSULT_CACHE_KEY no es una clave Fernet válida",
-                file=sys.stderr,
-            )
-            return 1
-
-        catalog = load_catalog(
-            _RAIZ / "data" / "cie10" / "codes.json",
-            _RAIZ / "data" / "cie10" / "cie-10.csv",
-        )
         stt, ocr = build_local_capture()
-        consultation = Consultation(
-            wording=default_summary_wording(),
-            stt=stt,
-            ocr=ocr,
-            catalog_index=build_index(catalog),
-            provider=build_provider(args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")),
-            cache=ConsultationCache(
-                Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
-            ),
-            log=EventLog(),
-        )
+        consultation = _build_consultation(args, stt=stt, ocr=ocr, key=key)
+        if consultation is None:
+            return 1
         result = consultation.run(
             owner=AgentId(args.owner),
             audio_path=Path(args.audio),
@@ -179,6 +347,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             session = Session(
                 loop=loop, provider=provider, free_chat_enabled=args.free_chat
             )
+            if args.mic:
+                return _converse_by_voice(args, session)
             if provider is None:
                 print(
                     f"(sin voz: el proveedor {provider_name!r} no está disponible; "

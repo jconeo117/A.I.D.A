@@ -53,13 +53,14 @@ FORBIDDEN_MODEL_IMPORT_ROOTS = frozenset(
         "pytesseract",
         "PIL",
         "pypdfium2",
+        "sounddevice",
     }
 )
 
 # Directorios donde SÍ está permitido lo anterior — la costura entre el motor
 # determinista y el modelo de lenguaje. No existen todavía en esta unidad,
 # pero `ENGINE_ROOT` cubre `src/aida` entero y U6/U8 los crearán ahí dentro.
-EXEMPT_DIR_NAMES = frozenset({"cognition", "intent", "consult"})
+EXEMPT_DIR_NAMES = frozenset({"cognition", "intent", "consult", "voice"})
 
 # Raíces y términos de vocabulario prohibido (con flexiones comunes y compuestos).
 FORBIDDEN_BASE_PATTERNS = [
@@ -563,6 +564,16 @@ def test_g4_guardian_exime_consult() -> None:
     assert not _is_exempt(Path("src/aida/textmatch.py"))
 
 
+def test_g4_guardian_exime_voice() -> None:
+    """`voice/` es la costura declarada para captura y escucha de audio local:
+    `EXEMPT_DIR_NAMES` lo incluye y `_is_exempt` lo reconoce.
+    """
+    assert "voice" in EXEMPT_DIR_NAMES
+    assert _is_exempt(Path("src/aida/voice/listen.py"))
+    assert _is_exempt(Path("src/aida/voice/commands.py"))
+    assert not _is_exempt(Path("src/aida/textmatch.py"))
+
+
 # ---------------------------------------------------------------------------
 # I-009 — el guardián no degrada en silencio si el pack no parsea
 # ---------------------------------------------------------------------------
@@ -595,6 +606,7 @@ NEW_RUNTIME_MODEL_IMPORT_ROOTS = (
     "pytesseract",
     "PIL",
     "pypdfium2",
+    "sounddevice",
 )
 
 
@@ -708,16 +720,28 @@ MEDICAL_PATTERN = re.compile(
 
 def _consult_sources() -> list[Path]:
     consult_dir = ENGINE_ROOT / "consult"
-    return sorted(
+    sources = sorted(
         path
         for path in consult_dir.rglob("*.py")
         if "__pycache__" not in path.parts
     )
+    run_file = ENGINE_ROOT / "run.py"
+    if not run_file.exists():
+        raise FileNotFoundError(f"Archivo run.py no encontrado en {run_file}")
+    sources.append(run_file)
+    return sources
 
 
 def test_consult_sources_exist() -> None:
     """Evita falsos verdes asegurando que se encuentran archivos en src/aida/consult."""
     assert _consult_sources(), f"No se encontró código de consulta en {ENGINE_ROOT / 'consult'}"
+
+
+def test_guardian_medico_escanea_run_py() -> None:
+    """I-111: El guardián médico escanea explícitamente run.py."""
+    nombres = {p.name for p in _consult_sources()}
+    assert "run.py" in nombres
+
 
 
 @pytest.mark.parametrize("source", _consult_sources(), ids=lambda p: p.name)

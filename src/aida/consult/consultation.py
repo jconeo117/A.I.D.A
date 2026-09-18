@@ -5,6 +5,7 @@ deliberación, es una tubería fija que se ejecuta cuando el médico la pide.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,10 +65,21 @@ class Consultation:
         self._top_n = match_top_n
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
+        """Lee la historia y delega. Es el camino por archivos (plan 31)."""
+        return self.run_with_history(
+            owner=owner, audio_path=audio_path, history_text=lambda: self._ocr.read(history_path)
+        )
+
+    def run_with_history(
+        self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
+    ) -> ConsultationResult:
+        """La historia ya leída. Es el camino cuando la HC se cargó al
+        arrancar — hoy a mano; mañana la traerá quien sepa qué paciente
+        sigue (Ruta B)."""
         transcript = self._stt.transcribe(audio_path)
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
 
-        history = self._ocr.read(history_path)
+        history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
 
         matches = match_codes(

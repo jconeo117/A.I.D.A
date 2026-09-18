@@ -1027,4 +1027,154 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
         assert cache.load(owner=owner) == expected_fallback
 
 
+def test_consultation_run_with_history_does_not_call_ocr(
+    tmp_path: Path,
+    fernet_key: bytes,
+    sample_catalog_index: CatalogIndex,
+    sample_media: tuple[Path, Path],
+    sample_wording: SummaryWording,
+) -> None:
+    """§6.3 Caso 1: run_with_history(...) no invoca OCR bajo ninguna circunstancia
+    y utiliza history_text tal cual en el resumen.
+    """
+    audio_path, _ = sample_media
+    cache = ConsultationCache(tmp_path, key=fernet_key, ttl_seconds=3600)
+    log = EventLog(window=100)
+
+    class CrashingOCRBackend:
+        def image_to_string(self, *args: Any, **kwargs: Any) -> str:
+            raise AssertionError("OCR no debe ser invocado en run_with_history")
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=LocalWhisperSTT(MockWhisperBackend("Audio de consulta")),
+        ocr=LocalTesseractOCR(CrashingOCRBackend()),
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=cache,
+        log=log,
+        match_threshold=0.99,
+    )
+
+    owner = ontology.AgentId("paciente_precargado")
+    history_precargada = "Historia clínica precargada en memoria sin OCR"
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=audio_path,
+        history_text=history_precargada,
+    )
+
+    assert history_precargada in result.summary_markdown
+    events = list(log)
+    assert len(events) == 3
+    assert events[1].kind == EventKind.INPUT_OBSERVED
+    assert events[1].content == history_precargada
+
+
+def test_consultation_run_calls_ocr_exactly_once(
+    tmp_path: Path,
+    fernet_key: bytes,
+    sample_catalog_index: CatalogIndex,
+    sample_media: tuple[Path, Path],
+    sample_wording: SummaryWording,
+) -> None:
+    """§6.3 Caso 2: run(...) sigue invocando al OCR exactamente una vez."""
+    audio_path, history_path = sample_media
+    cache = ConsultationCache(tmp_path, key=fernet_key, ttl_seconds=3600)
+    log = EventLog(window=100)
+
+    ocr_calls = 0
+
+    class CountingOCRBackend:
+        def image_to_string(self, *args: Any, **kwargs: Any) -> str:
+            nonlocal ocr_calls
+            ocr_calls += 1
+            return "Texto de historia leída por OCR"
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=LocalWhisperSTT(MockWhisperBackend("Audio")),
+        ocr=LocalTesseractOCR(CountingOCRBackend()),
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=cache,
+        log=log,
+        match_threshold=0.99,
+    )
+
+    owner = ontology.AgentId("paciente_con_ocr")
+    result = consultation.run(
+        owner=owner,
+        audio_path=audio_path,
+        history_path=history_path,
+    )
+
+    assert ocr_calls == 1
+    assert "Texto de historia leída por OCR" in result.summary_markdown
+
+
+def test_consultation_run_delegates_to_run_with_history(
+    tmp_path: Path,
+    fernet_key: bytes,
+    sample_catalog_index: CatalogIndex,
+    sample_media: tuple[Path, Path],
+    sample_wording: SummaryWording,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§6.3 / Mata M8: run(...) delega directamente en run_with_history(...)
+    pasando el texto leído por el OCR y los argumentos correspondientes.
+    Si run duplica el cuerpo en lugar de delegar, este test falla.
+    """
+    from aida.consult.consultation import ConsultationResult
+
+    audio_path, history_path = sample_media
+    cache = ConsultationCache(tmp_path, key=fernet_key, ttl_seconds=3600)
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=LocalWhisperSTT(MockWhisperBackend("Audio")),
+        ocr=LocalTesseractOCR(MockTesseractBackend("Historia del OCR")),
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=cache,
+        log=log,
+    )
+
+    owner = ontology.AgentId("paciente_delegacion")
+    delegated_call: dict[str, Any] = {}
+    dummy_result = ConsultationResult(
+        owner=owner,
+        transcript="Audio",
+        history_excerpt="Historia del OCR",
+        summary_markdown="# Resumen delegado",
+        matched_codes=(),
+    )
+
+    def mock_run_with_history(
+        *, owner: ontology.AgentId, audio_path: Path, history_text: Any
+    ) -> ConsultationResult:
+        ht = history_text() if callable(history_text) else history_text
+        delegated_call["owner"] = owner
+        delegated_call["audio_path"] = audio_path
+        delegated_call["history_text"] = ht
+        return dummy_result
+
+    monkeypatch.setattr(consultation, "run_with_history", mock_run_with_history)
+
+    result = consultation.run(
+        owner=owner,
+        audio_path=audio_path,
+        history_path=history_path,
+    )
+
+    assert result is dummy_result
+    assert delegated_call == {
+        "owner": owner,
+        "audio_path": audio_path,
+        "history_text": "Historia del OCR",
+    }
+
+
+
 
