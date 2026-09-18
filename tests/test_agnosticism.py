@@ -52,6 +52,7 @@ FORBIDDEN_MODEL_IMPORT_ROOTS = frozenset(
         "tokenizers",
         "pytesseract",
         "PIL",
+        "pypdfium2",
     }
 )
 
@@ -593,6 +594,7 @@ NEW_RUNTIME_MODEL_IMPORT_ROOTS = (
     "tokenizers",
     "pytesseract",
     "PIL",
+    "pypdfium2",
 )
 
 

@@ -47,7 +47,14 @@ class LocalTesseractOCR:
         self._pytesseract: Any = pytesseract_module
 
     def read(self, image_path: Path) -> str:
+        """Texto de una imagen o de un PDF. Un PDF se rasteriza página a
+        página con `pypdfium2` (PDFium embebido, sin binario del sistema)
+        y cada página pasa por el mismo `image_to_string`; las páginas se
+        unen con una línea en blanco para que el cotejo de códigos vea el
+        documento entero, no solo la primera."""
         try:
+            if image_path.suffix.lower() == ".pdf":
+                return self._read_pdf(image_path)
             from PIL import Image
 
             with Image.open(image_path) as img:
@@ -56,13 +63,24 @@ class LocalTesseractOCR:
         except Exception as exc:
             raise OCRError(f"no se pudo leer {image_path}: {exc}") from exc
 
+    def _read_pdf(self, pdf_path: Path) -> str:
+        import pypdfium2 as pdfium
+
+        document = pdfium.PdfDocument(str(pdf_path))
+        pages: list[str] = []
+        for index in range(len(document)):
+            bitmap = document[index].render(scale=2)
+            raw: str = self._pytesseract.image_to_string(bitmap.to_pil(), lang="spa")
+            pages.append(raw.strip())
+        return "\n\n".join(pages).strip()
+
 
 def build_local_capture() -> tuple[LocalWhisperSTT, LocalTesseractOCR]:
     """Construye STT y OCR locales. Vive aquí y no en `run.py` porque este
     directorio es la costura declarada hacia los runtimes de modelo: el
     guardián de G4 exime `consult/`, y `run.py` no."""
-    import pytesseract  # type: ignore[import-untyped]
-    from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+    import pytesseract
+    from faster_whisper import WhisperModel
 
     return LocalWhisperSTT(WhisperModel("small")), LocalTesseractOCR(pytesseract)
 

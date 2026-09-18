@@ -48,6 +48,10 @@ Image = pytest.importorskip(
     "PIL.Image",
     reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
 )
+pdfium = pytest.importorskip(
+    "pypdfium2",
+    reason="requiere el extra 'capture' (pypdfium2)",
+)
 
 
 @pytest.fixture
@@ -341,6 +345,84 @@ def test_tesseract_ocr_wraps_missing_file_or_bad_format_in_ocr_error(
     ocr = LocalTesseractOCR(MagicMock())
     with pytest.raises(OCRError, match="No such file or directory"):
         ocr.read(tmp_path / "non_existent.png")
+
+
+def test_tesseract_ocr_reads_multipage_pdf_in_order(tmp_path: Path) -> None:
+    """PDF de dos páginas devuelve los textos unidos por '\n\n' en orden de página."""
+    class MultiPageTesseract:
+        def image_to_string(self, img: Any, *args: Any, **kwargs: Any) -> str:
+            return f"P{img.height}"
+
+    pdf_path = tmp_path / "multipage.pdf"
+    img1 = Image.new("RGB", (100, 60), color="white")
+    img2 = Image.new("RGB", (100, 120), color="black")
+    img1.save(pdf_path, save_all=True, append_images=[img2])
+
+    ocr = LocalTesseractOCR(MultiPageTesseract())
+    result = ocr.read(pdf_path)
+    assert result == "P120\n\nP240"
+
+
+
+def test_tesseract_ocr_passes_pil_image_for_both_pdf_and_non_pdf(
+    tmp_path: Path,
+) -> None:
+    """PDF y no-PDF pasan por el mismo doble y la imagen recibida por
+    image_to_string es PIL.Image en los dos casos.
+    """
+    seen_types: list[type] = []
+
+    class AssertingTesseract:
+        def image_to_string(self, img: Any, *args: Any, **kwargs: Any) -> str:
+            assert isinstance(img, Image.Image)
+            seen_types.append(type(img))
+            return "texto extraido"
+
+    ocr = LocalTesseractOCR(AssertingTesseract())
+
+    # No-PDF (PNG)
+    png_path = tmp_path / "record.png"
+    img_png = Image.new("RGB", (50, 50), color="white")
+    img_png.save(png_path)
+    assert ocr.read(png_path) == "texto extraido"
+
+    # PDF
+    pdf_path = tmp_path / "record.pdf"
+    img_pdf = Image.new("RGB", (50, 50), color="white")
+    img_pdf.save(pdf_path)
+    assert ocr.read(pdf_path) == "texto extraido"
+
+    assert len(seen_types) == 2
+
+
+def test_tesseract_ocr_wraps_corrupt_pdf_in_ocr_error(tmp_path: Path) -> None:
+    """PDF ilegible (archivo .pdf con bytes basura) produce OCRError,
+    no una excepción cruda de pypdfium2.
+    """
+    bad_pdf = tmp_path / "corrupt.pdf"
+    bad_pdf.write_bytes(b"%PDF-malformed-garbage-bytes\xff\xfe\xaa\xbb")
+
+    ocr = LocalTesseractOCR(MagicMock())
+    with pytest.raises(OCRError) as exc_info:
+        ocr.read(bad_pdf)
+
+    assert not isinstance(exc_info.value, pdfium.PdfiumError)
+    assert "no se pudo leer" in str(exc_info.value)
+
+
+def test_tesseract_ocr_handles_uppercase_pdf_extension(tmp_path: Path) -> None:
+    """Sufijo en mayúsculas (.PDF) toma la rama PDF."""
+    class UpperTesseract:
+        def image_to_string(self, *args: Any, **kwargs: Any) -> str:
+            return "Texto extraido de PDF en mayusculas"
+
+    pdf_path = tmp_path / "historia.PDF"
+    img = Image.new("RGB", (60, 60), color="white")
+    img.save(pdf_path)
+
+    ocr = LocalTesseractOCR(UpperTesseract())
+    result = ocr.read(pdf_path)
+    assert result == "Texto extraido de PDF en mayusculas"
 
 
 # ---------------------------------------------------------------------------

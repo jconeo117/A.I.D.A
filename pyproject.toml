@@ -27,6 +27,7 @@ dependencies = [
 capture = [
     "faster-whisper>=1.0",
     "pytesseract>=0.3",
+    "pypdfium2>=4.0",
 ]
 
 [project.scripts]
@@ -58,6 +59,13 @@ plugins = ["pydantic.mypy"]
 # PIL llega como transitiva del extra 'capture', capture.py la importa de forma diferida, y sin el extra mypy no puede resolverla.
 [[tool.mypy.overrides]]
 module = "PIL.*"
+ignore_missing_imports = true
+
+# Los runtimes del extra 'capture' se importan de forma diferida y no viajan en
+# la instalación por defecto: sin el override, mypy no los resuelve ahí. Un
+# '# type: ignore' no vale — arregla una instalación y rompe la otra (I-080).
+[[tool.mypy.overrides]]
+module = ["pypdfium2.*", "pytesseract.*", "faster_whisper.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
