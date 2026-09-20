@@ -1,7 +1,7 @@
 """Batería de pruebas adversariales y verificación de resiliencia para U9.
 
 Diseñada por Challenger 2 para verificar empíricamente los límites de
-robustez de `src/aida/consult/`:
+robustez de `src/aida/arms/health/`:
 1. Resiliencia criptográfica y de caché (`ConsultationCache`):
    - Cifrados corruptos (tokens truncados, bit flips, bytes aleatorios, tokens inválidos).
    - Clave de cifrado incorrecta en archivos existentes.
@@ -30,17 +30,17 @@ import pytest
 from cryptography.fernet import Fernet
 
 import aida.engine.ontology as ontology
-from aida.cognition.briefing import SpokenReply
-from aida.consult.cache import ConsultationCache
-from aida.consult.capture import (
+from aida.arms.health.cache import ConsultationCache
+from aida.arms.health.capture import (
     LocalTesseractOCR,
     LocalWhisperSTT,
     OCRError,
     TranscriptionError,
 )
-from aida.consult.codes import DiagnosticCode
-from aida.consult.consultation import Consultation, SummaryWording
-from aida.consult.match import CatalogIndex, build_index
+from aida.arms.health.codes import DiagnosticCode
+from aida.arms.health.consultation import Consultation, SummaryWording
+from aida.arms.health.match import CatalogIndex, build_index
+from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ports import CognitionProvider
 
@@ -1125,7 +1125,7 @@ def test_consultation_run_delegates_to_run_with_history(
     pasando el texto leído por el OCR y los argumentos correspondientes.
     Si run duplica el cuerpo en lugar de delegar, este test falla.
     """
-    from aida.consult.consultation import ConsultationResult
+    from aida.arms.health.consultation import ConsultationResult
 
     audio_path, history_path = sample_media
     cache = ConsultationCache(tmp_path, key=fernet_key, ttl_seconds=3600)

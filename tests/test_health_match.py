@@ -1,4 +1,4 @@
-"""Pruebas unitarias del cotejo determinista contra el catálogo CIE-10 (`aida.consult.match`).
+"""Pruebas unitarias del cotejo determinista contra el catálogo CIE-10 (`aida.arms.health.match`).
 
 Cubre la unidad U9 según la especificación de `.claude/workflow/26-plan-u9.md` §6.3.
 Verifica de forma aislada la selección, filtrado y ordenamiento de códigos diagnósticos:
@@ -18,11 +18,11 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from aida.consult.codes import DiagnosticCode, load_catalog
-from aida.consult.match import MatchedCode, build_index, match_codes
+from aida.arms.health.codes import DiagnosticCode, load_catalog
+from aida.arms.health.match import MatchedCode, build_index, match_codes
 
-CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "cie10" / "codes.json"
-CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "cie10" / "cie-10.csv"
+CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "codes.json"
+CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "cie-10.csv"
 
 
 # ---------------------------------------------------------------------------

@@ -645,7 +645,7 @@ def test_consultation_clave_invalida_falla_sin_cargar_catalogo_ni_whisper(
         catalogo_llamado = True
         raise AssertionError("load_catalog no debe ser llamado con clave inválida")
 
-    monkeypatch.setattr("aida.consult.codes.load_catalog", spy_load_catalog)
+    monkeypatch.setattr("aida.arms.health.codes.load_catalog", spy_load_catalog)
 
     whisper_llamado = False
 
@@ -822,7 +822,7 @@ def test_default_summary_wording_desde_cwd_arbitrario_no_lanza_filenotfound(
     """I-094 (§2): `default_summary_wording()` carga el YAML de redacción por defecto
     sin importar el directorio de trabajo (cwd).
     """
-    from aida.consult.wording import default_summary_wording
+    from aida.arms.health.wording import default_summary_wording
 
     monkeypatch.chdir(tmp_path)
     wording = default_summary_wording()
@@ -1269,7 +1269,7 @@ def test_converse_mic_keyboard_interrupt_termina_con_cero(
 
 def test_switch_to_consult_phrases_uses_subject_noun(tmp_path: Path) -> None:
     """I-103: switch_to_consult_phrases utiliza el subject_noun del wording."""
-    from aida.consult.wording import switch_to_consult_phrases
+    from aida.arms.health.wording import switch_to_consult_phrases
 
     wording_file = tmp_path / "wording.yaml"
     wording_file.write_text("subject_noun: cliente\n", encoding="utf-8")
@@ -1279,7 +1279,7 @@ def test_switch_to_consult_phrases_uses_subject_noun(tmp_path: Path) -> None:
 
 def test_switch_to_consult_phrases_missing_subject_noun_raises(tmp_path: Path) -> None:
     """I-103: si falta subject_noun en el wording, se lanza KeyError o ValueError."""
-    from aida.consult.wording import switch_to_consult_phrases
+    from aida.arms.health.wording import switch_to_consult_phrases
 
     wording_file = tmp_path / "wording.yaml"
     wording_file.write_text("system_prompt: algo\n", encoding="utf-8")

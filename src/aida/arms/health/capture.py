@@ -78,7 +78,7 @@ class LocalTesseractOCR:
 def build_local_capture() -> tuple[LocalWhisperSTT, LocalTesseractOCR]:
     """Construye STT y OCR locales. Vive aquí y no en `run.py` porque este
     directorio es la costura declarada hacia los runtimes de modelo: el
-    guardián de G4 exime `consult/`, y `run.py` no."""
+    guardián de G4 exime `arms/`, y `run.py` no."""
     import pytesseract
     from faster_whisper import WhisperModel
 

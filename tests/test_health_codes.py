@@ -1,8 +1,8 @@
-"""Pruebas unitarias del catálogo de códigos diagnósticos CIE-10 (`aida.consult.codes`).
+"""Pruebas unitarias del catálogo de códigos diagnósticos CIE-10 (`aida.arms.health.codes`).
 
 Cubre la unidad U9 según la especificación de `.claude/workflow/26-plan-u9.md` §6.2.
 Verifica de forma aislada y rigurosa sobre los datos REALES y fuentes sintéticas:
-1. Carga exhaustiva sobre `data/cie10/codes.json` y `data/cie10/cie-10.csv`:
+1. Carga exhaustiva sobre `data/health/cie10/codes.json` y `data/health/cie10/cie-10.csv`:
    - Exactamente 14498 registros totales.
    - Exactamente 11268 registros con `source == "ambas"`.
    - Exactamente 3230 registros con `source == "deis.cl"`.
@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from aida.consult.codes import CatalogConflictError, DiagnosticCode, load_catalog
+from aida.arms.health.codes import CatalogConflictError, DiagnosticCode, load_catalog
 
-CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "cie10" / "codes.json"
-CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "cie10" / "cie-10.csv"
+CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "codes.json"
+CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "cie-10.csv"
 
 
 # ---------------------------------------------------------------------------

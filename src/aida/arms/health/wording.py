@@ -1,7 +1,7 @@
 """Carga de la redacción por defecto para consultas desde archivo de datos.
 
 Los textos específicos del dominio se inyectan como datos desde un archivo YAML
-para preservar el agnosticismo y cumplir las reglas de vocabulario de `consult/`.
+para preservar el agnosticismo y cumplir las reglas de vocabulario de `arms/health/`.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ from pathlib import Path
 
 import yaml
 
-from aida.consult.consultation import SummaryWording
+from aida.arms.health.consultation import SummaryWording
 
-_RAIZ = Path(__file__).resolve().parents[3]
-_WORDING_POR_DEFECTO = _RAIZ / "packs" / "consultorio" / "wording.yaml"
+_RAIZ = Path(__file__).resolve().parents[4]
+_WORDING_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "wording.yaml"
 
 
 def default_summary_wording(path: Path | None = None) -> SummaryWording:
@@ -47,7 +47,7 @@ def default_summary_wording(path: Path | None = None) -> SummaryWording:
 
 def switch_to_consult_phrases(path: Path | None = None) -> tuple[str, ...]:
     """Frases del operador para entrar en modo consulta. Viven aquí y no
-    en `voice/` ni en `run.py`: es vocabulario del dominio, y `consult/` es
+    en `voice/` ni en `run.py`: es vocabulario del dominio, y `arms/health/` es
     el único sitio exento del guardián (`I-073`)."""
     ruta = path if path is not None else _WORDING_POR_DEFECTO
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))

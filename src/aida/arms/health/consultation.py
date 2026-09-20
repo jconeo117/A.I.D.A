@@ -9,10 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from aida.arms.health.cache import ConsultationCache
+from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
 from aida.cognition.briefing import SpokenReply
-from aida.consult.cache import ConsultationCache
-from aida.consult.capture import LocalTesseractOCR, LocalWhisperSTT
-from aida.consult.match import CatalogIndex, MatchedCode, match_codes
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.engine.ports import CognitionProvider

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aida.consult.codes import DiagnosticCode
+from aida.arms.health.codes import DiagnosticCode
 from aida.textmatch import cosine, vectorize
 
 CatalogIndex = tuple[tuple[DiagnosticCode, dict[str, int]], ...]

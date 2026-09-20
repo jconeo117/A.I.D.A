@@ -1,6 +1,6 @@
 """Bolsa de palabras y coseno: la única aritmética de "esto se parece a
 esto" del repositorio. Compartida por `intent/classify.py` (U6) y
-`consult/match.py` (U9) para que las dos no puedan divergir en el mismo
+`arms/health/match.py` (U9) para que las dos no puedan divergir en el mismo
 cálculo con criterios distintos — una sola puerta por mecanismo.
 
 Sin modelo, sin dependencia nueva: un recuento de palabras y coseno entre

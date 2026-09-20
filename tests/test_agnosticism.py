@@ -60,7 +60,7 @@ FORBIDDEN_MODEL_IMPORT_ROOTS = frozenset(
 # Directorios donde SÍ está permitido lo anterior — la costura entre el motor
 # determinista y el modelo de lenguaje. No existen todavía en esta unidad,
 # pero `ENGINE_ROOT` cubre `src/aida` entero y U6/U8 los crearán ahí dentro.
-EXEMPT_DIR_NAMES = frozenset({"cognition", "intent", "consult", "voice"})
+EXEMPT_DIR_NAMES = frozenset({"cognition", "intent", "arms", "voice"})
 
 # Raíces y términos de vocabulario prohibido (con flexiones comunes y compuestos).
 FORBIDDEN_BASE_PATTERNS = [
@@ -554,13 +554,14 @@ def test_g4_guardian_exime_cognition_e_intent() -> None:
     assert not _is_exempt(Path("src/aida/engine/pack.py"))
 
 
-def test_g4_guardian_exime_consult() -> None:
-    """`consult/` es la costura declarada para captura local (STT/OCR) de U9:
-    `EXEMPT_DIR_NAMES` lo incluye y `_is_exempt` lo reconoce.
+def test_g4_guardian_exime_arms() -> None:
+    """`arms/` es el punto de entrada para brazos de dominio:
+    `EXEMPT_DIR_NAMES` lo incluye y `_is_exempt` lo reconoce para cualquier brazo.
     """
-    assert "consult" in EXEMPT_DIR_NAMES
-    assert _is_exempt(Path("src/aida/consult/capture.py"))
-    assert _is_exempt(Path("src/aida/consult/consultation.py"))
+    assert "arms" in EXEMPT_DIR_NAMES
+    assert "consult" not in EXEMPT_DIR_NAMES
+    assert _is_exempt(Path("src/aida/arms/health/capture.py"))
+    assert _is_exempt(Path("src/aida/arms/accounting/algo.py")) is True
     assert not _is_exempt(Path("src/aida/textmatch.py"))
 
 
@@ -699,7 +700,7 @@ def test_g4_guardian_permite_imports_dinamicos_no_prohibidos(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# I-073 — Agnóstico de dominio: src/aida/consult/ no fija términos médicos en código
+# I-073 — Agnóstico de dominio: src/aida/arms/health/ no fija términos médicos en código
 # ---------------------------------------------------------------------------
 
 FORBIDDEN_MEDICAL_PATTERNS = [
@@ -718,11 +719,13 @@ MEDICAL_PATTERN = re.compile(
 )
 
 
-def _consult_sources() -> list[Path]:
-    consult_dir = ENGINE_ROOT / "consult"
+def _health_sources() -> list[Path]:
+    health_dir = ENGINE_ROOT / "arms" / "health"
+    if not health_dir.exists():
+        raise FileNotFoundError(f"Directorio no encontrado en {health_dir}")
     sources = sorted(
         path
-        for path in consult_dir.rglob("*.py")
+        for path in health_dir.rglob("*.py")
         if "__pycache__" not in path.parts
     )
     run_file = ENGINE_ROOT / "run.py"
@@ -732,23 +735,28 @@ def _consult_sources() -> list[Path]:
     return sources
 
 
-def test_consult_sources_exist() -> None:
-    """Evita falsos verdes asegurando que se encuentran archivos en src/aida/consult."""
-    assert _consult_sources(), f"No se encontró código de consulta en {ENGINE_ROOT / 'consult'}"
+def test_health_sources_exist() -> None:
+    """Evita falsos verdes asegurando que se encuentran archivos en src/aida/arms/health."""
+    sources = [p for p in _health_sources() if p != ENGINE_ROOT / "run.py"]
+    assert sources, f"No se encontró código del brazo health en {ENGINE_ROOT / 'arms' / 'health'}"
 
 
 def test_guardian_medico_escanea_run_py() -> None:
     """I-111: El guardián médico escanea explícitamente run.py."""
-    nombres = {p.name for p in _consult_sources()}
+    nombres = {p.name for p in _health_sources()}
     assert "run.py" in nombres
 
 
 
-@pytest.mark.parametrize("source", _consult_sources(), ids=lambda p: p.name)
-def test_consult_has_no_medical_domain_literals(source: Path) -> None:
-    """I-073 (§4.2): El código del módulo `consult/` no debe contener vocabulario
+@pytest.mark.parametrize("source", _health_sources(), ids=lambda p: p.name)
+def test_health_has_no_medical_domain_literals(source: Path) -> None:
+    """I-073 (§4.2): El código del módulo `arms/health/` no debe contener vocabulario
     fijo del dominio médico ('paciente', 'consulta médica', 'diagnóstico',
     'cefalea', 'historia clínica').
+
+    NOTA: Este guardián es de vocabulario médico para el brazo `health`, no
+    genérico de todos los brazos. Cada futuro brazo (p. ej. accounting) requerirá
+    su propio guardián con su lista de términos prohibidos correspondiente.
 
     El agnosticismo de AIDA exige que los términos de dominio sean inyectados
     como datos o configuración (e.g. vía `SummaryWording`), nunca codificados

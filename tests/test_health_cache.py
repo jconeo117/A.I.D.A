@@ -1,4 +1,4 @@
-"""Pruebas unitarias de la caché cifrada en disco (`aida.consult.cache`).
+"""Pruebas unitarias de la caché cifrada en disco (`aida.arms.health.cache`).
 
 Cubre la unidad U9 según la especificación de `.claude/workflow/26-plan-u9.md` §6.4.
 Verifica el almacenamiento seguro, aislamiento por paciente y ciclo de expiración:
@@ -22,7 +22,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 import aida.engine.ontology as ontology
-from aida.consult.cache import ConsultationCache
+from aida.arms.health.cache import ConsultationCache
 
 
 @pytest.fixture

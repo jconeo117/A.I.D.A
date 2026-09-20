@@ -26,7 +26,7 @@ from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
 
 if TYPE_CHECKING:
-    from aida.consult.consultation import Consultation
+    from aida.arms.health.consultation import Consultation
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
@@ -137,17 +137,17 @@ def _build_consultation(
         if key is None:
             return None
 
-    from aida.consult.cache import ConsultationCache
-    from aida.consult.capture import LocalTesseractOCR, LocalWhisperSTT
-    from aida.consult.codes import load_catalog
-    from aida.consult.consultation import Consultation
-    from aida.consult.match import build_index
-    from aida.consult.wording import default_summary_wording
+    from aida.arms.health.cache import ConsultationCache
+    from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+    from aida.arms.health.codes import load_catalog
+    from aida.arms.health.consultation import Consultation
+    from aida.arms.health.match import build_index
+    from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
     catalog = load_catalog(
-        _RAIZ / "data" / "cie10" / "codes.json",
-        _RAIZ / "data" / "cie10" / "cie-10.csv",
+        _RAIZ / "data" / "health" / "cie10" / "codes.json",
+        _RAIZ / "data" / "health" / "cie10" / "cie-10.csv",
     )
     return Consultation(
         wording=default_summary_wording(),
@@ -214,7 +214,7 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
 
     import tempfile
 
-    from aida.consult.capture import build_local_capture
+    from aida.arms.health.capture import build_local_capture
     from aida.engine.ontology import AgentId
     from aida.voice.commands import CommandCatalog, OperatorCommand
     from aida.voice.listen import (
@@ -236,7 +236,7 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
             print(f"aida: error: no existe {history_path}", file=sys.stderr)
             return 1
 
-        from aida.consult.wording import switch_to_consult_phrases
+        from aida.arms.health.wording import switch_to_consult_phrases
 
         stt, ocr = build_local_capture()
         consultation = _build_consultation(args, stt=stt, ocr=ocr)
@@ -303,7 +303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not key:
             return 1
 
-        from aida.consult.capture import build_local_capture
+        from aida.arms.health.capture import build_local_capture
         from aida.engine.ontology import AgentId
 
         stt, ocr = build_local_capture()
