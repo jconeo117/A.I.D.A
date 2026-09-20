@@ -16,6 +16,7 @@ from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.engine.ports import CognitionProvider
+from aida.voice.diarize import DiarizationError, LocalPyannoteDiarizer, merge_by_speaker
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,8 @@ class SummaryWording:
     history_template: str
     matched_template: str
     no_match_text: str
+    professional_label: str | None = None
+    patient_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +56,7 @@ class Consultation:
         log: EventLog,
         match_threshold: float = 0.30,
         match_top_n: int = 5,
+        diarizer: LocalPyannoteDiarizer | None = None,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -63,6 +67,7 @@ class Consultation:
         self._log = log
         self._threshold = match_threshold
         self._top_n = match_top_n
+        self._diarizer = diarizer
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
         """Lee la historia y delega. Es el camino por archivos (plan 31)."""
@@ -76,7 +81,10 @@ class Consultation:
         """La historia ya leída. Es el camino cuando la HC se cargó al
         arrancar — hoy a mano; mañana la traerá quien sepa qué paciente
         sigue (Ruta B)."""
-        transcript = self._stt.transcribe(audio_path)
+        if self._diarizer is not None:
+            transcript = self._diarize_and_label(owner, audio_path)
+        else:
+            transcript = self._stt.transcribe(audio_path)
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
 
         history = history_text() if callable(history_text) else history_text
@@ -104,6 +112,44 @@ class Consultation:
         )
         self._cache.store(owner=owner, summary_markdown=summary)
         return result
+
+    def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
+        if self._wording.professional_label is None or self._wording.patient_label is None:
+            raise ValueError(
+                "diarización activa pero wording no trae professional_label/patient_label"
+            )
+        if self._diarizer is None:
+            raise RuntimeError("diarizador no configurado")
+        segments = self._stt.transcribe_segments(audio_path)
+        turns = self._diarizer.diarize(audio_path)
+        pairs = merge_by_speaker(segments, turns)
+
+        distinct: list[str] = []
+        for speaker, text in pairs:
+            if speaker == "DESCONOCIDO" and not text.strip():
+                continue
+            if speaker not in distinct:
+                distinct.append(speaker)
+        if len(distinct) > 2:
+            raise DiarizationError(
+                f"se detectaron {len(distinct)} hablantes distintos, se esperaban 2"
+            )
+        professional_id = distinct[0] if distinct else None
+
+        self._log.emit(
+            tick=0,
+            kind=EventKind.SPEAKERS_DIARIZED,
+            owner=owner,
+            data={"speakers": str(len(distinct))},
+        )
+
+        prof = self._wording.professional_label
+        pat = self._wording.patient_label
+        lines = [
+            f"{prof if speaker == professional_id else pat}: {text}"
+            for speaker, text in pairs
+        ]
+        return "\n".join(lines)
 
     def _build_facts(
         self, transcript: str, history: str, matches: tuple[MatchedCode, ...]

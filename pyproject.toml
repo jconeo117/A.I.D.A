@@ -31,6 +31,9 @@ capture = [
     "pypdfium2>=4.0",
     "sounddevice>=0.5",
 ]
+diarization = [
+    "pyannote.audio>=3.1",
+]
 
 [project.scripts]
 aida = "aida.run:main"
@@ -67,7 +70,7 @@ ignore_missing_imports = true
 # la instalación por defecto: sin el override, mypy no los resuelve ahí. Un
 # '# type: ignore' no vale — arregla una instalación y rompe la otra (I-080).
 [[tool.mypy.overrides]]
-module = ["pypdfium2.*", "pytesseract.*", "faster_whisper.*", "sounddevice.*"]
+module = ["pypdfium2.*", "pytesseract.*", "faster_whisper.*", "sounddevice.*", "pyannote.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

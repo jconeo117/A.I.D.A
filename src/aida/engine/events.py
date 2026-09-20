@@ -143,6 +143,10 @@ class EventKind(StrEnum):
     "..."}` con lo encontrado, separado por comas; sin `data` si nada
     alcanzó el umbral."""
 
+    SPEAKERS_DIARIZED = "speakers_diarized"
+    """Se identificaron hablantes en una entrada de audio. `data={"speakers": "N"}`
+    con el número de hablantes distintos detectados."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

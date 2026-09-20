@@ -672,6 +672,24 @@ def test_consultation_clave_invalida_falla_sin_cargar_catalogo_ni_whisper(
     assert not whisper_llamado
 
 
+def test_consultation_diarize_sin_hf_token_devuelve_uno_y_menciona_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--consultation --diarize --audio x --history y sin AIDA_HF_TOKEN devuelve
+    código 1 y mensaje 'aida: error: --diarize requiere AIDA_HF_TOKEN' por stderr.
+    """
+    monkeypatch.delenv("AIDA_HF_TOKEN", raising=False)
+
+    codigo = main(
+        ["--consultation", "--diarize", "--audio", "audio.wav", "--history", "historia.png"]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: --diarize requiere AIDA_HF_TOKEN" in captured.err
+
+
 def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

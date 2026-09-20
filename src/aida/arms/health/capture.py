@@ -13,6 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from aida.voice.diarize import TranscriptSegment
+
 
 class TranscriptionError(RuntimeError):
     """El audio no se pudo transcribir."""
@@ -31,6 +33,16 @@ class LocalWhisperSTT:
         try:
             segments, _info = self._model.transcribe(str(audio_path), language="es")
             return " ".join(segment.text.strip() for segment in segments)
+        except Exception as exc:
+            raise TranscriptionError(f"no se pudo transcribir {audio_path}: {exc}") from exc
+
+    def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+        try:
+            segments, _info = self._model.transcribe(str(audio_path), language="es")
+            return tuple(
+                TranscriptSegment(start=s.start, end=s.end, text=s.text.strip())
+                for s in segments
+            )
         except Exception as exc:
             raise TranscriptionError(f"no se pudo transcribir {audio_path}: {exc}") from exc
 

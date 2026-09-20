@@ -68,6 +68,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         "--history", metavar="RUTA", help="documento de antecedentes previos (--consultation)"
     )
     parser.add_argument(
+        "--diarize",
+        action="store_true",
+        help="activa la diarización de hablantes en la consulta",
+    )
+    parser.add_argument(
         "--owner",
         metavar="ID",
         default="sujeto_01",
@@ -126,7 +131,12 @@ def _check_consult_cache_key() -> str | None:
 
 
 def _build_consultation(
-    args: argparse.Namespace, *, stt: object, ocr: object, key: str | None = None
+    args: argparse.Namespace,
+    *,
+    stt: object,
+    ocr: object,
+    diarizer: object | None = None,
+    key: str | None = None,
 ) -> Consultation | None:
     """`None` tras imprimir el error si falta o no vale AIDA_CONSULT_CACHE_KEY.
     Recibe STT y OCR ya construidos: quien llama decide si los comparte
@@ -159,6 +169,7 @@ def _build_consultation(
             Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
         ),
         log=EventLog(),
+        diarizer=cast(Any, diarizer),
     )
 
 
@@ -299,6 +310,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("aida: error: --consultation requiere --audio y --history", file=sys.stderr)
             return 1
 
+        if args.diarize:
+            if not os.environ.get("AIDA_HF_TOKEN"):
+                print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
+                return 1
+            from aida.voice.diarize import build_local_diarizer
+
+            diarizer = build_local_diarizer()
+        else:
+            diarizer = None
+
         key = _check_consult_cache_key()
         if not key:
             return 1
@@ -307,7 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from aida.engine.ontology import AgentId
 
         stt, ocr = build_local_capture()
-        consultation = _build_consultation(args, stt=stt, ocr=ocr, key=key)
+        consultation = _build_consultation(args, stt=stt, ocr=ocr, diarizer=diarizer, key=key)
         if consultation is None:
             return 1
         result = consultation.run(
