@@ -12,6 +12,7 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
+from aida.arms.health.model import Encounter, build_encounter
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.cognition.briefing import SpokenReply
@@ -44,6 +45,7 @@ class ConsultationResult:
     history_excerpt: str
     matched_codes: tuple[str, ...]
     summary_markdown: str
+    encounter: Encounter | None = None
 
 
 class Consultation:
@@ -96,6 +98,7 @@ class Consultation:
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
 
         grouped_sections = None
+        encounter = None
         if self._segmenter is not None:
             grouped_sections = self._segmenter.segment(transcript)
             self._log.emit(
@@ -106,6 +109,14 @@ class Consultation:
                 if grouped_sections
                 else {},
             )
+            if grouped_sections is not None:
+                encounter = build_encounter(owner=owner, grouped_sections=grouped_sections)
+                self._log.emit(
+                    tick=0,
+                    kind=EventKind.MODEL_BUILT,
+                    owner=owner,
+                    data={"findings": str(sum(len(v) for v in encounter.findings.values()))},
+                )
 
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
@@ -129,6 +140,7 @@ class Consultation:
             history_excerpt=history,
             matched_codes=tuple(m.diagnostic.code for m in matches),
             summary_markdown=summary,
+            encounter=encounter,
         )
         self._cache.store(owner=owner, summary_markdown=summary)
         return result

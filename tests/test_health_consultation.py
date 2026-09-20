@@ -871,15 +871,150 @@ def test_consultation_evento_text_segmented_orden_y_datos(
     assert ev_anterior.kind == EventKind.INPUT_OBSERVED
     assert ev_anterior.content == "consulta hoy por mareos\nse receta reposo"
 
+    # Tras TEXT_SEGMENTED viene MODEL_BUILT (Plan 45 §5.2)
+    ev_model = events[idx_seg + 1]
+    assert ev_model.kind == EventKind.MODEL_BUILT
+    assert ev_model.owner == owner
+    assert ev_model.tick == 0
+    assert ev_model.data == {"findings": "2"}
+
     # El evento posterior debe ser INPUT_OBSERVED (de la historia)
-    ev_posterior = events[idx_seg + 1]
+    ev_posterior = events[idx_seg + 2]
     assert ev_posterior.kind == EventKind.INPUT_OBSERVED
     assert ev_posterior.content == "Historia previa."
+
+    # Tras INPUT_OBSERVED de la historia viene CATALOG_MATCHED
+    assert kinds[idx_seg + 3] == EventKind.CATALOG_MATCHED
+
+    # Secuencia completa requerida por §5.2:
+    # INPUT_OBSERVED (transcript) -> TEXT_SEGMENTED -> MODEL_BUILT ->
+    # INPUT_OBSERVED (historia) -> CATALOG_MATCHED
+    expected_sequence = [
+        EventKind.INPUT_OBSERVED,
+        EventKind.TEXT_SEGMENTED,
+        EventKind.MODEL_BUILT,
+        EventKind.INPUT_OBSERVED,
+        EventKind.CATALOG_MATCHED,
+    ]
+    assert kinds[idx_seg - 1 : idx_seg + 4] == expected_sequence
 
     # Contenido del evento TEXT_SEGMENTED
     ev_seg = events[idx_seg]
     assert ev_seg.owner == owner
     assert ev_seg.tick == 0
     assert ev_seg.data == {"sections": "motivo_consulta,medicamentos"}
+
+
+def test_consultation_con_segmentador_arma_encounter_y_emite_model_built(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§5.2: Con segmentador activo:
+    - result.encounter is not None
+    - findings coincide exactamente con lo que produjo segmenter.segment(transcript)
+    - MODEL_BUILT emitido con data["findings"] igual a la suma real de líneas
+      (3 líneas en 2 secciones)
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="consulta hoy por cefalea"),
+        TranscriptSegment(start=2.0, end=4.0, text="el motivo de consulta incluye mareos"),
+        TranscriptSegment(start=4.0, end=6.0, text="se receta paracetamol cada 8 horas"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    sections = load_sections()
+    segmenter = ClinicalSegmenter(sections)
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+    )
+
+    owner = AgentId("medico_test")
+    transcript_text = (
+        "consulta hoy por cefalea\n"
+        "el motivo de consulta incluye mareos\n"
+        "se receta paracetamol cada 8 horas"
+    )
+    grouped = segmenter.segment(transcript_text)
+    # grouped tiene 2 secciones: motivo_consulta con 2 líneas, medicamentos con 1 línea
+    assert len(grouped) == 2
+    assert len(grouped[0][1]) == 2
+    assert len(grouped[1][1]) == 1
+
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is not None
+    assert result.encounter.owner == owner
+
+    # Coincidencia exacta con lo producido por segmenter.segment(transcript)
+    expected_findings_keys = [spec.section_id for spec, _ in grouped]
+    assert list(result.encounter.findings.keys()) == expected_findings_keys
+    for spec, lines in grouped:
+        finding_texts = [f.text for f in result.encounter.findings[spec.section_id]]
+        assert finding_texts == list(lines)
+        for f in result.encounter.findings[spec.section_id]:
+            assert f.section_id == spec.section_id
+
+    # MODEL_BUILT con conteo real de líneas (3), no número de secciones (2)
+    model_events = [e for e in log if e.kind == EventKind.MODEL_BUILT]
+    assert len(model_events) == 1
+    ev = model_events[0]
+    assert ev.owner == owner
+    assert ev.tick == 0
+    assert ev.data == {"findings": "3"}
+
+
+def test_consultation_sin_segmentador_no_arma_encounter_ni_emite_model_built(
+    sample_wording: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§5.2: Sin segmentador (por defecto):
+    - result.encounter is None
+    - no se emite MODEL_BUILT
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="consulta hoy por cefalea"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=None,
+    )
+
+    owner = AgentId("medico_test")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is None
+    assert not any(e.kind == EventKind.MODEL_BUILT for e in log)
+
 
 

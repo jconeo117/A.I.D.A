@@ -152,6 +152,11 @@ class EventKind(StrEnum):
     `data={"sections": "..."}` con los identificadores encontrados; sin `data`
     si ninguna sección tuvo contenido."""
 
+    MODEL_BUILT = "model_built"
+    """Se armó una representación estructurada a partir de una entrada ya
+    clasificada. `data={"findings": "N"}` con el total de hallazgos —
+    genérico: cualquier brazo que arme un modelo propio lo reutiliza."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

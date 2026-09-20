@@ -8,6 +8,7 @@ son, por ahora, toda la batería de la unidad.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -836,6 +837,158 @@ def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
     assert "se receta ibuprofeno cada 8 horas" in captured.out
     assert "- El paciente dijo:" not in captured.out
     assert captured.err == ""
+
+
+def test_consultation_cli_segment_print_model(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§5.3 CLI: `--consultation --segment --print-model` con datos mockeados:
+    el JSON impreso en stdout tras el resumen parsea con `json.loads` y coincide
+    con `result.encounter.to_dict()`.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackendMultiSegment:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg1 = MagicMock()
+            seg1.start = 0.0
+            seg1.end = 2.0
+            seg1.text = "consulta hoy por dolor de cabeza intenso"
+
+            seg2 = MagicMock()
+            seg2.start = 2.0
+            seg2.end = 4.0
+            seg2.text = "se receta ibuprofeno cada 8 horas"
+
+            return [seg1, seg2], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackendMultiSegment(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: sin antecedentes de interés.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--print-model",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cli_print_model",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert captured.err == ""
+
+    # Extraer el JSON tras el resumen en stdout
+    json_start = captured.out.find("{")
+    assert json_start != -1, "No se encontró JSON en stdout"
+    summary_part = captured.out[:json_start]
+    json_part = captured.out[json_start:]
+
+    # El resumen markdown está presente antes del JSON
+    assert "### Motivo de consulta" in summary_part
+    assert "### Medicamentos" in summary_part
+
+    # El JSON parsea con json.loads y coincide con el encounter esperado
+    parsed = json.loads(json_part)
+    expected = {
+        "motivo_consulta": ["consulta hoy por dolor de cabeza intenso"],
+        "medicamentos": ["se receta ibuprofeno cada 8 horas"],
+    }
+    assert parsed == expected
+
+
+def test_consultation_cli_print_model_sin_segment_avisa_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§5.3 CLI: `--consultation --print-model` sin `--segment`:
+    termina con código 0, imprime el resumen en stdout y muestra
+    "aida: aviso: --print-model requiere --segment" en stderr.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg = MagicMock()
+            seg.start = 0.0
+            seg.end = 2.0
+            seg.text = "consulta por control general"
+            return [seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia previa normal.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--print-model",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_sin_segment",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    # Resumen impreso en stdout
+    assert "consulta por control general" in captured.out
+    # Aviso en stderr
+    assert "aida: aviso: --print-model requiere --segment" in captured.err
 
 
 def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(

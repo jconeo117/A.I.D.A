@@ -78,6 +78,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="agrupa la transcripción en secciones clínicas (--consultation)",
     )
     parser.add_argument(
+        "--print-model",
+        action="store_true",
+        help="imprime el Clinical Model en JSON tras el resumen (requiere --segment)",
+    )
+    parser.add_argument(
         "--owner",
         metavar="ID",
         default="sujeto_01",
@@ -353,6 +358,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             history_path=Path(args.history),
         )
         print(result.summary_markdown)
+        if args.print_model:
+            if result.encounter is None:
+                print("aida: aviso: --print-model requiere --segment", file=sys.stderr)
+            else:
+                import json
+
+                print(json.dumps(result.encounter.to_dict(), ensure_ascii=False, indent=2))
         return 0
 
     if args.pack:
