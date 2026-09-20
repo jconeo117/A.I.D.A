@@ -24,6 +24,8 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, SummaryWording
 from aida.arms.health.match import CatalogIndex, build_index
+from aida.arms.health.sections import load_sections
+from aida.arms.health.segment import ClinicalSegmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -587,4 +589,297 @@ def test_diarize_and_label_con_diarizador_none_lanza_runtime_error(
     owner = AgentId("medico_general")
     with pytest.raises(RuntimeError, match=r"diarizador no configurado"):
         consultation._diarize_and_label(owner, Path("/tmp/consulta_audio.wav"))
+
+
+# ---------------------------------------------------------------------------
+# Pruebas §6.3: Segmentación clínica (44-plan-segmentacion-clinica.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_wording_sections() -> SummaryWording:
+    return SummaryWording(
+        system_prompt="Organiza en Markdown la información de una consulta médica:",
+        said_template="Dijo: {}",
+        history_template="Historia: {}",
+        matched_template="CIE-10: {}",
+        no_match_text="Sin códigos",
+        professional_label="MÉDICO",
+        patient_label="PACIENTE",
+        section_template="### {}\n{}",
+    )
+
+
+def test_consultation_segmenter_camino_feliz_sin_diarizador(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§6.3: Camino feliz, sin diarizador:
+    - Doble de transcribe_segments devuelve 3 segmentos de secciones distintas.
+    - segmenter activo.
+    - run_with_history agrupa por sección en el orden del catálogo usando section_template.
+    - transcribe_segments es llamado 1 vez, transcribe 0 veces.
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=3.0, text="consulta hoy por fiebre persistente"),
+        TranscriptSegment(start=3.0, end=6.0, text="se receta paracetamol cada 8 horas"),
+        TranscriptSegment(start=6.0, end=9.0, text="se solicita ecografía abdominal"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+    )
+
+    owner = AgentId("medico_general")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/consulta_audio.wav"),
+        history_text="Paciente sin antecedentes de interés.",
+    )
+
+    # Verifica llamadas a STT
+    assert stt.transcribe_segments_calls == 1
+    assert stt.transcribe_calls == 0
+
+    # Transcript une con saltos de línea sin prefijo de hablante
+    expected_transcript = (
+        "consulta hoy por fiebre persistente\n"
+        "se receta paracetamol cada 8 horas\n"
+        "se solicita ecografía abdominal"
+    )
+    assert result.transcript == expected_transcript
+
+    # Resumen estructurado por secciones
+    assert "### Motivo de consulta\nconsulta hoy por fiebre persistente" in result.summary_markdown
+    assert "### Medicamentos\nse receta paracetamol cada 8 horas" in result.summary_markdown
+    assert "### Órdenes\nse solicita ecografía abdominal" in result.summary_markdown
+    assert "Dijo:" not in result.summary_markdown
+
+    # Orden del catálogo conservado
+    pos_motivo = result.summary_markdown.index("### Motivo de consulta")
+    pos_med = result.summary_markdown.index("### Medicamentos")
+    pos_ord = result.summary_markdown.index("### Órdenes")
+    assert pos_motivo < pos_med < pos_ord
+
+
+def test_consultation_con_diarizador_y_segmentador_juntos(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§6.3: Con diarizador y segmentador juntos:
+    - transcribe_segments y diarizer.diarize producen líneas con prefijo de hablante
+      ("MÉDICO: ..." o "PACIENTE: ...").
+    - Confirma que las líneas etiquetadas igual se clasifican por su contenido según el catálogo.
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0, end=3.0, text="Buenos días, ¿cuál es el motivo de consulta hoy?"
+        ),
+        TranscriptSegment(start=3.0, end=6.0, text="Tengo fiebre alta desde hace dos semanas."),
+        TranscriptSegment(start=6.0, end=9.0, text="De acuerdo, se receta reposo y antipiréticos."),
+    )
+    turns = (
+        SpeakerTurn(start=0.0, end=3.0, speaker="SPEAKER_00"),
+        SpeakerTurn(start=3.0, end=6.0, speaker="SPEAKER_01"),
+        SpeakerTurn(start=6.0, end=9.0, speaker="SPEAKER_00"),
+    )
+
+    stt = _SpyWhisperSTT(segments=segments)
+    diarizer = _DummyPyannoteDiarizer(turns=turns)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=diarizer,
+        segmenter=segmenter,
+    )
+
+    owner = AgentId("medico_general")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/consulta_audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert "MÉDICO: Buenos días, ¿cuál es el motivo de consulta hoy?" in result.transcript
+    assert "PACIENTE: Tengo fiebre alta desde hace dos semanas." in result.transcript
+    assert "MÉDICO: De acuerdo, se receta reposo y antipiréticos." in result.transcript
+
+    # Clasificación por contenido a pesar del prefijo MÉDICO / PACIENTE
+    assert (
+        "### Motivo de consulta\nMÉDICO: Buenos días, ¿cuál es el motivo de consulta hoy?"
+        in result.summary_markdown
+    )
+    assert (
+        "### Medicamentos\nMÉDICO: De acuerdo, se receta reposo y antipiréticos."
+        in result.summary_markdown
+    )
+    # Enfermedad actual ("desde hace dos semanas")
+    assert (
+        "### Enfermedad actual\nPACIENTE: Tengo fiebre alta desde hace dos semanas."
+        in result.summary_markdown
+    )
+
+
+def test_consultation_segmenter_none_por_defecto_no_llama_transcribe_segments(
+    sample_wording: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§6.3: segmenter=None (por defecto):
+    - Comportamiento idéntico al original: llama a stt.transcribe, no llama a transcribe_segments,
+      no emite TEXT_SEGMENTED, y usa said_template.
+    """
+    texto = "Paciente acude por cefalea generalizada."
+    stt = _SpyWhisperSTT(full_text=texto)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=None,
+    )
+
+    owner = AgentId("medico_general")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/consulta_audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert stt.transcribe_calls == 1
+    assert stt.transcribe_segments_calls == 0
+    assert result.transcript == texto
+    assert f"Dijo: {texto}" in result.summary_markdown
+
+    emitted_kinds = [e.kind for e in log]
+    assert EventKind.TEXT_SEGMENTED not in emitted_kinds
+
+
+def test_consultation_wording_sin_section_template_con_segmentador_lanza_value_error(
+    sample_wording: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§6.3: Wording sin section_template (section_template=None) + segmentador activo:
+    lanza ValueError explícito antes de procesar el resumen.
+    """
+    assert sample_wording.section_template is None
+
+    stt = _SpyWhisperSTT(segments=(TranscriptSegment(0.0, 2.0, "consulta hoy por dolor"),))
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+    )
+
+    owner = AgentId("medico_general")
+    with pytest.raises(
+        ValueError, match=r"segmentación activa pero wording no trae section_template"
+    ):
+        consultation.run_with_history(
+            owner=owner,
+            audio_path=Path("/tmp/consulta_audio.wav"),
+            history_text="Sin antecedentes.",
+        )
+
+
+def test_consultation_evento_text_segmented_orden_y_datos(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§6.3: Evento TEXT_SEGMENTED:
+    - Se emite con las secciones correctas en data={"sections": ...}.
+    - Orden §2.3: tras INPUT_OBSERVED del transcript, antes del INPUT_OBSERVED de la historia.
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=3.0, text="consulta hoy por mareos"),
+        TranscriptSegment(start=3.0, end=6.0, text="se receta reposo"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+    )
+
+    owner = AgentId("medico_general")
+    consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/consulta_audio.wav"),
+        history_text="Historia previa.",
+    )
+
+    events = list(log)
+    kinds = [e.kind for e in events]
+
+    assert EventKind.TEXT_SEGMENTED in kinds
+    idx_seg = kinds.index(EventKind.TEXT_SEGMENTED)
+
+    # El evento anterior debe ser INPUT_OBSERVED (del transcript)
+    ev_anterior = events[idx_seg - 1]
+    assert ev_anterior.kind == EventKind.INPUT_OBSERVED
+    assert ev_anterior.content == "consulta hoy por mareos\nse receta reposo"
+
+    # El evento posterior debe ser INPUT_OBSERVED (de la historia)
+    ev_posterior = events[idx_seg + 1]
+    assert ev_posterior.kind == EventKind.INPUT_OBSERVED
+    assert ev_posterior.content == "Historia previa."
+
+    # Contenido del evento TEXT_SEGMENTED
+    ev_seg = events[idx_seg]
+    assert ev_seg.owner == owner
+    assert ev_seg.tick == 0
+    assert ev_seg.data == {"sections": "motivo_consulta,medicamentos"}
+
 

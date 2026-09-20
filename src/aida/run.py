@@ -73,6 +73,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="activa la diarización de hablantes en la consulta",
     )
     parser.add_argument(
+        "--segment",
+        action="store_true",
+        help="agrupa la transcripción en secciones clínicas (--consultation)",
+    )
+    parser.add_argument(
         "--owner",
         metavar="ID",
         default="sujeto_01",
@@ -136,6 +141,7 @@ def _build_consultation(
     stt: object,
     ocr: object,
     diarizer: object | None = None,
+    segmenter: object | None = None,
     key: str | None = None,
 ) -> Consultation | None:
     """`None` tras imprimir el error si falta o no vale AIDA_CONSULT_CACHE_KEY.
@@ -170,6 +176,7 @@ def _build_consultation(
         ),
         log=EventLog(),
         diarizer=cast(Any, diarizer),
+        segmenter=cast(Any, segmenter),
     )
 
 
@@ -320,6 +327,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             diarizer = None
 
+        if args.segment:
+            from aida.arms.health.segment import build_health_segmenter
+
+            segmenter = build_health_segmenter()
+        else:
+            segmenter = None
+
         key = _check_consult_cache_key()
         if not key:
             return 1
@@ -328,7 +342,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from aida.engine.ontology import AgentId
 
         stt, ocr = build_local_capture()
-        consultation = _build_consultation(args, stt=stt, ocr=ocr, diarizer=diarizer, key=key)
+        consultation = _build_consultation(
+            args, stt=stt, ocr=ocr, diarizer=diarizer, segmenter=segmenter, key=key
+        )
         if consultation is None:
             return 1
         result = consultation.run(

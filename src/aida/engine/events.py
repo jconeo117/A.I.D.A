@@ -147,6 +147,11 @@ class EventKind(StrEnum):
     """Se identificaron hablantes en una entrada de audio. `data={"speakers": "N"}`
     con el número de hablantes distintos detectados."""
 
+    TEXT_SEGMENTED = "text_segmented"
+    """Se agruparon líneas de una entrada en secciones según un catálogo.
+    `data={"sections": "..."}` con los identificadores encontrados; sin `data`
+    si ninguna sección tuvo contenido."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

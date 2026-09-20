@@ -31,6 +31,7 @@ def default_summary_wording(path: Path | None = None) -> SummaryWording:
         "no_match_text",
         "professional_label",
         "patient_label",
+        "section_template",
     )
     missing = [key for key in required_keys if key not in raw or not isinstance(raw[key], str)]
     if missing:
@@ -46,6 +47,7 @@ def default_summary_wording(path: Path | None = None) -> SummaryWording:
         no_match_text=raw["no_match_text"],
         professional_label=raw["professional_label"],
         patient_label=raw["patient_label"],
+        section_template=raw["section_template"],
     )
 
 

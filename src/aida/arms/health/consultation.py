@@ -12,6 +12,8 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
+from aida.arms.health.sections import SectionSpec
+from aida.arms.health.segment import ClinicalSegmenter
 from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -32,6 +34,7 @@ class SummaryWording:
     no_match_text: str
     professional_label: str | None = None
     patient_label: str | None = None
+    section_template: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +60,7 @@ class Consultation:
         match_threshold: float = 0.30,
         match_top_n: int = 5,
         diarizer: LocalPyannoteDiarizer | None = None,
+        segmenter: ClinicalSegmenter | None = None,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -68,6 +72,7 @@ class Consultation:
         self._threshold = match_threshold
         self._top_n = match_top_n
         self._diarizer = diarizer
+        self._segmenter = segmenter
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
         """Lee la historia y delega. Es el camino por archivos (plan 31)."""
@@ -83,9 +88,24 @@ class Consultation:
         sigue (Ruta B)."""
         if self._diarizer is not None:
             transcript = self._diarize_and_label(owner, audio_path)
+        elif self._segmenter is not None:
+            segments = self._stt.transcribe_segments(audio_path)
+            transcript = "\n".join(s.text for s in segments)
         else:
             transcript = self._stt.transcribe(audio_path)
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
+
+        grouped_sections = None
+        if self._segmenter is not None:
+            grouped_sections = self._segmenter.segment(transcript)
+            self._log.emit(
+                tick=0,
+                kind=EventKind.TEXT_SEGMENTED,
+                owner=owner,
+                data={"sections": ",".join(spec.section_id for spec, _ in grouped_sections)}
+                if grouped_sections
+                else {},
+            )
 
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
@@ -100,7 +120,7 @@ class Consultation:
             data={"codes": ",".join(m.diagnostic.code for m in matches)} if matches else {},
         )
 
-        facts = self._build_facts(transcript, history, matches)
+        facts = self._build_facts(transcript, history, matches, grouped_sections)
         summary = self._redact(facts)
 
         result = ConsultationResult(
@@ -152,12 +172,23 @@ class Consultation:
         return "\n".join(lines)
 
     def _build_facts(
-        self, transcript: str, history: str, matches: tuple[MatchedCode, ...]
+        self,
+        transcript: str,
+        history: str,
+        matches: tuple[MatchedCode, ...],
+        grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None = None,
     ) -> list[str]:
-        facts = [
-            self._wording.said_template.format(transcript),
-            self._wording.history_template.format(history),
-        ]
+        facts: list[str] = []
+        if grouped_sections is not None:
+            if self._wording.section_template is None:
+                raise ValueError(
+                    "segmentación activa pero wording no trae section_template"
+                )
+            for spec, texts in grouped_sections:
+                facts.append(self._wording.section_template.format(spec.label, "\n".join(texts)))
+        else:
+            facts.append(self._wording.said_template.format(transcript))
+        facts.append(self._wording.history_template.format(history))
         if matches:
             listado = "; ".join(
                 f"{m.diagnostic.code} ({m.diagnostic.description})" for m in matches

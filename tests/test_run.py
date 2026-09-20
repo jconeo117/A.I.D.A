@@ -766,6 +766,78 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
     assert "- El paciente dijo:" in contenido_descifrado
 
 
+def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§6.3 CLI: `--consultation --segment --audio x --history y` ejecuta la segmentación
+    clínica y muestra las secciones en el resumen por stdout.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackendMultiSegment:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg1 = MagicMock()
+            seg1.start = 0.0
+            seg1.end = 2.0
+            seg1.text = "consulta hoy por dolor de cabeza intenso"
+
+            seg2 = MagicMock()
+            seg2.start = 2.0
+            seg2.end = 4.0
+            seg2.text = "se receta ibuprofeno cada 8 horas"
+
+            return [seg1, seg2], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackendMultiSegment(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: sin antecedentes de interés.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cli_segment",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "### Motivo de consulta" in captured.out
+    assert "consulta hoy por dolor de cabeza intenso" in captured.out
+    assert "### Medicamentos" in captured.out
+    assert "se receta ibuprofeno cada 8 horas" in captured.out
+    assert "- El paciente dijo:" not in captured.out
+    assert captured.err == ""
+
+
 def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
