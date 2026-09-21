@@ -920,8 +920,22 @@ def test_consultation_cli_segment_print_model(
     # El JSON parsea con json.loads y coincide con el encounter esperado
     parsed = json.loads(json_part)
     expected = {
-        "motivo_consulta": ["consulta hoy por dolor de cabeza intenso"],
-        "medicamentos": ["se receta ibuprofeno cada 8 horas"],
+        "motivo_consulta": [
+            {
+                "text": "consulta hoy por dolor de cabeza intenso",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            }
+        ],
+        "medicamentos": [
+            {
+                "text": "se receta ibuprofeno cada 8 horas",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            }
+        ],
     }
     assert parsed == expected
 
@@ -989,6 +1003,125 @@ def test_consultation_cli_print_model_sin_segment_avisa_stderr(
     assert "consulta por control general" in captured.out
     # Aviso en stderr
     assert "aida: aviso: --print-model requiere --segment" in captured.err
+
+
+def test_consultation_cli_extract_sin_segment_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§7.6 CLI: `--consultation --extract` sin `--segment`:
+    código 1, mensaje de error en stderr ("aida: error: --extract requiere --segment"),
+    sin construir nada del extractor.
+    """
+
+    def _fail_build() -> Any:
+        raise AssertionError("build_health_extractor no debió ser llamado")
+
+    monkeypatch.setattr(
+        "aida.arms.health.extract.build_health_extractor", _fail_build, raising=False
+    )
+
+    codigo = main(
+        ["--consultation", "--extract", "--audio", "dummy.wav", "--history", "dummy.png"]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: --extract requiere --segment" in captured.err
+
+
+def test_consultation_cli_segment_extract_print_model(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """§7.6 CLI: `--consultation --segment --extract --print-model` con datos mockeados:
+    el JSON impreso trae los 4 campos con los valores extraídos según el audio/texto simulado.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackendExtract:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg1 = MagicMock()
+            seg1.start = 0.0
+            seg1.end = 2.0
+            seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+
+            seg2 = MagicMock()
+            seg2.start = 2.0
+            seg2.end = 4.0
+            seg2.text = "se receta ibuprofeno cada 8 horas"
+
+            return [seg1, seg2], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackendExtract(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: sin antecedentes de interés.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--extract",
+            "--print-model",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_test_cli_extract_print_model",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert captured.err == ""
+
+    # Extraer el JSON tras el resumen en stdout
+    json_start = captured.out.find("{")
+    assert json_start != -1, "No se encontró JSON en stdout"
+    json_part = captured.out[json_start:]
+
+    parsed = json.loads(json_part)
+    expected = {
+        "enfermedad_actual": [
+            {
+                "text": "consulta hoy por dolor en rodilla derecha desde hace dos semanas",
+                "duration": "2 semanas",
+                "laterality": "derecho",
+                "reported_by": None,
+            }
+        ],
+        "medicamentos": [
+            {
+                "text": "se receta ibuprofeno cada 8 horas",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            }
+        ],
+    }
+    assert parsed == expected
 
 
 def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(

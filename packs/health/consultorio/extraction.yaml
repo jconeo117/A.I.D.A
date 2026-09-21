@@ -1,0 +1,4 @@
+laterality:
+  bilateral: ["bilateral", "ambos", "ambos lados", "los dos", "las dos"]
+  derecho: ["derecho", "derecha"]
+  izquierdo: ["izquierdo", "izquierda"]

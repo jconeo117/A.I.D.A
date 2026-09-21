@@ -61,7 +61,8 @@ strict = true
 warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
-# PIL llega como transitiva del extra 'capture', capture.py la importa de forma diferida, y sin el extra mypy no puede resolverla.
+# PIL llega como transitiva del extra 'capture', capture.py la importa de forma
+# diferida, y sin el extra mypy no puede resolverla.
 [[tool.mypy.overrides]]
 module = "PIL.*"
 ignore_missing_imports = true

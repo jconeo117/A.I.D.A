@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
 from aida.arms.health.model import Encounter, build_encounter
 from aida.arms.health.sections import SectionSpec
@@ -63,6 +64,7 @@ class Consultation:
         match_top_n: int = 5,
         diarizer: LocalPyannoteDiarizer | None = None,
         segmenter: ClinicalSegmenter | None = None,
+        extractor: ClinicalExtractor | None = None,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -75,6 +77,7 @@ class Consultation:
         self._top_n = match_top_n
         self._diarizer = diarizer
         self._segmenter = segmenter
+        self._extractor = extractor
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
         """Lee la historia y delega. Es el camino por archivos (plan 31)."""
@@ -88,6 +91,9 @@ class Consultation:
         """La historia ya leída. Es el camino cuando la HC se cargó al
         arrancar — hoy a mano; mañana la traerá quien sepa qué paciente
         sigue (Ruta B)."""
+        if self._extractor is not None and self._segmenter is None:
+            raise ValueError("extracción activa pero no hay segmentador configurado")
+
         if self._diarizer is not None:
             transcript = self._diarize_and_label(owner, audio_path)
         elif self._segmenter is not None:
@@ -117,6 +123,36 @@ class Consultation:
                     owner=owner,
                     data={"findings": str(sum(len(v) for v in encounter.findings.values()))},
                 )
+                if self._extractor is not None:
+                    enriched = {
+                        section_id: tuple(
+                            self._extractor.extract(
+                                finding,
+                                professional_label=self._wording.professional_label,
+                                patient_label=self._wording.patient_label,
+                            )
+                            for finding in items
+                        )
+                        for section_id, items in encounter.findings.items()
+                    }
+                    encounter = Encounter(owner=encounter.owner, findings=enriched)
+                    field_names = {
+                        name
+                        for items in enriched.values()
+                        for finding in items
+                        for name, value in (
+                            ("duration", finding.duration),
+                            ("laterality", finding.laterality),
+                            ("reported_by", finding.reported_by),
+                        )
+                        if value is not None
+                    }
+                    self._log.emit(
+                        tick=0,
+                        kind=EventKind.FIELDS_EXTRACTED,
+                        owner=owner,
+                        data={"fields": ",".join(sorted(field_names))} if field_names else {},
+                    )
 
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)

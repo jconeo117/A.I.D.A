@@ -83,6 +83,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="imprime el Clinical Model en JSON tras el resumen (requiere --segment)",
     )
     parser.add_argument(
+        "--extract",
+        action="store_true",
+        help="extrae duración/lateralidad/quién lo dijo (requiere --segment)",
+    )
+    parser.add_argument(
         "--owner",
         metavar="ID",
         default="sujeto_01",
@@ -147,6 +152,7 @@ def _build_consultation(
     ocr: object,
     diarizer: object | None = None,
     segmenter: object | None = None,
+    extractor: object | None = None,
     key: str | None = None,
 ) -> Consultation | None:
     """`None` tras imprimir el error si falta o no vale AIDA_CONSULT_CACHE_KEY.
@@ -182,6 +188,7 @@ def _build_consultation(
         log=EventLog(),
         diarizer=cast(Any, diarizer),
         segmenter=cast(Any, segmenter),
+        extractor=cast(Any, extractor),
     )
 
 
@@ -322,6 +329,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("aida: error: --consultation requiere --audio y --history", file=sys.stderr)
             return 1
 
+        if args.extract and not args.segment:
+            print("aida: error: --extract requiere --segment", file=sys.stderr)
+            return 1
+
         if args.diarize:
             if not os.environ.get("AIDA_HF_TOKEN"):
                 print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
@@ -339,6 +350,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             segmenter = None
 
+        if args.extract:
+            from aida.arms.health.extract import build_health_extractor
+
+            extractor = build_health_extractor()
+        else:
+            extractor = None
+
         key = _check_consult_cache_key()
         if not key:
             return 1
@@ -348,7 +366,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         stt, ocr = build_local_capture()
         consultation = _build_consultation(
-            args, stt=stt, ocr=ocr, diarizer=diarizer, segmenter=segmenter, key=key
+            args,
+            stt=stt,
+            ocr=ocr,
+            diarizer=diarizer,
+            segmenter=segmenter,
+            extractor=extractor,
+            key=key,
         )
         if consultation is None:
             return 1

@@ -98,8 +98,9 @@ def test_to_dict_conserva_orden_no_alfabetico() -> None:
 
 
 def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
-    """5.1: `to_dict()` solo devuelve listas de `text`, sin incluir el `section_id`
-    dentro de las listas.
+    """7.4: `to_dict()` devuelve una lista de diccionarios con las cuatro claves:
+    'text', 'duration', 'laterality', 'reported_by', los tres últimos en None cuando
+    no hubo extracción, sin incluir el `section_id` dentro de las listas.
     """
     owner = AgentId("doc")
     spec = SectionSpec(section_id="motivo_consulta", label="Motivo", trigger_phrases=())
@@ -109,9 +110,52 @@ def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
     )
 
     result_dict = encounter.to_dict()
-    assert result_dict == {"motivo_consulta": ["consulta por dolor", "inició ayer"]}
+    assert result_dict == {
+        "motivo_consulta": [
+            {
+                "text": "consulta por dolor",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            },
+            {
+                "text": "inició ayer",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            },
+        ]
+    }
     for items in result_dict.values():
         assert isinstance(items, list)
         for item in items:
-            assert isinstance(item, str)
-            assert item != "motivo_consulta"
+            assert isinstance(item, dict)
+            assert set(item.keys()) == {"text", "duration", "laterality", "reported_by"}
+            assert item["duration"] is None
+            assert item["laterality"] is None
+            assert item["reported_by"] is None
+
+
+def test_to_dict_con_campos_extraidos() -> None:
+    """7.4: `to_dict()` preserva duration, laterality y reported_by cuando están presentes."""
+    finding = ClinicalFinding(
+        text="dolor en ojo derecho hace 2 semanas",
+        section_id="motivo_consulta",
+        duration="2 semanas",
+        laterality="derecho",
+        reported_by="Paciente",
+    )
+    encounter = Encounter(
+        owner=AgentId("doc"),
+        findings={"motivo_consulta": (finding,)},
+    )
+    assert encounter.to_dict() == {
+        "motivo_consulta": [
+            {
+                "text": "dolor en ojo derecho hace 2 semanas",
+                "duration": "2 semanas",
+                "laterality": "derecho",
+                "reported_by": "Paciente",
+            }
+        ]
+    }

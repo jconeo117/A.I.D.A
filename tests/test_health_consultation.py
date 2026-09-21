@@ -23,6 +23,7 @@ from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, SummaryWording
+from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.arms.health.sections import load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -1015,6 +1016,306 @@ def test_consultation_sin_segmentador_no_arma_encounter_ni_emite_model_built(
 
     assert result.encounter is None
     assert not any(e.kind == EventKind.MODEL_BUILT for e in log)
+
+
+# ---------------------------------------------------------------------------
+# Pruebas §7.5 — Integración con Extracción Determinista
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_extractor_y_segmentador_activos(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§7.5: Extractor + segmentador activos:
+    - Los findings del encounter final llevan los campos completados
+      (duration, laterality, reported_by).
+    - Se emite FIELDS_EXTRACTED con los tipos correctos en orden alfabético.
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="buenos días, ¿cuál es el motivo de consulta?"),
+        TranscriptSegment(
+            start=2.0,
+            end=5.0,
+            text="consulta por dolor en rodilla derecha desde hace dos semanas",
+        ),
+        TranscriptSegment(start=5.0, end=7.0, text="se receta paracetamol cada 8 horas"),
+    )
+    turns = (
+        SpeakerTurn(start=0.0, end=2.0, speaker="SPEAKER_00"),
+        SpeakerTurn(start=2.0, end=5.0, speaker="SPEAKER_01"),
+        SpeakerTurn(start=5.0, end=7.0, speaker="SPEAKER_00"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    diarizer = _DummyPyannoteDiarizer(turns=turns)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=diarizer,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+
+    owner = AgentId("dra_martinez")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is not None
+    # Verificar que los findings tienen campos extraídos
+    finding_paciente = next(
+        f
+        for items in result.encounter.findings.values()
+        for f in items
+        if "rodilla derecha" in f.text
+    )
+    assert finding_paciente.duration == "2 semanas"
+    assert finding_paciente.laterality == "derecho"
+    assert finding_paciente.reported_by == "PACIENTE"
+
+    # Verificar el evento FIELDS_EXTRACTED
+    fields_events = [e for e in log if e.kind == EventKind.FIELDS_EXTRACTED]
+    assert len(fields_events) == 1
+    ev = fields_events[0]
+    assert ev.owner == owner
+    assert ev.tick == 0
+    # Orden alfabético estricto
+    assert ev.data == {"fields": "duration,laterality,reported_by"}
+
+
+def test_consultation_extractor_sin_segmentador_lanza_value_error_sin_tocar_audio(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§7.5: Extractor sin segmentador:
+    - ValueError antes de tocar audio
+    - Un doble de STT/OCR que levanta excepción confirma que no se llamó.
+    """
+
+    class _FailingSTT(LocalWhisperSTT):
+        def __init__(self) -> None:
+            super().__init__(model=object())
+
+        def transcribe(self, audio_path: Path) -> str:
+            raise AssertionError("STT.transcribe no debió ser llamado")
+
+        def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+            raise AssertionError("STT.transcribe_segments no debió ser llamado")
+
+    class _FailingOCR(LocalTesseractOCR):
+        def __init__(self) -> None:
+            super().__init__(pytesseract_module=object())
+
+        def read(self, document_path: Path) -> str:
+            raise AssertionError("OCR.read no debió ser llamado")
+
+    log = EventLog(window=100)
+    extractor = build_health_extractor()
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=_FailingSTT(),
+        ocr=_FailingOCR(),
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=None,
+        extractor=extractor,
+    )
+
+    owner = AgentId("medico_test")
+    with pytest.raises(
+        ValueError, match=r"extracción activa pero no hay segmentador configurado"
+    ):
+        consultation.run_with_history(
+            owner=owner,
+            audio_path=Path("/tmp/audio.wav"),
+            history_text="Sin antecedentes.",
+        )
+
+
+def test_consultation_sin_extractor_campos_en_none_y_sin_fields_extracted(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§7.5: Sin extractor (por defecto):
+    - Cero cambio sobre el comportamiento de plan 45 más allá de la nueva forma de to_dict()
+    - Los tres campos nuevos de ClinicalFinding quedan en None por defecto
+    - No se emite FIELDS_EXTRACTED
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor en rodilla derecha desde hace dos semanas",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=None,
+    )
+
+    owner = AgentId("medico_test")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is not None
+    for items in result.encounter.findings.values():
+        for f in items:
+            assert f.duration is None
+            assert f.laterality is None
+            assert f.reported_by is None
+
+    assert not any(e.kind == EventKind.FIELDS_EXTRACTED for e in log)
+
+
+def test_consultation_sin_diarizacion_con_extractor_reported_by_none(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§7.5: Sin diarización pero con extractor:
+    - reported_by queda None en todos los hallazgos
+    - duración y lateralidad sí se extraen
+    - FIELDS_EXTRACTED se emite solo con 'duration,laterality'
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=3.0,
+            text="consulta por dolor en rodilla derecha hace 10 días",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+
+    owner = AgentId("medico_test")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is not None
+    motivo_findings = result.encounter.findings["motivo_consulta"]
+    assert len(motivo_findings) >= 1
+    finding = motivo_findings[0]
+    assert finding.duration == "10 días"
+    assert finding.laterality == "derecho"
+    assert finding.reported_by is None
+
+    fields_events = [e for e in log if e.kind == EventKind.FIELDS_EXTRACTED]
+    assert len(fields_events) == 1
+    ev = fields_events[0]
+    assert ev.data == {"fields": "duration,laterality"}
+
+
+def test_consultation_extractor_sin_aciertos_emite_fields_extracted_con_data_vacia(
+    sample_wording_sections: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """§4 de 48-fix-extraccion.md (I-123):
+    Con transcripción de líneas sin duración ni lateralidad y sin diarización
+    (p. ej. 'se recomienda reposo'): verifica que FIELDS_EXTRACTED se emite con data == {}.
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="se recomienda reposo",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+
+    owner = AgentId("medico_test")
+    result = consultation.run_with_history(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+
+    assert result.encounter is not None
+    for items in result.encounter.findings.values():
+        for f in items:
+            assert f.duration is None
+            assert f.laterality is None
+            assert f.reported_by is None
+
+    fields_events = [e for e in log if e.kind == EventKind.FIELDS_EXTRACTED]
+    assert len(fields_events) == 1
+    ev = fields_events[0]
+    assert ev.owner == owner
+    assert ev.tick == 0
+    assert ev.data == {}
+
+
 
 
 

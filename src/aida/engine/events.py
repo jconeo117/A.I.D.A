@@ -157,6 +157,12 @@ class EventKind(StrEnum):
     clasificada. `data={"findings": "N"}` con el total de hallazgos —
     genérico: cualquier brazo que arme un modelo propio lo reutiliza."""
 
+    FIELDS_EXTRACTED = "fields_extracted"
+    """Se completaron campos deterministas sobre hallazgos ya existentes.
+    `data={"fields": "duration,laterality"}` con los tipos de campo que
+    tuvieron al menos un acierto, ordenados alfabéticamente — nunca la
+    iteración cruda de un `set`. Sin `data` si ninguno tuvo acierto."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

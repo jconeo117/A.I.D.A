@@ -23,6 +23,9 @@ class ClinicalFinding:
 
     text: str
     section_id: str
+    duration: str | None = None
+    laterality: str | None = None
+    reported_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +36,20 @@ class Encounter:
     owner: AgentId
     findings: Mapping[str, tuple[ClinicalFinding, ...]]
 
-    def to_dict(self) -> dict[str, list[str]]:
+    def to_dict(self) -> dict[str, list[dict[str, str | None]]]:
         """El orden de `findings` ya es el de declaración del catálogo
         (`group_by_section` lo garantiza en el llamante) — no hay
         reordenamiento que hacer aquí."""
         return {
-            section_id: [finding.text for finding in items]
+            section_id: [
+                {
+                    "text": f.text,
+                    "duration": f.duration,
+                    "laterality": f.laterality,
+                    "reported_by": f.reported_by,
+                }
+                for f in items
+            ]
             for section_id, items in self.findings.items()
         }
 
