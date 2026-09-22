@@ -608,7 +608,7 @@ def test_save_load_roundtrip_recomputes_nonzero_strain_and_temperament(
     assert loaded_agent.temperament.loss_aversion != pytest.approx(1.0)
 
 
-def test_save_is_insertion_order_independent(tmp_path: Path) -> None:
+def test_save_orden_estable_independiente_de_insercion(tmp_path: Path) -> None:
     """E-001 (I-042): `save` produce texto idéntico con inserción en orden distinto.
 
     Los diccionarios de `AgentState` se pueblan en el orden en que los ejes
@@ -624,18 +624,111 @@ def test_save_is_insertion_order_independent(tmp_path: Path) -> None:
         label="Agent 01",
         initial_needs={ontology.NeedId("n_a"): 0.5, ontology.NeedId("n_b"): 0.6},
     )
-    act = _make_action("act1", duration_ticks=1, satisfies={"n_a": 0.1})
+    act1 = _make_action("act1", duration_ticks=1, satisfies={"n_a": 0.1})
+    act2 = _make_action("act2", duration_ticks=1, satisfies={"n_b": 0.1})
     p = _make_pack(
-        pack_id="pack_orden", needs=[n_a, n_b], actions=[act], agents=[agent_spec]
+        pack_id="pack_orden", needs=[n_a, n_b], actions=[act1, act2], agents=[agent_spec]
     )
 
     loop_directo = loop.Loop.start(p, agent_spec, seed=1, inbox_capacity=5)
-    loop_directo.execution.agent.debt[ontology.NeedId("n_a")] = 0.1
-    loop_directo.execution.agent.debt[ontology.NeedId("n_b")] = 0.2
+    loop_directo.execution.agent.needs = {
+        ontology.NeedId("n_a"): 0.4,
+        ontology.NeedId("n_b"): 0.7,
+    }
+    loop_directo.execution.agent.debt = {
+        ontology.NeedId("n_a"): 0.1,
+        ontology.NeedId("n_b"): 0.2,
+    }
+    loop_directo.execution.agent.floor_streak = {
+        ontology.NeedId("n_a"): 1,
+        ontology.NeedId("n_b"): 2,
+    }
+    loop_directo.execution.agent.saturation = {
+        ontology.ActionId("act1"): 1,
+        ontology.ActionId("act2"): 2,
+    }
+    loop_directo.execution.agent.traits = {
+        ontology.TraitId("t_a"): 0.3,
+        ontology.TraitId("t_b"): 0.7,
+    }
+    loop_directo.execution.agent.goals = {
+        ontology.GoalId("g_a"): ontology.GoalStatus.ACTIVE,
+        ontology.GoalId("g_b"): ontology.GoalStatus.ACHIEVED,
+    }
+    loop_directo.execution.agent.gain_beliefs = {
+        ontology.ActionId("act1"): {
+            ontology.NeedId("n_a"): 0.1,
+            ontology.NeedId("n_b"): 0.2,
+        },
+        ontology.ActionId("act2"): {
+            ontology.NeedId("n_a"): 0.3,
+            ontology.NeedId("n_b"): 0.4,
+        },
+    }
+    loop_directo.execution.agent.cost_beliefs = {
+        ontology.ActionId("act1"): {
+            ontology.NeedId("n_a"): 0.05,
+            ontology.NeedId("n_b"): 0.06,
+        },
+        ontology.ActionId("act2"): {
+            ontology.NeedId("n_a"): 0.07,
+            ontology.NeedId("n_b"): 0.08,
+        },
+    }
+    loop_directo.execution.situations = {
+        ontology.SituationId("sit_a"): 10,
+        ontology.SituationId("sit_b"): 20,
+    }
 
     loop_invertido = loop.Loop.start(p, agent_spec, seed=1, inbox_capacity=5)
-    loop_invertido.execution.agent.debt[ontology.NeedId("n_b")] = 0.2
-    loop_invertido.execution.agent.debt[ontology.NeedId("n_a")] = 0.1
+    loop_invertido.execution.agent.needs = {
+        ontology.NeedId("n_b"): 0.7,
+        ontology.NeedId("n_a"): 0.4,
+    }
+    loop_invertido.execution.agent.debt = {
+        ontology.NeedId("n_b"): 0.2,
+        ontology.NeedId("n_a"): 0.1,
+    }
+    loop_invertido.execution.agent.floor_streak = {
+        ontology.NeedId("n_b"): 2,
+        ontology.NeedId("n_a"): 1,
+    }
+    loop_invertido.execution.agent.saturation = {
+        ontology.ActionId("act2"): 2,
+        ontology.ActionId("act1"): 1,
+    }
+    loop_invertido.execution.agent.traits = {
+        ontology.TraitId("t_b"): 0.7,
+        ontology.TraitId("t_a"): 0.3,
+    }
+    loop_invertido.execution.agent.goals = {
+        ontology.GoalId("g_b"): ontology.GoalStatus.ACHIEVED,
+        ontology.GoalId("g_a"): ontology.GoalStatus.ACTIVE,
+    }
+    loop_invertido.execution.agent.gain_beliefs = {
+        ontology.ActionId("act2"): {
+            ontology.NeedId("n_b"): 0.4,
+            ontology.NeedId("n_a"): 0.3,
+        },
+        ontology.ActionId("act1"): {
+            ontology.NeedId("n_b"): 0.2,
+            ontology.NeedId("n_a"): 0.1,
+        },
+    }
+    loop_invertido.execution.agent.cost_beliefs = {
+        ontology.ActionId("act2"): {
+            ontology.NeedId("n_b"): 0.08,
+            ontology.NeedId("n_a"): 0.07,
+        },
+        ontology.ActionId("act1"): {
+            ontology.NeedId("n_b"): 0.06,
+            ontology.NeedId("n_a"): 0.05,
+        },
+    }
+    loop_invertido.execution.situations = {
+        ontology.SituationId("sit_b"): 20,
+        ontology.SituationId("sit_a"): 10,
+    }
 
     path_directo = tmp_path / "directo.json"
     path_invertido = tmp_path / "invertido.json"
@@ -645,6 +738,7 @@ def test_save_is_insertion_order_independent(tmp_path: Path) -> None:
     assert path_directo.read_text(encoding="utf-8") == path_invertido.read_text(
         encoding="utf-8"
     )
+
 
 
 def test_persistence_cross_process_determinism_across_hashseeds(tmp_path: Path) -> None:

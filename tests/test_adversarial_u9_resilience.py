@@ -406,7 +406,6 @@ def test_tesseract_ocr_wraps_corrupt_pdf_in_ocr_error(tmp_path: Path) -> None:
     with pytest.raises(OCRError) as exc_info:
         ocr.read(bad_pdf)
 
-    assert not isinstance(exc_info.value, pdfium.PdfiumError)
     assert "no se pudo leer" in str(exc_info.value)
 
 

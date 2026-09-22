@@ -1594,6 +1594,23 @@ def test_converse_mic_sin_extra_capture_devuelve_uno_con_mensaje_stderr(
     pack_file = tmp_path / "pack.yaml"
     pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
 
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _DummyMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    class MockSegment:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    script = iter(["salir"])
+
+    class MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[MockSegment], None]:
+            return [MockSegment(next(script))], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", MockWhisper)
     monkeypatch.setattr("aida.voice.listen.check_capture_available", lambda: False)
 
     codigo = main(["--pack", str(pack_file), "--converse", "--mic"])

@@ -18,6 +18,7 @@ Cubren la unidad U1b. Seis frentes:
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -367,3 +368,25 @@ def test_un_evento_construido_no_se_puede_mutar() -> None:
     # Act / Assert
     with pytest.raises(FrozenInstanceError):
         evento.tick = 1  # type: ignore[misc]
+
+
+def test_event_log_since_filtra_por_tick() -> None:
+    """I-070: EventLog.since(tick) devuelve los eventos con tick >= al pedido,
+    todos si tick=0, o lista vacía si tick es mayor que el último."""
+    log = EventLog(window=100)
+    ev0 = log.emit(tick=0, kind=EventKind.ACTION_STARTED, owner=_ALICIA)
+    ev1 = log.emit(tick=1, kind=EventKind.ACTION_COMPLETED, owner=_ALICIA)
+    ev2 = log.emit(tick=2, kind=EventKind.ACTION_STARTED, owner=_ALICIA)
+    ev3 = log.emit(tick=3, kind=EventKind.ACTION_COMPLETED, owner=_ALICIA)
+
+    assert log.since(2) == [ev2, ev3]
+    assert log.since(0) == [ev0, ev1, ev2, ev3]
+    assert log.since(10) == []
+
+
+def test_event_copy_and_deepcopy_devuelven_misma_instancia() -> None:
+    """I-070: Al ser inmutable, copiar o fotocopiar en profundidad un Event
+    devuelve exactamente la misma instancia (copy.copy(ev) is ev, copy.deepcopy(ev) is ev)."""
+    ev = Event(seq=0, tick=1, kind=EventKind.ACTION_STARTED, owner=_ALICIA)
+    assert copy.copy(ev) is ev
+    assert copy.deepcopy(ev) is ev

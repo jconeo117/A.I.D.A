@@ -530,8 +530,9 @@ def test_consultation_monologo_un_hablante_emite_speakers_diarized_uno(
 def test_default_summary_wording_falta_etiqueta_lanza_value_error(
     tmp_path: Path,
 ) -> None:
-    """I-117 (§4): default_summary_wording(path) con un archivo YAML al que le falta
-    professional_label o patient_label lanza ValueError mencionando la clave faltante.
+    """I-117 (§4), I-119: default_summary_wording(path) con un archivo YAML al que le falta
+    professional_label, patient_label o section_template lanza ValueError
+    mencionando la clave faltante.
     """
     base_data = {
         "system_prompt": "Organiza la consulta:",
@@ -540,6 +541,7 @@ def test_default_summary_wording_falta_etiqueta_lanza_value_error(
         "matched_template": "CIE-10: {}",
         "no_match_text": "Sin códigos",
         "patient_label": "PACIENTE",
+        "section_template": "## {title}\n{content}",
     }
     # Falta professional_label
     wording_file_sin_prof = tmp_path / "wording_sin_prof.yaml"
@@ -556,12 +558,29 @@ def test_default_summary_wording_falta_etiqueta_lanza_value_error(
         "matched_template": "CIE-10: {}",
         "no_match_text": "Sin códigos",
         "professional_label": "MÉDICO",
+        "section_template": "## {title}\n{content}",
     }
     wording_file_sin_pat = tmp_path / "wording_sin_pat.yaml"
     wording_file_sin_pat.write_text(yaml.safe_dump(base_data_sin_pat), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"patient_label"):
         default_summary_wording(wording_file_sin_pat)
+
+    # Falta section_template
+    base_data_sin_sec = {
+        "system_prompt": "Organiza la consulta:",
+        "said_template": "Dijo: {}",
+        "history_template": "Historia: {}",
+        "matched_template": "CIE-10: {}",
+        "no_match_text": "Sin códigos",
+        "professional_label": "MÉDICO",
+        "patient_label": "PACIENTE",
+    }
+    wording_file_sin_sec = tmp_path / "wording_sin_sec.yaml"
+    wording_file_sin_sec.write_text(yaml.safe_dump(base_data_sin_sec), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"section_template"):
+        default_summary_wording(wording_file_sin_sec)
 
 
 def test_diarize_and_label_con_diarizador_none_lanza_runtime_error(
@@ -1093,7 +1112,11 @@ def test_consultation_extractor_y_segmentador_activos(
     assert ev.owner == owner
     assert ev.tick == 0
     # Orden alfabético estricto
-    assert ev.data == {"fields": "duration,laterality,reported_by"}
+    campos = ev.data.get("fields")
+    assert isinstance(campos, str)
+    assert set(campos.split(",")) == {"duration", "laterality", "reported_by"}
+    assert campos == "duration,laterality,reported_by"
+    assert campos == ",".join(sorted(campos.split(",")))
 
 
 def test_consultation_extractor_sin_segmentador_lanza_value_error_sin_tocar_audio(

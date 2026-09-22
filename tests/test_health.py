@@ -879,3 +879,66 @@ def test_measure_and_check_default_parameters() -> None:
     # check sin reporte invoca measure internamente
     problems = check(p)
     assert problems == []
+
+
+def test_measure_days_zero_no_divide_por_cero_y_differentiation_es_none() -> None:
+    """I-047: measure(pack, days=0) no lanza ZeroDivisionError y reporta
+    crisis_time == 0.0 y differentiation is None (ejerce 'if total_days else 0.0'
+    y 'if len(fichas) >= 2 and sampled_states:')."""
+    n1 = _make_need("n1", initial=0.5)
+    act1 = _make_action("act1", duration_ticks=1, satisfies={"n1": 0.3})
+    ag_a = ontology.AgentSpec(id=ontology.AgentId("ag_a"), label="A")
+    ag_b = ontology.AgentSpec(id=ontology.AgentId("ag_b"), label="B")
+    p = _make_pack([n1], [act1], agents=[ag_a, ag_b])
+
+    report = measure(p, days=0)
+    assert report.days == 0
+    assert report.crisis_time == 0.0
+    assert report.differentiation is None
+
+
+def test_measure_orden_agentes_invertido_muestrea_fichas_cero_consistentemente() -> None:
+    """I-047: measure con dos agentes en orden invertido en pack.agents comprueba que
+    sorted(pack.agents, key=lambda a: a.id) asegura que el muestreo de estados siempre
+    toma fichas[0] (el agente canónico de menor id)."""
+    n1 = _make_need("n1", initial=0.5, decay_per_tick=0.05)
+    act1 = _make_action("act1", satisfies={"n1": 0.3}, costs={})
+    act2 = _make_action("act2", satisfies={"n1": 0.1}, costs={})
+
+    ag_a = ontology.AgentSpec(
+        id=ontology.AgentId("ag_a"),
+        label="A",
+        initial_needs={ontology.NeedId("n1"): 0.1},
+        tastes=(ontology.TasteSpec(target=ontology.ActionId("act1"), multiplier=2.0),),
+    )
+    ag_b = ontology.AgentSpec(
+        id=ontology.AgentId("ag_b"),
+        label="B",
+        initial_needs={ontology.NeedId("n1"): 0.9},
+        tastes=(ontology.TasteSpec(target=ontology.ActionId("act2"), multiplier=2.0),),
+    )
+
+    p_ord = _make_pack([n1], [act1, act2], agents=[ag_a, ag_b])
+    p_inv = _make_pack([n1], [act1, act2], agents=[ag_b, ag_a])
+
+    rep_ord = measure(p_ord, days=5, seeds=(1,))
+    rep_inv = measure(p_inv, days=5, seeds=(1,))
+
+    assert rep_ord.differentiation is not None
+    assert rep_inv.differentiation is not None
+    assert rep_inv.differentiation == rep_ord.differentiation
+    assert rep_inv.differentiation == pytest.approx(0.41142857)
+
+
+def test_utility_profile_utilidad_cero_devuelve_ceros_sin_zero_division() -> None:
+    """I-047: _utility_profile cuando todas las decisiones tienen utilidad 0.0
+    devuelve 0.0 para todas las acciones sin dividir por cero."""
+    from aida.health import _utility_profile
+
+    n1 = _make_need("n1")
+    act = _make_action("act_zero", satisfies={}, costs={})
+    spec = ontology.AgentSpec(id=ontology.AgentId("ag1"), label="Ag 1")
+    p = _make_pack([n1], [act], agents=[spec])
+
+    profile = _utility_profile(p, spec, {ontology.NeedId("n1"): 0.5})
+    assert profile == {ontology.ActionId("act_zero"): 0.0}
