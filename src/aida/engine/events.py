@@ -163,6 +163,13 @@ class EventKind(StrEnum):
     tuvieron al menos un acierto, ordenados alfabéticamente — nunca la
     iteración cruda de un `set`. Sin `data` si ninguno tuvo acierto."""
 
+    ITEM_REVIEWED = "item_reviewed"
+    """Quien tiene autoridad sobre el contenido contestó a un ítem propuesto.
+    `data={"item": ..., "ref": ..., "verdict": ...}`: qué clase de ítem, cuál y
+    qué se dijo de él. Nunca el texto: si fue una edición, el texto nuevo entró
+    justo antes como `INPUT_OBSERVED`, que es donde el journal guarda lo que
+    llega de fuera."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

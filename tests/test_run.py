@@ -1687,6 +1687,239 @@ def test_conversation_silence_seconds_is_one_point_five() -> None:
     assert CONVERSATION_SILENCE_SECONDS == 1.5
 
 
+# ---------------------------------------------------------------------------
+# Pruebas §B.3: Revisión por CLI (51-plan-revision-profesional.md)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_cli_review_sin_segment_devuelve_error(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 16 (§B.3): --review sin --segment devuelve 1 y stderr contiene
+    '--review requiere --segment'.
+    """
+    audio_path = tmp_path / "dummy.wav"
+    audio_path.write_bytes(b"RIFF dummy")
+    hist_path = tmp_path / "dummy.txt"
+    hist_path.write_text("historia")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--review",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "doc_test_review_no_segment",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "--review requiere --segment" in captured.err
+
+
+def test_consultation_cli_review_edicion_y_rechazo_completo(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 17 (§B.3): --consultation --segment --extract --review --print-model
+    con builtins.input sustituido:
+    - '[c] confirmar / [e] editar / [r] rechazar: ' -> 'e' la primera vez, 'c' siguientes;
+    - 'texto corregido: ' -> texto nuevo con lateralidad distinta (izquierda en vez de derecha);
+    - '[c] confirmar / [r] rechazar: ' -> siempre 'r'.
+    Resultado: código 0; el JSON impreso lleva el texto editado con sus campos
+    recalculados; el resumen impreso lleva no_confirmed_text del pack real.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackendExtract:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg1 = MagicMock()
+            seg1.start = 0.0
+            seg1.end = 2.0
+            seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+
+            seg2 = MagicMock()
+            seg2.start = 2.0
+            seg2.end = 4.0
+            seg2.text = "se receta ibuprofeno cada 8 horas"
+
+            return [seg1, seg2], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackendExtract(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: sin antecedentes de interés.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    first_finding = True
+
+    def mock_input(prompt: str) -> str:
+        nonlocal first_finding
+        if "[c] confirmar / [e] editar / [r] rechazar:" in prompt:
+            if first_finding:
+                first_finding = False
+                return "e"
+            return "c"
+        if "texto corregido:" in prompt:
+            return "consulta hoy por dolor en rodilla izquierda desde hace dos semanas"
+        if "[c] confirmar / [r] rechazar:" in prompt:
+            return "r"
+        raise AssertionError(f"Prompt inesperado: {prompt}")
+
+    monkeypatch.setattr("builtins.input", mock_input)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--extract",
+            "--review",
+            "--print-model",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_cli_review_test",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert captured.err == ""
+
+    # Extraer el JSON tras el resumen en stdout
+    json_start = captured.out.find("{")
+    assert json_start != -1, "No se encontró JSON en stdout"
+    json_part = captured.out[json_start:]
+
+    parsed = json.loads(json_part)
+    expected = {
+        "enfermedad_actual": [
+            {
+                "text": "consulta hoy por dolor en rodilla izquierda desde hace dos semanas",
+                "duration": "2 semanas",
+                "laterality": "izquierdo",
+                "reported_by": None,
+            }
+        ],
+        "medicamentos": [
+            {
+                "text": "se receta ibuprofeno cada 8 horas",
+                "duration": None,
+                "laterality": None,
+                "reported_by": None,
+            }
+        ],
+    }
+    assert parsed == expected
+
+    # El resumen impreso lleva no_confirmed_text del pack real
+    from aida.arms.health.wording import default_summary_wording
+
+    real_wording = default_summary_wording()
+    assert real_wording.no_confirmed_text is not None
+    assert real_wording.no_confirmed_text in captured.out
+
+
+def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 18 (§B.3): input levanta EOFError en la primera llamada:
+    código 1, stderr contiene 'revisión incompleta', y no existe
+    tmp_path / '.cache' / 'aida' / 'consultas' / '<owner>.cache'.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackendExtract:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg1 = MagicMock()
+            seg1.start = 0.0
+            seg1.end = 2.0
+            seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+            return [seg1], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackendExtract(),
+    )
+
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    def mock_input(prompt: str) -> str:
+        raise EOFError("interrupción simulada")
+
+    monkeypatch.setattr("builtins.input", mock_input)
+
+    owner = "paciente_cli_review_eof"
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--extract",
+            "--review",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            owner,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "revisión incompleta" in captured.err
+
+    cache_file = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    assert not cache_file.exists()
+
+
+
 
 
 

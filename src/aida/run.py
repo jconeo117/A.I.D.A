@@ -27,6 +27,7 @@ from aida.engine.state import AgentState, ExecutionState
 
 if TYPE_CHECKING:
     from aida.arms.health.consultation import Consultation
+    from aida.arms.health.review import Answer, ReviewItem
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
@@ -86,6 +87,12 @@ def _construir_parser() -> argparse.ArgumentParser:
         "--extract",
         action="store_true",
         help="extrae duración/lateralidad/quién lo dijo (requiere --segment)",
+    )
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="confirmar, editar o rechazar cada hallazgo y código antes de guardar "
+        "(requiere --segment)",
     )
     parser.add_argument(
         "--owner",
@@ -190,6 +197,38 @@ def _build_consultation(
         segmenter=cast(Any, segmenter),
         extractor=cast(Any, extractor),
     )
+
+
+def _review_from_stdin(item: ReviewItem) -> Answer:
+    """El teclado como revisor. Las opciones salen de `item.allowed`, que fija
+    `review.py`: aquí solo se pregunta, no se decide qué se admite."""
+    from aida.arms.health import review as _review
+
+    keys = {
+        _review.Verdict.CONFIRMED: "c",
+        _review.Verdict.EDITED: "e",
+        _review.Verdict.REJECTED: "r",
+    }
+    names = {
+        _review.Verdict.CONFIRMED: "confirmar",
+        _review.Verdict.EDITED: "editar",
+        _review.Verdict.REJECTED: "rechazar",
+    }
+    options = {keys[v]: v for v in item.allowed}
+    prompt = " / ".join(f"[{keys[v]}] {names[v]}" for v in item.allowed) + ": "
+    print(f"[{item.label}] {item.text}")
+    while True:
+        choice = input(prompt).strip().lower()
+        if choice in options:
+            break
+        print("(respuesta no válida)")
+    verdict = options[choice]
+    if verdict is not _review.Verdict.EDITED:
+        return _review.Answer(verdict=verdict)
+    while True:
+        text = input("texto corregido: ").strip()
+        if text:
+            return _review.Answer(verdict=verdict, text=text)
 
 
 CONVERSATION_SILENCE_SECONDS = 1.5
@@ -332,7 +371,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.extract and not args.segment:
             print("aida: error: --extract requiere --segment", file=sys.stderr)
             return 1
-
+        if args.review and not args.segment:
+            print("aida: error: --review requiere --segment", file=sys.stderr)
+            return 1
         if args.diarize:
             if not os.environ.get("AIDA_HF_TOKEN"):
                 print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
@@ -376,11 +417,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if consultation is None:
             return 1
-        result = consultation.run(
-            owner=AgentId(args.owner),
-            audio_path=Path(args.audio),
-            history_path=Path(args.history),
-        )
+        if args.review:
+            prepared = consultation.prepare(
+                owner=AgentId(args.owner),
+                audio_path=Path(args.audio),
+                history_text=lambda: ocr.read(Path(args.history)),
+            )
+            try:
+                result = consultation.review(prepared, reviewer=_review_from_stdin)
+            except (EOFError, KeyboardInterrupt):
+                print(
+                    "aida: revisión incompleta: nada se registra como revisado",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            result = consultation.run(
+                owner=AgentId(args.owner),
+                audio_path=Path(args.audio),
+                history_path=Path(args.history),
+            )
         print(result.summary_markdown)
         if args.print_model:
             if result.encounter is None:

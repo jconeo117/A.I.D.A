@@ -13,7 +13,9 @@ Cubre §5.2 de 42-plan-diarizacion.md:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -22,14 +24,18 @@ from cryptography.fernet import Fernet
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
-from aida.arms.health.consultation import Consultation, SummaryWording
+from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.match import CatalogIndex, build_index
+from aida.arms.health.model import ClinicalFinding
+from aida.arms.health.review import Answer, ReviewItem, Verdict
 from aida.arms.health.sections import load_sections
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.arms.health.wording import default_summary_wording
+from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
+from aida.engine.ports import CognitionProvider
 from aida.voice.diarize import (
     DiarizationError,
     LocalPyannoteDiarizer,
@@ -89,9 +95,37 @@ class _DummyOCR(LocalTesseractOCR):
         return "Historia previa sin antecedentes de interés"
 
 
+class _SpyCognitionProvider(CognitionProvider):
+    """Proveedor espía que cuenta llamadas a think y devuelve una respuesta prefijada."""
+
+    def __init__(self, response: str = "Resumen de prueba") -> None:
+        self.response = response
+        self.think_calls = 0
+
+    def think(self, briefing: str, schema: type) -> Any:
+        self.think_calls += 1
+        return SpokenReply(text=self.response)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_wording_review() -> SummaryWording:
+    return SummaryWording(
+        system_prompt="Organiza en Markdown la información de una consulta médica:",
+        said_template="Dijo: {}",
+        history_template="Historia: {}",
+        matched_template="CIE-10: {}",
+        no_match_text="Sin códigos",
+        professional_label="MÉDICO",
+        patient_label="PACIENTE",
+        section_template="### {}\n{}",
+        confirmed_template="Códigos confirmados por el profesional: {}",
+        no_confirmed_text="El profesional no confirmó ningún código.",
+    )
 
 
 @pytest.fixture
@@ -1337,6 +1371,460 @@ def test_consultation_extractor_sin_aciertos_emite_fields_extracted_con_data_vac
     assert ev.owner == owner
     assert ev.tick == 0
     assert ev.data == {}
+
+
+# ---------------------------------------------------------------------------
+# Pruebas §B.2: Revisión del profesional (51-plan-revision-profesional.md)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_prepare_sin_revision_emite_mismos_eventos_sin_llm_ni_cache(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 9 (§B.2): Consulta con segmentador y extractor, sin diarizador.
+    run_with_history emite [INPUT_OBSERVED, TEXT_SEGMENTED, MODEL_BUILT,
+    FIELDS_EXTRACTED, INPUT_OBSERVED, CATALOG_MATCHED].
+    prepare emite la misma secuencia, el proveedor espía queda con think_calls == 0
+    y cache.load(owner=...) is None.
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor en rodilla derecha desde hace dos semanas",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    # Instancia 1: run_with_history
+    log1 = EventLog(window=100)
+    spy_provider1 = _SpyCognitionProvider()
+    c1 = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=spy_provider1,
+        cache=sample_cache,
+        log=log1,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner1 = AgentId("doc_run")
+    c1.run_with_history(
+        owner=owner1,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+    kinds_run = [e.kind for e in log1]
+    expected_sequence = [
+        EventKind.INPUT_OBSERVED,
+        EventKind.TEXT_SEGMENTED,
+        EventKind.MODEL_BUILT,
+        EventKind.FIELDS_EXTRACTED,
+        EventKind.INPUT_OBSERVED,
+        EventKind.CATALOG_MATCHED,
+    ]
+    assert kinds_run == expected_sequence
+    assert spy_provider1.think_calls == 1
+    assert sample_cache.load(owner=owner1) is not None
+
+    # Instancia 2: prepare
+    log2 = EventLog(window=100)
+    spy_provider2 = _SpyCognitionProvider()
+    c2 = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=spy_provider2,
+        cache=sample_cache,
+        log=log2,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner2 = AgentId("doc_prep")
+    prepared = c2.prepare(
+        owner=owner2,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+    kinds_prep = [e.kind for e in log2]
+    assert kinds_prep == expected_sequence
+    assert spy_provider2.think_calls == 0
+    assert sample_cache.load(owner=owner2) is None
+    assert prepared.encounter is not None
+    assert len(prepared.matches) > 0
+
+
+def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechazados(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 10 (§B.2): review() construye el resumen sin llamar al modelo (think_calls == 0).
+    Con códigos confirmados, usa confirmed_template y lista solo los confirmados;
+    result.matched_codes contiene solo los confirmados; y cache.load(...) coincide con
+    result.summary_markdown.
+    Con todos los códigos rechazados, el resumen lleva no_confirmed_text.
+    """
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+            DiagnosticCode("R51", "Cefalea", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor de cabeza",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    # Parte A: confirma I10, rechaza R51
+    log_a = EventLog(window=100)
+    spy_provider_a = _SpyCognitionProvider()
+    c_a = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=spy_provider_a,
+        cache=sample_cache,
+        log=log_a,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner_a = AgentId("doc_rev_a")
+    prepared_a = c_a.prepare(
+        owner=owner_a,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial y cefalea.",
+    )
+
+    def reviewer_a(item: ReviewItem) -> Answer:
+        if item.ref == "R51":
+            return Answer(Verdict.REJECTED)
+        return Answer(Verdict.CONFIRMED)
+
+    result_a = c_a.review(prepared_a, reviewer=reviewer_a)
+    assert spy_provider_a.think_calls == 0
+    assert result_a.matched_codes == ("I10",)
+    assert (
+        "Códigos confirmados por el profesional: I10 (Hipertensión esencial (primaria))"
+        in result_a.summary_markdown
+    )
+    assert "R51" not in result_a.summary_markdown
+    assert "El profesional no confirmó ningún código." not in result_a.summary_markdown
+    assert sample_cache.load(owner=owner_a) == result_a.summary_markdown
+
+    # Parte B: rechaza todos los códigos
+    log_b = EventLog(window=100)
+    spy_provider_b = _SpyCognitionProvider()
+    c_b = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=spy_provider_b,
+        cache=sample_cache,
+        log=log_b,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner_b = AgentId("doc_rev_b")
+    prepared_b = c_b.prepare(
+        owner=owner_b,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial y cefalea.",
+    )
+
+    def reviewer_b(item: ReviewItem) -> Answer:
+        if item.allowed == (Verdict.CONFIRMED, Verdict.REJECTED):
+            return Answer(Verdict.REJECTED)
+        return Answer(Verdict.CONFIRMED)
+
+    result_b = c_b.review(prepared_b, reviewer=reviewer_b)
+    assert spy_provider_b.think_calls == 0
+    assert result_b.matched_codes == ()
+    assert "El profesional no confirmó ningún código." in result_b.summary_markdown
+    assert "Códigos confirmados por el profesional:" not in result_b.summary_markdown
+    assert sample_cache.load(owner=owner_b) == result_b.summary_markdown
+
+
+def test_consultation_review_wording_incompleto_falla_antes_de_preguntar(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 11 (§B.2): review() con SummaryWording sin confirmed_template da ValueError
+    y el revisor espía registra 0 llamadas.
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor en rodilla derecha",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    c_prep = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    prepared = c_prep.prepare(
+        owner=AgentId("doc_incomplete"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente hipertenso conocido.",
+    )
+
+    wording_incompleto = replace(sample_wording_review, confirmed_template=None)
+    c_bad = Consultation(
+        wording=wording_incompleto,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+
+    calls = 0
+
+    def reviewer_spy(item: ReviewItem) -> Answer:
+        nonlocal calls
+        calls += 1
+        return Answer(Verdict.CONFIRMED)
+
+    with pytest.raises(ValueError, match="confirmed_template"):
+        c_bad.review(prepared, reviewer=reviewer_spy)
+
+    assert calls == 0
+
+
+def test_consultation_review_cortada_propaga_y_no_guarda_en_cache(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 12 (§B.2): review() con revisor que levanta EOFError:
+    se propaga y cache.load(owner=...) is None.
+    """
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor en rodilla derecha",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner = AgentId("doc_cut")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente hipertenso conocido.",
+    )
+
+    def cut_reviewer(item: ReviewItem) -> Answer:
+        raise EOFError("corte inesperado")
+
+    with pytest.raises(EOFError):
+        consultation.review(prepared, reviewer=cut_reviewer)
+
+    assert sample_cache.load(owner=owner) is None
+
+
+def test_consultation_refine_edited_recalcula_con_extractor_y_preserva_reported_by(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 13 (§B.2): _refine_edited:
+    - Con extractor: sobre un ClinicalFinding con reported_by="PACIENTE",
+      el texto «me duele el ojo izquierdo desde hace tres días» da laterality='izquierdo',
+      duration='3 días' y reported_by="PACIENTE".
+    - Sin extractor: solo cambia text.
+    """
+    stt = _SpyWhisperSTT()
+    ocr = _DummyOCR()
+
+    # Con extractor
+    c_with_extractor = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=None,
+        extractor=build_health_extractor(),
+    )
+    f1 = ClinicalFinding(
+        text="texto previo",
+        section_id="motivo_consulta",
+        reported_by="PACIENTE",
+    )
+    refined1 = c_with_extractor._refine_edited(
+        f1,
+        "me duele el ojo izquierdo desde hace tres días",
+    )
+    assert refined1.text == "me duele el ojo izquierdo desde hace tres días"
+    assert refined1.duration == "3 días"
+    assert refined1.laterality == "izquierdo"
+    assert refined1.reported_by == "PACIENTE"
+
+    # Sin extractor
+    c_without_extractor = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=None,
+        extractor=None,
+    )
+    f2 = ClinicalFinding(
+        text="texto previo",
+        section_id="motivo_consulta",
+        duration="10 días",
+        laterality="derecho",
+        reported_by="PACIENTE",
+    )
+    refined2 = c_without_extractor._refine_edited(f2, "nuevo texto sin extractor")
+    assert refined2.text == "nuevo texto sin extractor"
+    assert refined2.duration == "10 días"
+    assert refined2.laterality == "derecho"
+    assert refined2.reported_by == "PACIENTE"
+
+
+def test_consultation_review_sin_segmentador_lanza_value_error(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 14 (§B.2): review() con PreparedConsultation de encounter=None da ValueError."""
+    stt = _SpyWhisperSTT()
+    ocr = _DummyOCR()
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=None,
+        extractor=None,
+    )
+    prepared_sin_encounter = PreparedConsultation(
+        owner=AgentId("doc_no_encounter"),
+        transcript="transcripción",
+        history="historia",
+        matches=(),
+        grouped_sections=None,
+        encounter=None,
+    )
+
+    with pytest.raises(ValueError, match="revisión activa pero no hay segmentador configurado"):
+        consultation.review(
+            prepared_sin_encounter,
+            reviewer=lambda item: Answer(Verdict.CONFIRMED),
+        )
+
+
+def test_default_summary_wording_faltan_claves_revision_y_pack_real(tmp_path: Path) -> None:
+    """Caso 15 (§B.2): default_summary_wording(path) con un YAML al que le falta
+    confirmed_template da ValueError que la nombra; lo mismo con no_confirmed_text.
+    default_summary_wording() (el pack real) carga los dos campos con valor no vacío.
+    """
+    base_dict = {
+        "system_prompt": "Organiza:",
+        "said_template": "Dijo: {}",
+        "history_template": "Historia: {}",
+        "matched_template": "CIE: {}",
+        "no_match_text": "Sin códigos",
+        "professional_label": "MÉDICO",
+        "patient_label": "PACIENTE",
+        "section_template": "### {}\n{}",
+        "confirmed_template": "Códigos confirmados: {}",
+        "no_confirmed_text": "Sin confirmados",
+    }
+
+    # Falta confirmed_template
+    dict_no_confirmed = dict(base_dict)
+    del dict_no_confirmed["confirmed_template"]
+    path_no_confirmed = tmp_path / "wording_no_confirmed.yaml"
+    path_no_confirmed.write_text(yaml.dump(dict_no_confirmed), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="confirmed_template"):
+        default_summary_wording(path_no_confirmed)
+
+    # Falta no_confirmed_text
+    dict_no_confirmed_text = dict(base_dict)
+    del dict_no_confirmed_text["no_confirmed_text"]
+    path_no_confirmed_text = tmp_path / "wording_no_confirmed_text.yaml"
+    path_no_confirmed_text.write_text(yaml.dump(dict_no_confirmed_text), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no_confirmed_text"):
+        default_summary_wording(path_no_confirmed_text)
+
+    # Pack real
+    real_wording = default_summary_wording()
+    assert real_wording.confirmed_template is not None
+    assert len(real_wording.confirmed_template.strip()) > 0
+    assert real_wording.no_confirmed_text is not None
+    assert len(real_wording.no_confirmed_text.strip()) > 0
+
 
 
 

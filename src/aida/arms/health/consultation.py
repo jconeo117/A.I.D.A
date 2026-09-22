@@ -6,14 +6,15 @@ deliberación, es una tubería fija que se ejecuta cuando el médico la pide.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
-from aida.arms.health.model import Encounter, build_encounter
+from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
+from aida.arms.health.review import Reviewer, review_encounter
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.cognition.briefing import SpokenReply
@@ -37,6 +38,8 @@ class SummaryWording:
     professional_label: str | None = None
     patient_label: str | None = None
     section_template: str | None = None
+    confirmed_template: str | None = None
+    no_confirmed_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +50,21 @@ class ConsultationResult:
     matched_codes: tuple[str, ...]
     summary_markdown: str
     encounter: Encounter | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedConsultation:
+    """Todo lo que la consulta sabe antes de redactar nada. Existe para que la
+    revisión parta de lo mismo que el borrador sin que el borrador llegue a
+    existir: con revisión, ni se llama al modelo ni se escribe en caché hasta
+    que el profesional ha contestado a todo."""
+
+    owner: AgentId
+    transcript: str
+    history: str
+    matches: tuple[MatchedCode, ...]
+    grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None
+    encounter: Encounter | None
 
 
 class Consultation:
@@ -90,7 +108,30 @@ class Consultation:
     ) -> ConsultationResult:
         """La historia ya leída. Es el camino cuando la HC se cargó al
         arrancar — hoy a mano; mañana la traerá quien sepa qué paciente
-        sigue (Ruta B)."""
+        sigue (Ruta B). Es `prepare` más el borrador: los eventos salen
+        igual que antes de existir `prepare`."""
+        prepared = self.prepare(owner=owner, audio_path=audio_path, history_text=history_text)
+        facts = self._build_facts(
+            prepared.transcript, prepared.history, prepared.matches, prepared.grouped_sections
+        )
+        summary = self._redact(facts)
+
+        result = ConsultationResult(
+            owner=owner,
+            transcript=prepared.transcript,
+            history_excerpt=prepared.history,
+            matched_codes=tuple(m.diagnostic.code for m in prepared.matches),
+            summary_markdown=summary,
+            encounter=prepared.encounter,
+        )
+        self._cache.store(owner=owner, summary_markdown=summary)
+        return result
+
+    def prepare(
+        self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
+    ) -> PreparedConsultation:
+        """Transcribe, segmenta, extrae, lee la historia y coteja — y se para
+        ahí: ni modelo ni caché."""
         if self._extractor is not None and self._segmenter is None:
             raise ValueError("extracción activa pero no hay segmentador configurado")
 
@@ -167,19 +208,14 @@ class Consultation:
             data={"codes": ",".join(m.diagnostic.code for m in matches)} if matches else {},
         )
 
-        facts = self._build_facts(transcript, history, matches, grouped_sections)
-        summary = self._redact(facts)
-
-        result = ConsultationResult(
+        return PreparedConsultation(
             owner=owner,
             transcript=transcript,
-            history_excerpt=history,
-            matched_codes=tuple(m.diagnostic.code for m in matches),
-            summary_markdown=summary,
+            history=history,
+            matches=matches,
+            grouped_sections=grouped_sections,
             encounter=encounter,
         )
-        self._cache.store(owner=owner, summary_markdown=summary)
-        return result
 
     def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:
@@ -260,4 +296,66 @@ class Consultation:
             if isinstance(result, SpokenReply):
                 return result.text
         return "\n".join(f"- {f}" for f in facts)
+
+    def review(self, prepared: PreparedConsultation, *, reviewer: Reviewer) -> ConsultationResult:
+        """Solo tras contestar a todo se redacta y se guarda. El resumen sale de
+        lo revisado sin modelo: si el modelo lo reescribiera, el texto final
+        ya no sería lo que el profesional aprobó. Si `reviewer` levanta, se
+        propaga y no se guarda nada: callar no es confirmar."""
+        if prepared.encounter is None or prepared.grouped_sections is None:
+            raise ValueError("revisión activa pero no hay segmentador configurado")
+        section_template = self._wording.section_template
+        confirmed_template = self._wording.confirmed_template
+        no_confirmed_text = self._wording.no_confirmed_text
+        if section_template is None or confirmed_template is None or no_confirmed_text is None:
+            raise ValueError(
+                "revisión activa pero wording no trae section_template, "
+                "confirmed_template o no_confirmed_text"
+            )
+
+        reviewed = review_encounter(
+            owner=prepared.owner,
+            grouped_sections=prepared.grouped_sections,
+            encounter=prepared.encounter,
+            matches=prepared.matches,
+            reviewer=reviewer,
+            log=self._log,
+            refine=self._refine_edited,
+        )
+
+        facts = [
+            section_template.format(spec.label, "\n".join(texts))
+            for spec, texts in reviewed.grouped_sections
+        ]
+        facts.append(self._wording.history_template.format(prepared.history))
+        if reviewed.confirmed_codes:
+            listado = "; ".join(
+                f"{m.diagnostic.code} ({m.diagnostic.description})"
+                for m in reviewed.confirmed_codes
+            )
+            facts.append(confirmed_template.format(listado))
+        else:
+            facts.append(no_confirmed_text)
+        summary = "\n".join(f"- {f}" for f in facts)
+
+        result = ConsultationResult(
+            owner=prepared.owner,
+            transcript=prepared.transcript,
+            history_excerpt=prepared.history,
+            matched_codes=tuple(m.diagnostic.code for m in reviewed.confirmed_codes),
+            summary_markdown=summary,
+            encounter=reviewed.encounter,
+        )
+        self._cache.store(owner=prepared.owner, summary_markdown=summary)
+        return result
+
+    def _refine_edited(self, finding: ClinicalFinding, text: str) -> ClinicalFinding:
+        """El texto lo cambia el profesional; quién lo dijo, no — eso es un
+        hecho del audio, no de la redacción. Duración y lateralidad sí se
+        recalculan, con el mismo extractor que el resto: una sola puerta."""
+        edited = replace(finding, text=text)
+        if self._extractor is None:
+            return edited
+        refined = self._extractor.extract(edited, professional_label=None, patient_label=None)
+        return replace(refined, reported_by=finding.reported_by)
 
