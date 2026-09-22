@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,8 @@ FORBIDDEN_MODEL_IMPORT_ROOTS = frozenset(
         "PIL",
         "pypdfium2",
         "sounddevice",
+        "pyannote",
+        "torch",
     }
 )
 
@@ -341,9 +344,14 @@ def _imported_module_roots(tree: ast.AST) -> list[tuple[int, str]]:
     return found
 
 
-def _is_exempt(path: Path) -> bool:
-    """`cognition/` e `intent/` son la costura declarada hacia el modelo."""
-    return bool(EXEMPT_DIR_NAMES & set(path.parts))
+def _is_exempt(path: Path, root: Path = ENGINE_ROOT) -> bool:
+    """La exención se decide sobre la ruta DENTRO de `src/aida`, y solo por su
+    primer directorio. Sobre la ruta absoluta, un repositorio clonado bajo una
+    carpeta llamada `arms` apagaba G4 entero sin que nada fallara (I-113).
+    Fuera del árbol revienta: una ruta que no es del motor no puede estar ni
+    exenta ni vigilada."""
+    relative = path.resolve().relative_to(root.resolve())
+    return len(relative.parts) > 1 and relative.parts[0] in EXEMPT_DIR_NAMES
 
 
 def _model_import_offenders(source: Path) -> list[str]:
@@ -549,9 +557,9 @@ def test_g4_guardian_no_marca_importes_ajenos_al_modelo(tmp_path: Path) -> None:
 
 def test_g4_guardian_exime_cognition_e_intent() -> None:
     """`cognition/` e `intent/` son la costura declarada: `_is_exempt` los reconoce."""
-    assert _is_exempt(Path("src/aida/cognition/redactor.py"))
-    assert _is_exempt(Path("src/aida/intent/clasificador.py"))
-    assert not _is_exempt(Path("src/aida/engine/pack.py"))
+    assert _is_exempt(ENGINE_ROOT / "cognition" / "redactor.py")
+    assert _is_exempt(ENGINE_ROOT / "intent" / "clasificador.py")
+    assert not _is_exempt(ENGINE_ROOT / "engine" / "pack.py")
 
 
 def test_g4_guardian_exime_arms() -> None:
@@ -560,9 +568,9 @@ def test_g4_guardian_exime_arms() -> None:
     """
     assert "arms" in EXEMPT_DIR_NAMES
     assert "consult" not in EXEMPT_DIR_NAMES
-    assert _is_exempt(Path("src/aida/arms/health/capture.py"))
-    assert _is_exempt(Path("src/aida/arms/accounting/algo.py")) is True
-    assert not _is_exempt(Path("src/aida/textmatch.py"))
+    assert _is_exempt(ENGINE_ROOT / "arms" / "health" / "capture.py")
+    assert _is_exempt(ENGINE_ROOT / "arms" / "accounting" / "algo.py") is True
+    assert not _is_exempt(ENGINE_ROOT / "textmatch.py")
 
 
 def test_g4_guardian_exime_voice() -> None:
@@ -570,9 +578,34 @@ def test_g4_guardian_exime_voice() -> None:
     `EXEMPT_DIR_NAMES` lo incluye y `_is_exempt` lo reconoce.
     """
     assert "voice" in EXEMPT_DIR_NAMES
-    assert _is_exempt(Path("src/aida/voice/listen.py"))
-    assert _is_exempt(Path("src/aida/voice/commands.py"))
-    assert not _is_exempt(Path("src/aida/textmatch.py"))
+    assert _is_exempt(ENGINE_ROOT / "voice" / "listen.py")
+    assert _is_exempt(ENGINE_ROOT / "voice" / "commands.py")
+    assert not _is_exempt(ENGINE_ROOT / "textmatch.py")
+
+
+def test_is_exempt_ignora_carpetas_por_encima_de_la_raiz(tmp_path: Path) -> None:
+    """I-113: un nombre exento por encima de `src/aida` no exime nada."""
+    root = tmp_path / "arms" / "src" / "aida"
+    assert not _is_exempt(root / "engine" / "loop.py", root)
+    assert _is_exempt(root / "cognition" / "x.py", root)
+
+
+def test_is_exempt_solo_mira_el_primer_directorio() -> None:
+    """I-113: un subdirectorio con nombre exento dentro del motor no lo exime."""
+    assert not _is_exempt(ENGINE_ROOT / "engine" / "voice" / "x.py")
+    assert not _is_exempt(ENGINE_ROOT / "voice.py")
+
+
+def test_is_exempt_fuera_del_arbol_revienta(tmp_path: Path) -> None:
+    """I-113: fuera de `src/aida` no hay respuesta posible."""
+    with pytest.raises(ValueError):
+        _is_exempt(tmp_path / "cognition" / "x.py")
+
+
+def test_g4_parametrizado_no_queda_vacio() -> None:
+    """I-113: el síntoma medido fue un parametrizado vacío que pasa en verde."""
+    vigilados = [p for p in _engine_sources() if not _is_exempt(p)]
+    assert ENGINE_ROOT / "engine" / "loop.py" in vigilados
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +641,8 @@ NEW_RUNTIME_MODEL_IMPORT_ROOTS = (
     "PIL",
     "pypdfium2",
     "sounddevice",
+    "pyannote",
+    "torch",
 )
 
 
@@ -631,7 +666,7 @@ def test_g4_guardian_catches_runtime_model_imports(tmp_path: Path) -> None:
 
 
 def test_g4_guardian_forbidden_set_contains_all_runtime_roots() -> None:
-    """I-072 (§4.1): Verifica que todas las 7 raíces de runtimes de modelo
+    """I-072 (§4.1): Verifica que todas las raíces de runtimes de modelo
     agregadas en U9 están registradas en FORBIDDEN_MODEL_IMPORT_ROOTS.
     Si se retira cualquiera de ellas, este test falla indicando el nombre faltante.
     """
@@ -639,6 +674,79 @@ def test_g4_guardian_forbidden_set_contains_all_runtime_roots() -> None:
     assert not missing, (
         f"Raíces de runtimes de modelo ausentes de FORBIDDEN_MODEL_IMPORT_ROOTS: {missing}"
     )
+
+
+PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+DIST_IMPORT_ROOTS = {
+    "cryptography": "cryptography",
+    "faster-whisper": "faster_whisper",
+    "httpx": "httpx",
+    "numpy": "numpy",
+    "pyannote.audio": "pyannote",
+    "pydantic": "pydantic",
+    "pypdfium2": "pypdfium2",
+    "pytesseract": "pytesseract",
+    "pyyaml": "yaml",
+    "sounddevice": "sounddevice",
+}
+"""Nombre de distribución -> raíz de import. Explícito: la regla general
+(guion por guion bajo) falla justo en los casos que importan (`pyyaml`,
+`pyannote.audio`), y adivinarla sería un falso verde."""
+
+_REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _dist_name(requirement: str) -> str:
+    match = _REQUIREMENT_NAME.match(requirement.strip())
+    assert match is not None, f"requisito ilegible en pyproject.toml: {requirement!r}"
+    return match.group(0).lower()
+
+
+def _declared_dists() -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """(`dependencies`, {extra: dependencias}), todo ordenado."""
+    project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))["project"]
+    core = tuple(sorted(_dist_name(r) for r in project["dependencies"]))
+    extras = {
+        extra: tuple(sorted(_dist_name(r) for r in reqs))
+        for extra, reqs in sorted(project.get("optional-dependencies", {}).items())
+    }
+    return core, extras
+
+
+def _src_import_roots() -> set[str]:
+    roots: set[str] = set()
+    for source in _engine_sources():
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        roots.update(root for _lineno, root in _imported_module_roots(tree))
+    return roots
+
+
+def test_toda_dependencia_declarada_tiene_mapeo_de_import() -> None:
+    """I-089: sin mapeo no se puede comprobar nada — falla en vez de adivinar."""
+    core, extras = _declared_dists()
+    declared = set(core).union(*extras.values())
+    missing = sorted(declared - DIST_IMPORT_ROOTS.keys())
+    assert not missing, f"añade su raíz de import a DIST_IMPORT_ROOTS: {missing}"
+
+
+def test_toda_dependencia_declarada_tiene_consumidor_en_src() -> None:
+    """I-089: una dependencia que nadie importa es superficie muerta."""
+    core, extras = _declared_dists()
+    roots = _src_import_roots()
+    declared = set(core).union(*extras.values())
+    unused = sorted(d for d in declared if DIST_IMPORT_ROOTS[d] not in roots)
+    assert not unused, f"declaradas en pyproject.toml y sin import en src/aida: {unused}"
+
+
+def test_g4_vigila_toda_raiz_de_los_extras() -> None:
+    """I-101: la cobertura de G4 queda atada a lo que el proyecto instala de
+    verdad, no a una lista que la propia entrega puede recortar."""
+    _core, extras = _declared_dists()
+    extra_roots = {DIST_IMPORT_ROOTS[d] for reqs in extras.values() for d in reqs}
+    assert not sorted(extra_roots - FORBIDDEN_MODEL_IMPORT_ROOTS)
+    assert not sorted(extra_roots - set(NEW_RUNTIME_MODEL_IMPORT_ROOTS))
+
 
 
 # ---------------------------------------------------------------------------
@@ -720,14 +828,18 @@ MEDICAL_PATTERN = re.compile(
 
 
 def _health_sources() -> list[Path]:
-    health_dir = ENGINE_ROOT / "arms" / "health"
-    if not health_dir.exists():
-        raise FileNotFoundError(f"Directorio no encontrado en {health_dir}")
-    sources = sorted(
-        path
-        for path in health_dir.rglob("*.py")
-        if "__pycache__" not in path.parts
-    )
+    """`arms/health/`, más `cognition/` y `voice/` (I-088): los dos sitios
+    donde viven textos que llegan al modelo o que reconocen los comandos del
+    operador, que es justo por donde un vertical tiende a filtrar vocabulario.
+    Y `run.py` (I-111)."""
+    sources: list[Path] = []
+    for parts in (("arms", "health"), ("cognition",), ("voice",)):
+        directory = ENGINE_ROOT.joinpath(*parts)
+        if not directory.exists():
+            raise FileNotFoundError(f"Directorio no encontrado en {directory}")
+        sources.extend(
+            sorted(path for path in directory.rglob("*.py") if "__pycache__" not in path.parts)
+        )
     run_file = ENGINE_ROOT / "run.py"
     if not run_file.exists():
         raise FileNotFoundError(f"Archivo run.py no encontrado en {run_file}")
@@ -745,6 +857,13 @@ def test_guardian_medico_escanea_run_py() -> None:
     """I-111: El guardián médico escanea explícitamente run.py."""
     nombres = {p.name for p in _health_sources()}
     assert "run.py" in nombres
+
+
+def test_guardian_medico_escanea_cognition_y_voice() -> None:
+    """I-088: el guardián médico recorre también `cognition/` y `voice/`."""
+    rutas = {p.relative_to(ENGINE_ROOT).as_posix() for p in _health_sources()}
+    assert "cognition/briefing.py" in rutas
+    assert "voice/commands.py" in rutas
 
 
 
