@@ -21,6 +21,7 @@ from aida.cognition.providers import (
     ClaudeProvider,
     GeminiProvider,
     OllamaProvider,
+    _strip_ollama_unsupported_keywords,
     build_provider,
 )
 
@@ -361,3 +362,91 @@ def test_build_provider_gemini_uses_header_instead_of_query_param(
     assert isinstance(provider, GeminiProvider)
     assert provider._client.headers.get("x-goog-api-key") == "test-secret-key-123"
     assert "key" not in provider._client.params
+
+
+def test_ollama_strip_quita_longitudes_del_schema_real() -> None:
+    """§B.1 Caso 1: _strip_ollama_unsupported_keywords elimina minLength/maxLength
+    del schema de SpokenReply en todos los niveles y preserva los demás atributos.
+    """
+    schema = SpokenReply.model_json_schema()
+    assert "minLength" in json.dumps(schema) or "maxLength" in json.dumps(schema)
+
+    resultado = _strip_ollama_unsupported_keywords(schema)
+    serializado = json.dumps(resultado)
+
+    assert "minLength" not in serializado
+    assert "maxLength" not in serializado
+    assert resultado.get("type") == "object"
+    assert resultado.get("title") == "SpokenReply"
+    assert resultado.get("required") == ["text"]
+    assert resultado.get("additionalProperties") is False
+    properties = resultado.get("properties")
+    assert isinstance(properties, dict)
+    assert properties["text"]["type"] == "string"
+
+
+def test_ollama_strip_recorre_mapas_anidados_y_listas() -> None:
+    """§B.1 Caso 2: _strip_ollama_unsupported_keywords recorre mapas anidados y listas,
+    preservando elementos no-diccionario y limpiando subclaves minLength/maxLength.
+    """
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string", "minLength": 1}},
+        "anyOf": [{"type": "string", "maxLength": 3}, "literal"],
+    }
+    esperado = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "anyOf": [{"type": "string"}, "literal"],
+    }
+    assert _strip_ollama_unsupported_keywords(schema) == esperado
+
+
+def test_ollama_payload_serializado_no_lleva_longitudes() -> None:
+    """§B.1 Caso 3: la petición HTTP a Ollama no incluye minLength/maxLength en sus bytes
+    y preserva la estructura de schema format requerida.
+    """
+    contenido_bytes = b""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal contenido_bytes
+        contenido_bytes = request.content
+        return httpx.Response(200, json={"response": json.dumps({"text": "ok"})})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    provider = OllamaProvider(client)
+    resultado = provider.think("Briefing", SpokenReply)
+
+    assert isinstance(resultado, SpokenReply)
+    assert resultado.text == "ok"
+    assert b"minLength" not in contenido_bytes
+    assert b"maxLength" not in contenido_bytes
+    parsed_payload = json.loads(contenido_bytes)
+    assert parsed_payload["format"]["properties"]["text"]["type"] == "string"
+
+
+def test_ollama_think_longitud_fuera_de_rango_devuelve_none() -> None:
+    """§B.1 Caso 4: respuestas que violen min_length=1 o max_length=2000 son rechazadas
+    por _validate y retornan None a pesar de no estar en la gramática.
+    """
+    client_vacio = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"response": json.dumps({"text": ""})})
+        ),
+        base_url="http://localhost:11434",
+    )
+    assert OllamaProvider(client_vacio).think("Briefing", SpokenReply) is None
+
+    client_largo = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                200, json={"response": json.dumps({"text": "x" * 2001})}
+            )
+        ),
+        base_url="http://localhost:11434",
+    )
+    assert OllamaProvider(client_largo).think("Briefing", SpokenReply) is None
+

@@ -15,6 +15,7 @@ entregable — no se improvisa en silencio.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import cast
 
 import httpx
@@ -88,6 +89,31 @@ class GeminiProvider:
             return None
 
 
+def _strip_ollama_unsupported_keywords(schema: Mapping[str, object]) -> dict[str, object]:
+    """Ollama compila el `format` de una petición a una gramática GBNF, y con
+    `minLength`/`maxLength` presentes al menos un modelo real revienta
+    (`"Failed to initialize samplers: failed to parse grammar"`, medido el
+    2026-09-16 contra `qwen2.5-coder:7b-instruct-q4_K_M`). pydantic las añade
+    en cuanto un campo usa `Field(min_length=..., max_length=...)`. Quitarlas
+    no relaja el contrato: `_validate` sigue comprobando la respuesta contra el
+    modelo completo. Solo se aplica a lo que recibe Ollama.
+    """
+    cleaned: dict[str, object] = {}
+    for key, value in schema.items():
+        if key in ("minLength", "maxLength"):
+            continue
+        if isinstance(value, Mapping):
+            cleaned[key] = _strip_ollama_unsupported_keywords(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _strip_ollama_unsupported_keywords(item) if isinstance(item, Mapping) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
 class OllamaProvider:
     """`CognitionProvider` sobre un servidor Ollama local. Sin API key: la
     única de las tres que puede correr sin ninguna credencial."""
@@ -103,7 +129,9 @@ class OllamaProvider:
                 json={
                     "model": self._model,
                     "prompt": f"{UNIVERSAL_SYSTEM_PROMPT}\n\n{briefing}",
-                    "format": cast(type[BaseModel], schema).model_json_schema(),
+                    "format": _strip_ollama_unsupported_keywords(
+                        cast(type[BaseModel], schema).model_json_schema()
+                    ),
                     "stream": False,
                 },
             )
