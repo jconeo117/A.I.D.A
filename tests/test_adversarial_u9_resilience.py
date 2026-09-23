@@ -306,6 +306,7 @@ def test_whisper_stt_wraps_generator_stream_exceptions_in_transcription_error(
             def segment_gen() -> Any:
                 mock_seg = MagicMock()
                 mock_seg.text = "Primer segmento ok"
+                mock_seg.no_speech_prob = 0.0
                 yield mock_seg
                 raise ValueError("Stream truncado inesperadamente")
 
@@ -436,6 +437,7 @@ class MockWhisperBackend:
     def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
         mock_seg = MagicMock()
         mock_seg.text = self.text
+        mock_seg.no_speech_prob = 0.0
         return [mock_seg], None
 
 

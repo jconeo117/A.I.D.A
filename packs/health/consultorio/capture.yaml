@@ -1,0 +1,7 @@
+# Ajustes de captura de audio. Van en datos y no en código por dos razones:
+# elegir modelo o dispositivo es una decisión de despliegue, y el guardián de
+# vocabulario (tests/test_agnosticism.py) prohíbe nombres de hardware dentro
+# de src/.
+model: small
+device: cpu
+no_speech_threshold: 0.6

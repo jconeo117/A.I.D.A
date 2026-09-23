@@ -722,6 +722,7 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
             mock_seg.text = self.text
+            mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
 
     monkeypatch.setattr(
@@ -793,11 +794,13 @@ def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
             seg1.start = 0.0
             seg1.end = 2.0
             seg1.text = "consulta hoy por dolor de cabeza intenso"
+            seg1.no_speech_prob = 0.0
 
             seg2 = MagicMock()
             seg2.start = 2.0
             seg2.end = 4.0
             seg2.text = "se receta ibuprofeno cada 8 horas"
+            seg2.no_speech_prob = 0.0
 
             return [seg1, seg2], None
 
@@ -866,11 +869,13 @@ def test_consultation_cli_segment_print_model(
             seg1.start = 0.0
             seg1.end = 2.0
             seg1.text = "consulta hoy por dolor de cabeza intenso"
+            seg1.no_speech_prob = 0.0
 
             seg2 = MagicMock()
             seg2.start = 2.0
             seg2.end = 4.0
             seg2.text = "se receta ibuprofeno cada 8 horas"
+            seg2.no_speech_prob = 0.0
 
             return [seg1, seg2], None
 
@@ -967,6 +972,7 @@ def test_consultation_cli_print_model_sin_segment_avisa_stderr(
             seg.start = 0.0
             seg.end = 2.0
             seg.text = "consulta por control general"
+            seg.no_speech_prob = 0.0
             return [seg], None
 
     monkeypatch.setattr(
@@ -1055,11 +1061,13 @@ def test_consultation_cli_segment_extract_print_model(
             seg1.start = 0.0
             seg1.end = 2.0
             seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+            seg1.no_speech_prob = 0.0
 
             seg2 = MagicMock()
             seg2.start = 2.0
             seg2.end = 4.0
             seg2.text = "se receta ibuprofeno cada 8 horas"
+            seg2.no_speech_prob = 0.0
 
             return [seg1, seg2], None
 
@@ -1152,6 +1160,7 @@ def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
             mock_seg.text = self.text
+            mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
 
     monkeypatch.setattr(
@@ -1272,6 +1281,7 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
             mock_seg.text = self.text
+            mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
 
     monkeypatch.setattr(
@@ -1387,8 +1397,13 @@ def test_converse_mic_salir_termina_con_cero_sin_llamar_session_turn(
     monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
 
     class MockSegment:
-        def __init__(self, text: str) -> None:
+        def __init__(
+            self, text: str, start: float = 0.0, end: float = 1.0, no_speech_prob: float = 0.0
+        ) -> None:
             self.text = text
+            self.start = start
+            self.end = end
+            self.no_speech_prob = no_speech_prob
 
     script = iter(["salir"])
 
@@ -1436,8 +1451,13 @@ def test_converse_mic_hola_llama_session_turn_una_vez(
     monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
 
     class MockSegment:
-        def __init__(self, text: str) -> None:
+        def __init__(
+            self, text: str, start: float = 0.0, end: float = 1.0, no_speech_prob: float = 0.0
+        ) -> None:
             self.text = text
+            self.start = start
+            self.end = end
+            self.no_speech_prob = no_speech_prob
 
     script = iter(["hola", "salir"])
 
@@ -1548,8 +1568,13 @@ def test_converse_mic_modo_consulta_delega_en_consultation_no_en_session_turn(
     script = iter(["modo consulta", "dolor de cabeza", "salir"])
 
     class MockSegment:
-        def __init__(self, text: str) -> None:
+        def __init__(
+            self, text: str, start: float = 0.0, end: float = 1.0, no_speech_prob: float = 0.0
+        ) -> None:
             self.text = text
+            self.start = start
+            self.end = end
+            self.no_speech_prob = no_speech_prob
 
     class MockWhisper:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1612,8 +1637,13 @@ def test_converse_mic_sin_extra_capture_devuelve_uno_con_mensaje_stderr(
     monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
 
     class MockSegment:
-        def __init__(self, text: str) -> None:
+        def __init__(
+            self, text: str, start: float = 0.0, end: float = 1.0, no_speech_prob: float = 0.0
+        ) -> None:
             self.text = text
+            self.start = start
+            self.end = end
+            self.no_speech_prob = no_speech_prob
 
     script = iter(["salir"])
 
@@ -1767,11 +1797,13 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
             seg1.start = 0.0
             seg1.end = 2.0
             seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+            seg1.no_speech_prob = 0.0
 
             seg2 = MagicMock()
             seg2.start = 2.0
             seg2.end = 4.0
             seg2.text = "se receta ibuprofeno cada 8 horas"
+            seg2.no_speech_prob = 0.0
 
             return [seg1, seg2], None
 
@@ -1888,6 +1920,7 @@ def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
             seg1.start = 0.0
             seg1.end = 2.0
             seg1.text = "consulta hoy por dolor en rodilla derecha desde hace dos semanas"
+            seg1.no_speech_prob = 0.0
             return [seg1], None
 
     monkeypatch.setattr(
@@ -1934,6 +1967,182 @@ def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
 
     cache_file = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
     assert not cache_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# CLI --check-capture y robustez de captura (§B.4 / 56-plan-captura-robusta.md)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_check_capture_todo_correcto_devuelve_cero(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 16 (§B.4): --check-capture con todas las comprobaciones en True
+    devuelve 0 y muestra 'ok   ' en cada línea."""
+    monkeypatch.setattr(
+        "aida.arms.health.capture.capture_diagnosis",
+        lambda: (
+            ("módulo faster_whisper", True),
+            ("módulo sounddevice", True),
+            ("módulo pytesseract", True),
+            ("modelo small en cpu", True),
+            ("tesseract 5.3.0, español", True),
+            ("entrada de audio: Micrófono", True),
+        ),
+    )
+    codigo = main(["--check-capture"])
+    captured = capsys.readouterr()
+    assert codigo == 0
+    lineas = captured.out.strip().splitlines()
+    assert len(lineas) == 6
+    assert all(linea.startswith("ok   ") for linea in lineas)
+    assert captured.err == ""
+
+
+def test_cli_check_capture_con_fallo_devuelve_uno(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 17 (§B.4): --check-capture con al menos una comprobación en False
+    devuelve 1 y muestra 'FALTA' en la línea afectada."""
+    monkeypatch.setattr(
+        "aida.arms.health.capture.capture_diagnosis",
+        lambda: (
+            ("módulo faster_whisper", True),
+            ("modelo small en cpu: Libcublas not found", False),
+            ("módulo sounddevice", True),
+        ),
+    )
+    codigo = main(["--check-capture"])
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "FALTA modelo small en cpu: Libcublas not found" in captured.out
+
+
+def test_consultation_cli_audio_sin_voz_devuelve_uno_sin_traza(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 18 (§B.4): --consultation con audio sin voz devuelve 1,
+    mensaje 'no se detectó voz' en stderr y sin traceback."""
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperSinVoz:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            return [], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperSinVoz(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta_silencio.wav"
+    audio_path.write_bytes(b"RIFF silence")
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_silencio",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: no se detectó voz en" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_converse_mic_modo_consulta_audio_sin_voz_imprime_error_y_sigue_en_bucle(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 19 (§B.4): en --converse --mic, si la consulta levantada por 'modo consulta'
+    falla por audio sin voz, imprime el error y continúa en conversación hasta 'salir'."""
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture' (faster_whisper)")
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+
+    historia_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(historia_path)
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _DummyMicrophoneSource)
+    monkeypatch.setattr("aida.voice.listen.vad_from_faster_whisper", _scripted_vad_factory)
+
+    script = iter(["modo consulta", "saludo cualquiera", "salir"])
+
+    class _MockSegment:
+        def __init__(self, text: str, no_speech_prob: float = 0.0) -> None:
+            self.text = text
+            self.start = 0.0
+            self.end = 1.0
+            self.no_speech_prob = no_speech_prob
+
+    class _MockWhisper:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def transcribe(
+            self, audio_path: str, *args: Any, **kwargs: Any
+        ) -> tuple[list[Any], None]:
+            if "consultado.wav" in audio_path:
+                return [], None
+            return [_MockSegment(next(script))], None
+
+    monkeypatch.setattr("faster_whisper.WhisperModel", _MockWhisper)
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    codigo = main(
+        [
+            "--pack",
+            str(pack_file),
+            "--converse",
+            "--mic",
+            "--history",
+            str(historia_path),
+            "--owner",
+            "paciente_voz_silencio",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "aida: error: no se detectó voz en" in captured.err
+    assert "(de vuelta en conversación)" in captured.out
+
 
 
 

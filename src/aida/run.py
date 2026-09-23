@@ -95,6 +95,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         "(requiere --segment)",
     )
     parser.add_argument(
+        "--check-capture",
+        action="store_true",
+        help="comprueba modelo, dispositivo, OCR y entrada de audio, y termina",
+    )
+    parser.add_argument(
         "--owner",
         metavar="ID",
         default="sujeto_01",
@@ -342,11 +347,21 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
                     if consulted_audio.size == 0:
                         print("(no se oyó nada)")
                         continue
-                    result = consultation.run_with_history(
-                        owner=AgentId(args.owner),
-                        audio_path=write_wav(consulted_audio, tmp / "consultado.wav"),
-                        history_text=history_text,
+                    from aida.arms.health.capture import (
+                        ModelUnavailableError,
+                        TranscriptionError,
                     )
+
+                    try:
+                        result = consultation.run_with_history(
+                            owner=AgentId(args.owner),
+                            audio_path=write_wav(consulted_audio, tmp / "consultado.wav"),
+                            history_text=history_text,
+                        )
+                    except (TranscriptionError, ModelUnavailableError) as exc:
+                        print(f"aida: error: {exc}", file=sys.stderr)
+                        print("(de vuelta en conversación)")
+                        continue
                     print(result.summary_markdown)
                     print("(de vuelta en conversación)")
                     continue
@@ -362,6 +377,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.version:
         print(f"aida {__version__}")
         return 0
+
+    if args.check_capture:
+        from aida.arms.health.capture import capture_diagnosis
+
+        lineas = capture_diagnosis()
+        for texto, correcto in lineas:
+            print(f"{'ok   ' if correcto else 'FALTA'} {texto}")
+        return 0 if all(correcto for _texto, correcto in lineas) else 1
 
     if args.consultation:
         if not args.audio or not args.history:
@@ -417,26 +440,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if consultation is None:
             return 1
-        if args.review:
-            prepared = consultation.prepare(
-                owner=AgentId(args.owner),
-                audio_path=Path(args.audio),
-                history_text=lambda: ocr.read(Path(args.history)),
-            )
-            try:
-                result = consultation.review(prepared, reviewer=_review_from_stdin)
-            except (EOFError, KeyboardInterrupt):
-                print(
-                    "aida: revisión incompleta: nada se registra como revisado",
-                    file=sys.stderr,
+
+        from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
+
+        try:
+            if args.review:
+                prepared = consultation.prepare(
+                    owner=AgentId(args.owner),
+                    audio_path=Path(args.audio),
+                    history_text=lambda: ocr.read(Path(args.history)),
                 )
-                return 1
-        else:
-            result = consultation.run(
-                owner=AgentId(args.owner),
-                audio_path=Path(args.audio),
-                history_path=Path(args.history),
-            )
+                try:
+                    result = consultation.review(prepared, reviewer=_review_from_stdin)
+                except (EOFError, KeyboardInterrupt):
+                    print(
+                        "aida: revisión incompleta: nada se registra como revisado",
+                        file=sys.stderr,
+                    )
+                    return 1
+            else:
+                result = consultation.run(
+                    owner=AgentId(args.owner),
+                    audio_path=Path(args.audio),
+                    history_path=Path(args.history),
+                )
+        except (TranscriptionError, ModelUnavailableError) as exc:
+            print(f"aida: error: {exc}", file=sys.stderr)
+            return 1
         print(result.summary_markdown)
         if args.print_model:
             if result.encounter is None:

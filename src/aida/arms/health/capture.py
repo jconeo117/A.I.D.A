@@ -10,8 +10,11 @@ lo mismo dos veces.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from aida.voice.diarize import TranscriptSegment
 
@@ -20,31 +23,89 @@ class TranscriptionError(RuntimeError):
     """El audio no se pudo transcribir."""
 
 
+class NoSpeechError(TranscriptionError):
+    """El audio no trae voz. Hereda de `TranscriptionError` para que quien ya
+    capturaba fallos de transcripción no se quede fuera, pero es un caso
+    distinto: aquí el modelo funcionó y lo que falta es el habla."""
+
+
+class ModelUnavailableError(RuntimeError):
+    """El modelo de transcripción no se pudo cargar: no está la copia local, o
+    el dispositivo declarado no sirve en esta máquina."""
+
+
+_RAIZ = Path(__file__).resolve().parents[4]
+_CAPTURA_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "capture.yaml"
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureSettings:
+    """Qué modelo, en qué dispositivo y con qué umbral de voz. En datos y no en
+    código: cambiarlos es una decisión de despliegue, y el guardián de
+    vocabulario no admite nombres de hardware dentro de `src/`."""
+
+    model: str
+    device: str
+    no_speech_threshold: float
+
+
+def load_capture_settings(path: Path | None = None) -> CaptureSettings:
+    """Carga y valida. Revienta con la clave que falta: un ajuste de captura a
+    medias es peor que ninguno, porque se descubre a mitad de una consulta."""
+    ruta = path if path is not None else _CAPTURA_POR_DEFECTO
+    raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{ruta} debe ser un mapeo YAML")
+    faltan = [k for k in ("model", "device", "no_speech_threshold") if k not in raw]
+    if faltan:
+        raise ValueError(f"faltan claves en {ruta}: {faltan}")
+    umbral = raw["no_speech_threshold"]
+    if not isinstance(umbral, int | float) or isinstance(umbral, bool):
+        raise ValueError(f"'no_speech_threshold' debe ser numérico en {ruta}")
+    return CaptureSettings(
+        model=str(raw["model"]), device=str(raw["device"]), no_speech_threshold=float(umbral)
+    )
+
+
 class LocalWhisperSTT:
     """Envuelve `faster_whisper.WhisperModel`. Se recibe el modelo ya
     cargado, no se construye aquí: cargar un modelo de Whisper es lento y
     con estado (pesos en memoria); un test lo sustituye por un doble sin
     tocar disco ni descargar nada."""
 
-    def __init__(self, model: object) -> None:
+    def __init__(self, model: object, *, no_speech_threshold: float = 0.6) -> None:
         self._model: Any = model
+        self._no_speech_threshold = no_speech_threshold
 
     def transcribe(self, audio_path: Path) -> str:
-        try:
-            segments, _info = self._model.transcribe(str(audio_path), language="es")
-            return " ".join(segment.text.strip() for segment in segments)
-        except Exception as exc:
-            raise TranscriptionError(f"no se pudo transcribir {audio_path}: {exc}") from exc
+        return " ".join(segment.text for segment in self._speech_segments(audio_path))
 
     def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+        return self._speech_segments(audio_path)
+
+    def _speech_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+        """Puerta única de las dos formas de transcribir: lo que se descarta por
+        no ser habla no puede depender de cuál se llame.
+
+        `vad_filter` se deja apagado a propósito. Medido sobre la grabación de
+        referencia, activarlo empeora el resultado —une frases y transcribe
+        peor—, mientras que filtrar por `no_speech_prob` quita lo inventado sin
+        tocar una palabra de lo dicho.
+
+        Y quedarse sin segmentos no es una transcripción vacía: es que no había
+        voz. Decirlo es más útil que devolver una consulta en blanco."""
         try:
             segments, _info = self._model.transcribe(str(audio_path), language="es")
-            return tuple(
+            kept = tuple(
                 TranscriptSegment(start=s.start, end=s.end, text=s.text.strip())
                 for s in segments
+                if s.no_speech_prob <= self._no_speech_threshold and s.text.strip()
             )
         except Exception as exc:
             raise TranscriptionError(f"no se pudo transcribir {audio_path}: {exc}") from exc
+        if not kept:
+            raise NoSpeechError(f"no se detectó voz en {audio_path}")
+        return kept
 
 
 class OCRError(RuntimeError):
@@ -87,12 +148,80 @@ class LocalTesseractOCR:
         return "\n\n".join(pages).strip()
 
 
-def build_local_capture() -> tuple[LocalWhisperSTT, LocalTesseractOCR]:
+def build_local_capture(
+    settings: CaptureSettings | None = None,
+) -> tuple[LocalWhisperSTT, LocalTesseractOCR]:
     """Construye STT y OCR locales. Vive aquí y no en `run.py` porque este
-    directorio es la costura declarada hacia los runtimes de modelo: el
-    guardián de G4 exime `arms/`, y `run.py` no."""
+    directorio es la costura declarada hacia los runtimes de modelo: el guardián
+    de G4 exime `arms/`, y `run.py` no.
+
+    Modelo y dispositivo se **declaran** en el pack, no se adivinan:
+    `device="auto"` elegía la GPU en cuanto la veía y reventaba si el runtime no
+    coincidía (I-127). Y el modelo se carga solo de la copia local: por defecto,
+    cargarlo consulta Hugging Face en cada ejecución y se cuelga si la red no
+    responde (I-129) — «local, sin nube» tiene que valer también al arrancar."""
     import pytesseract
     from faster_whisper import WhisperModel
 
-    return LocalWhisperSTT(WhisperModel("small")), LocalTesseractOCR(pytesseract)
+    ajustes = settings if settings is not None else load_capture_settings()
+    try:
+        model = WhisperModel(ajustes.model, device=ajustes.device, local_files_only=True)
+    except Exception as exc:
+        raise ModelUnavailableError(
+            f"no se pudo cargar {ajustes.model!r} en {ajustes.device!r}: {exc}. "
+            "Si falta la copia local, descárgala una vez con: uv run python -c "
+            f'"from faster_whisper import WhisperModel; WhisperModel(\'{ajustes.model}\')"'
+        ) from exc
+    return (
+        LocalWhisperSTT(model, no_speech_threshold=ajustes.no_speech_threshold),
+        LocalTesseractOCR(pytesseract),
+    )
 
+
+def capture_diagnosis() -> tuple[tuple[str, bool], ...]:
+    """Qué hay y qué falta para poder capturar. Devuelve datos —texto y si está
+    bien—, no imprime: quien llama decide el formato y el código de salida.
+
+    Comprueba **todo** aunque algo falle: un diagnóstico que se rinde en el
+    primer error obliga a ejecutarlo cuatro veces para enterarse de cuatro
+    cosas.
+
+    Vive aquí y no en `run.py` por la misma razón que `build_local_capture`."""
+    import importlib.util
+
+    lineas: list[tuple[str, bool]] = []
+    for nombre in ("faster_whisper", "sounddevice", "pytesseract"):
+        lineas.append((f"módulo {nombre}", importlib.util.find_spec(nombre) is not None))
+
+    try:
+        ajustes = load_capture_settings()
+        etiqueta = f"modelo {ajustes.model} en {ajustes.device}"
+    except Exception as exc:
+        ajustes = None
+        etiqueta = f"ajustes de captura: {exc}"
+    if ajustes is None:
+        lineas.append((etiqueta, False))
+    else:
+        try:
+            build_local_capture(ajustes)
+            lineas.append((etiqueta, True))
+        except Exception as exc:
+            lineas.append((f"{etiqueta}: {exc}", False))
+
+    try:
+        import pytesseract
+
+        version = pytesseract.get_tesseract_version()
+        lineas.append((f"tesseract {version}, español", "spa" in pytesseract.get_languages()))
+    except Exception as exc:
+        lineas.append((f"tesseract: {exc}", False))
+
+    try:
+        import sounddevice
+
+        entrada = sounddevice.query_devices(kind="input")
+        lineas.append((f"entrada de audio: {entrada['name']}", True))
+    except Exception as exc:
+        lineas.append((f"entrada de audio: {exc}", False))
+
+    return tuple(lineas)
