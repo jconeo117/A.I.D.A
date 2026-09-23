@@ -5,6 +5,7 @@ deliberación, es una tubería fija que se ejecuta cuando el médico la pide.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,6 +14,7 @@ from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
+from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
 from aida.arms.health.review import Reviewer, review_encounter
 from aida.arms.health.sections import SectionSpec
@@ -83,6 +85,8 @@ class Consultation:
         diarizer: LocalPyannoteDiarizer | None = None,
         segmenter: ClinicalSegmenter | None = None,
         extractor: ClinicalExtractor | None = None,
+        review_metrics: ReviewMetricsStore | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -96,6 +100,8 @@ class Consultation:
         self._diarizer = diarizer
         self._segmenter = segmenter
         self._extractor = extractor
+        self._review_metrics = review_metrics
+        self._clock = clock
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
         """Lee la historia y delega. Es el camino por archivos (plan 31)."""
@@ -313,15 +319,22 @@ class Consultation:
                 "confirmed_template o no_confirmed_text"
             )
 
-        reviewed = review_encounter(
-            owner=prepared.owner,
-            grouped_sections=prepared.grouped_sections,
-            encounter=prepared.encounter,
-            matches=prepared.matches,
-            reviewer=reviewer,
-            log=self._log,
-            refine=self._refine_edited,
-        )
+        start_seq = self._log.emitted
+        started = self._clock()
+        try:
+            reviewed = review_encounter(
+                owner=prepared.owner,
+                grouped_sections=prepared.grouped_sections,
+                encounter=prepared.encounter,
+                matches=prepared.matches,
+                reviewer=reviewer,
+                log=self._log,
+                refine=self._refine_edited,
+            )
+        except BaseException:
+            self._record_review(start_seq, started, completed=False)
+            raise
+        self._record_review(start_seq, started, completed=True)
 
         facts = [
             section_template.format(spec.label, "\n".join(texts))
@@ -348,6 +361,18 @@ class Consultation:
         )
         self._cache.store(owner=prepared.owner, summary_markdown=summary)
         return result
+
+    def _record_review(self, start_seq: int, started: float, *, completed: bool) -> None:
+        """Solo los eventos de esta revisión: el registro puede traer los de
+        consultas anteriores del mismo proceso. Arriba se captura
+        `BaseException`, y no `Exception`, porque Ctrl-C también es un corte
+        que hay que contar."""
+        if self._review_metrics is None:
+            return
+        events = [event for event in self._log if event.seq >= start_seq]
+        self._review_metrics.append(
+            review_record(events, completed=completed, seconds=self._clock() - started)
+        )
 
     def _refine_edited(self, finding: ClinicalFinding, text: str) -> ClinicalFinding:
         """El texto lo cambia el profesional; quién lo dijo, no — eso es un

@@ -2144,6 +2144,292 @@ def test_converse_mic_modo_consulta_audio_sin_voz_imprime_error_y_sigue_en_bucle
     assert "(de vuelta en conversación)" in captured.out
 
 
+def test_consultation_cli_review_registra_completed_true(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 13 (§B.3): --review registra:
+    tras la ejecución, tmp_path/.local/share/aida/revisiones.jsonl tiene una línea
+    con '"completed":true'.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg = MagicMock()
+            seg.start = 0.0
+            seg.end = 2.0
+            seg.text = "consulta hoy por dolor en rodilla derecha"
+            seg.no_speech_prob = 0.0
+            return [seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "c")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_cli_review_metrics",
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+
+    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    assert metrics_path.exists()
+    lines = metrics_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert '"completed":true' in lines[0]
+
+
+def test_consultation_cli_review_cortado_registra_completed_false_y_sale_con_uno(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 14 (§B.3): --review cortado (input levanta EOFError):
+    salida 1, y el archivo tiene una línea con '"completed":false'.
+    """
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg = MagicMock()
+            seg.start = 0.0
+            seg.end = 2.0
+            seg.text = "consulta hoy por dolor en rodilla derecha"
+            seg.no_speech_prob = 0.0
+            return [seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    def mock_input_eof(prompt: str) -> str:
+        raise EOFError("corte con Ctrl-D")
+
+    monkeypatch.setattr("builtins.input", mock_input_eof)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_cli_review_cut",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "revisión incompleta" in captured.err
+
+    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    assert metrics_path.exists()
+    lines = metrics_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert '"completed":false' in lines[0]
+
+
+def test_cli_review_stats_sin_nada_y_con_registros(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 15 (§B.3): --review-stats sin nada:
+    Sin AIDA_CONSULT_CACHE_KEY y sin archivo: imprime 'sin revisiones registradas' y sale con 0.
+    Con el archivo escrito a partir de los dos registros del caso 6:
+    imprime la salida literal del caso 6.
+    """
+    monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # 1. Sin archivo
+    codigo = main(["--review-stats"])
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert captured.out == "sin revisiones registradas\n"
+
+    # 2. Con archivo escrito a partir de los dos registros del caso 6
+    from aida.arms.health.metrics import ReviewMetricsStore, ReviewRecord
+
+    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+    r1 = ReviewRecord(
+        completed=True,
+        seconds=42.5,
+        findings={"confirmed": 2, "edited": 1, "rejected": 1},
+        codes={"rejected": 2},
+        sections={
+            "enfermedad_actual": {"edited": 1},
+            "examen_fisico": {"confirmed": 1},
+            "motivo_consulta": {"confirmed": 1},
+            "signos": {"rejected": 1},
+        },
+    )
+    r2 = ReviewRecord(
+        completed=False,
+        seconds=7.0,
+        findings={"confirmed": 1},
+        codes={},
+        sections={"motivo_consulta": {"confirmed": 1}},
+    )
+    store.append(r1)
+    store.append(r2)
+
+    codigo2 = main(["--review-stats"])
+    captured2 = capsys.readouterr()
+    assert codigo2 == 0
+    expected = (
+        "revisiones: 2 (1 completas, 1 incompletas)\n"
+        "tiempo medio por revisión completa: 42.5 s\n"
+        "hallazgos: 5 (confirmados 60.0 %, editados 20.0 %, rechazados 20.0 %)\n"
+        "códigos: 2 (confirmados 0.0 %, rechazados 100.0 %)\n"
+        "por sección:\n"
+        "  enfermedad_actual: 1 (confirmados 0.0 %, editados 100.0 %, rechazados 0.0 %)\n"
+        "  examen_fisico: 1 (confirmados 100.0 %, editados 0.0 %, rechazados 0.0 %)\n"
+        "  motivo_consulta: 2 (confirmados 100.0 %, editados 0.0 %, rechazados 0.0 %)\n"
+        "  signos: 1 (confirmados 0.0 %, editados 0.0 %, rechazados 100.0 %)\n"
+    )
+    assert captured2.out == expected
+
+
+def test_cli_review_stats_ruta_con_linea_ilegible_devuelve_uno_con_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 16 (§B.3): --review-stats RUTA lee ese archivo;
+    si tiene una línea ilegible, sale con 1 y stderr contiene la ruta y el número de línea.
+    """
+    monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+    custom_path = tmp_path / "custom_revisiones.jsonl"
+    bad_content = (
+        '{"completed":true,"seconds":10.0,"findings":{},"codes":{},"sections":{}}\n'
+        "{no es json valido\n"
+    )
+    custom_path.write_text(bad_content, encoding="utf-8")
+
+    codigo = main(["--review-stats", str(custom_path)])
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert str(custom_path) in captured.err
+    assert ":2:" in captured.err
+    assert "registro ilegible" in captured.err
+
+
+def test_cli_sin_review_no_mide(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 17 (§B.3): --consultation --segment (sin --review) no crea el archivo de métricas."""
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg = MagicMock()
+            seg.start = 0.0
+            seg.end = 2.0
+            seg.text = "consulta hoy por dolor en rodilla derecha"
+            seg.no_speech_prob = 0.0
+            return [seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_cli_sin_review",
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+
+    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    assert not metrics_path.exists()
+
+
+
 
 
 

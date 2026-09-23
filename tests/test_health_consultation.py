@@ -27,6 +27,7 @@ from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.match import CatalogIndex, build_index
+from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
 from aida.arms.health.review import Answer, ReviewItem, Verdict
 from aida.arms.health.sections import load_sections
@@ -1824,6 +1825,414 @@ def test_default_summary_wording_faltan_claves_revision_y_pack_real(tmp_path: Pa
     assert len(real_wording.confirmed_template.strip()) > 0
     assert real_wording.no_confirmed_text is not None
     assert len(real_wording.no_confirmed_text.strip()) > 0
+
+
+def test_consultation_review_completa_registra_metricas_con_reloj_inyectado(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 7 (§B.2): review() con review_metrics sobre tmp_path y un reloj doble
+    que devuelve 10.0 y después 52.5: el store tiene un registro con completed=True,
+    seconds=42.5, y conteos iguales a los que da review_record sobre los ITEM_REVIEWED del log.
+    """
+    times = iter([10.0, 52.5])
+    metrics_path = tmp_path / "revisiones.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor de cabeza",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(times),
+    )
+    owner = AgentId("doc_full_metrics")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+
+    def sample_reviewer(item: ReviewItem) -> Answer:
+        return Answer(Verdict.CONFIRMED)
+
+    consultation.review(prepared, reviewer=sample_reviewer)
+
+    records = store.read()
+    assert len(records) == 1
+    r = records[0]
+    assert r.completed is True
+    assert r.seconds == 42.5
+
+    expected_rec = review_record(
+        [e for e in log if e.kind is EventKind.ITEM_REVIEWED],
+        completed=True,
+        seconds=42.5,
+    )
+    assert r.findings == expected_rec.findings
+    assert r.codes == expected_rec.codes
+    assert r.sections == expected_rec.sections
+
+
+def test_consultation_review_cortada_con_eof_error_registra_incompleta_y_no_cachea(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 8 (§B.2): Cortada con EOFError en el tercer ítem:
+    la excepción se propaga, el store tiene un registro con completed=False
+    y dos veredictos, y la caché no tiene nada para ese owner.
+    """
+    times = iter([5.0, 15.0])
+    metrics_path = tmp_path / "revisiones_eof.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(start=0.0, end=1.0, text="consulta hoy por dolor de cabeza"),
+        TranscriptSegment(start=1.0, end=2.0, text="examen fisico con dolor a la palpacion"),
+        TranscriptSegment(start=2.0, end=3.0, text="se receta reposo y medicacion"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(times),
+    )
+    owner = AgentId("doc_eof_cut")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+
+    call_count = 0
+
+    def cut_reviewer(item: ReviewItem) -> Answer:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:
+            raise EOFError("corte en tercer ítem")
+        return Answer(Verdict.CONFIRMED)
+
+    with pytest.raises(EOFError, match="corte en tercer ítem"):
+        consultation.review(prepared, reviewer=cut_reviewer)
+
+    assert sample_cache.load(owner=owner) is None
+
+    records = store.read()
+    assert len(records) == 1
+    r = records[0]
+    assert r.completed is False
+    assert r.seconds == 10.0
+    total_veredictos = sum(r.findings.values()) + sum(r.codes.values())
+    assert total_veredictos == 2
+
+
+def test_consultation_review_cortada_con_keyboard_interrupt_registra_incompleta_y_no_cachea(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 9 (§B.2): Cortada con KeyboardInterrupt en el tercer ítem:
+    igual que el 8 (la excepción se propaga, completed=False, 2 veredictos, sin caché).
+    """
+    times = iter([1.0, 8.0])
+    metrics_path = tmp_path / "revisiones_sigint.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(start=0.0, end=1.0, text="consulta hoy por dolor de cabeza"),
+        TranscriptSegment(start=1.0, end=2.0, text="examen fisico con dolor a la palpacion"),
+        TranscriptSegment(start=2.0, end=3.0, text="se receta reposo y medicacion"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(times),
+    )
+    owner = AgentId("doc_sigint_cut")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+
+    call_count = 0
+
+    def cut_reviewer(item: ReviewItem) -> Answer:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 3:
+            raise KeyboardInterrupt("corte por señal")
+        return Answer(Verdict.CONFIRMED)
+
+    with pytest.raises(KeyboardInterrupt):
+        consultation.review(prepared, reviewer=cut_reviewer)
+
+    assert sample_cache.load(owner=owner) is None
+
+    records = store.read()
+    assert len(records) == 1
+    r = records[0]
+    assert r.completed is False
+    assert r.seconds == 7.0
+    total_veredictos = sum(r.findings.values()) + sum(r.codes.values())
+    assert total_veredictos == 2
+
+
+def test_consultation_review_wording_incompleto_no_crea_archivo_ni_abre_medicion(
+    sample_wording_review: SummaryWording,
+    sample_catalog_index: CatalogIndex,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 10 (§B.2): Wording incompleto (sin confirmed_template):
+    review() da ValueError y el store queda vacío (el archivo ni existe).
+    """
+    wording_incompleto = replace(sample_wording_review, confirmed_template=None)
+    metrics_path = tmp_path / "no_existe_metrics.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    consultation = Consultation(
+        wording=wording_incompleto,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=sample_catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        diarizer=None,
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        review_metrics=store,
+    )
+    owner = AgentId("doc_bad_wording")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Historia de prueba",
+    )
+
+    with pytest.raises(ValueError, match="confirmed_template"):
+        consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    assert not metrics_path.exists()
+    assert store.read() == ()
+
+
+def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 11 (§B.2): Dos revisiones seguidas con la misma Consultation (mismo log):
+    el segundo registro solo cuenta sus propios veredictos.
+    """
+    clock_values = [0.0, 10.0, 20.0, 35.0]
+    clock_iter = iter(clock_values)
+
+    metrics_path = tmp_path / "dos_revisiones.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(clock_iter),
+    )
+
+    # Primera consulta
+    owner1 = AgentId("doc_seq_1")
+    prep1 = consultation.prepare(
+        owner=owner1,
+        audio_path=Path("/tmp/a1.wav"),
+        history_text="Historia con hipertensión esencial",
+    )
+    consultation.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    # Segunda consulta
+    owner2 = AgentId("doc_seq_2")
+    prep2 = consultation.prepare(
+        owner=owner2,
+        audio_path=Path("/tmp/a2.wav"),
+        history_text="Historia con hipertensión esencial",
+    )
+    consultation.review(prep2, reviewer=lambda item: Answer(Verdict.REJECTED))
+
+    records = store.read()
+    assert len(records) == 2
+    r1, r2 = records
+    assert r1.completed is True
+    assert r1.seconds == 10.0
+    assert r2.completed is True
+    assert r2.seconds == 15.0
+
+    # r1 tuvo confirmados, r2 tuvo rechazados. r2 no debe tener confirmados de r1!
+    assert r1.findings.get("confirmed", 0) > 0
+    assert r1.findings.get("rejected", 0) == 0
+    assert r2.findings.get("confirmed", 0) == 0
+    assert r2.findings.get("rejected", 0) > 0
+    total_r2 = sum(r2.findings.values()) + sum(r2.codes.values())
+    total_r1 = sum(r1.findings.values()) + sum(r1.codes.values())
+    assert total_r2 == total_r1
+
+
+def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 12 (§B.2): Con review_metrics=None no se crea ningún archivo;
+    y con los mismos dobles, list(log.to_jsonl()) tras review() es idéntico con store y sin store.
+    """
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),
+    )
+
+    owner = AgentId("same_owner_for_journal")
+
+    # Ejecución A: con store
+    log_a = EventLog(window=100)
+    store_path = tmp_path / "metrics_comp.jsonl"
+    store = ReviewMetricsStore(store_path)
+    c_a = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=segments),
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log_a,
+        diarizer=None,
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        review_metrics=store,
+        clock=lambda: 10.0,
+    )
+    p_a = c_a.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/a.wav"),
+        history_text="Historia con hipertensión esencial",
+    )
+    c_a.review(p_a, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    # Ejecución B: sin store (review_metrics=None)
+    log_b = EventLog(window=100)
+    c_b = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=segments),
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log_b,
+        diarizer=None,
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        review_metrics=None,
+    )
+    p_b = c_b.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/a.wav"),
+        history_text="Historia con hipertensión esencial",
+    )
+    c_b.review(p_b, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    assert not (tmp_path / "sin_store_file.jsonl").exists()
+    assert list(log_a.to_jsonl()) == list(log_b.to_jsonl())
+
 
 
 

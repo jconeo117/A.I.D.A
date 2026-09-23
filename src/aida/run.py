@@ -95,6 +95,13 @@ def _construir_parser() -> argparse.ArgumentParser:
         "(requiere --segment)",
     )
     parser.add_argument(
+        "--review-stats",
+        nargs="?",
+        const="",
+        metavar="RUTA",
+        help="resume las revisiones registradas (por defecto, el archivo de --review)",
+    )
+    parser.add_argument(
         "--check-capture",
         action="store_true",
         help="comprueba modelo, dispositivo, OCR y entrada de audio, y termina",
@@ -157,6 +164,11 @@ def _check_consult_cache_key() -> str | None:
     return key
 
 
+def _review_metrics_path() -> Path:
+    """Un solo sitio para la ruta: la escribe --review y la lee --review-stats."""
+    return Path.home() / ".local" / "share" / "aida" / "revisiones.jsonl"
+
+
 def _build_consultation(
     args: argparse.Namespace,
     *,
@@ -181,6 +193,7 @@ def _build_consultation(
     from aida.arms.health.codes import load_catalog
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.match import build_index
+    from aida.arms.health.metrics import ReviewMetricsStore
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
@@ -201,6 +214,7 @@ def _build_consultation(
         diarizer=cast(Any, diarizer),
         segmenter=cast(Any, segmenter),
         extractor=cast(Any, extractor),
+        review_metrics=ReviewMetricsStore(_review_metrics_path()),
     )
 
 
@@ -376,6 +390,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.version:
         print(f"aida {__version__}")
+        return 0
+
+    if args.review_stats is not None:
+        from aida.arms.health.metrics import ReviewMetricsStore, format_stats
+
+        path = Path(args.review_stats) if args.review_stats else _review_metrics_path()
+        try:
+            records = ReviewMetricsStore(path).read()
+        except ValueError as exc:
+            print(f"aida: error: {exc}", file=sys.stderr)
+            return 1
+        print(format_stats(records))
         return 0
 
     if args.check_capture:
