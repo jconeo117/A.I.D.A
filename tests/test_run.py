@@ -11,7 +11,9 @@ import io
 import json
 import sys
 import tomllib
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -1315,6 +1317,18 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
 # ---------------------------------------------------------------------------
 
 
+def _modulo_doble(nombre: str, **atributos: Any) -> ModuleType:
+    """Módulo falso con `__spec__`, para que `importlib.util.find_spec` lo
+    acepte sin que exista el paquete real. Sustituir por el nombre en texto
+    (`monkeypatch.setattr("faster_whisper.X", ...)`) importa el módulo de
+    verdad, y en la instalación por defecto no está: es I-132."""
+    modulo = ModuleType(nombre)
+    modulo.__spec__ = ModuleSpec(nombre, loader=None)
+    for clave, valor in atributos.items():
+        setattr(modulo, clave, valor)
+    return modulo
+
+
 class _DummyMicrophoneSource:
     def __init__(self, max_chunks: int = 500) -> None:
         self._chunks_yielded = 0
@@ -1610,7 +1624,10 @@ def test_converse_mic_sin_extra_capture_devuelve_uno_con_mensaje_stderr(
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[MockSegment], None]:
             return [MockSegment(next(script))], None
 
-    monkeypatch.setattr("faster_whisper.WhisperModel", MockWhisper)
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", _modulo_doble("faster_whisper", WhisperModel=MockWhisper)
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", _modulo_doble("sounddevice"))
     monkeypatch.setattr("aida.voice.listen.check_capture_available", lambda: False)
 
     codigo = main(["--pack", str(pack_file), "--converse", "--mic"])
