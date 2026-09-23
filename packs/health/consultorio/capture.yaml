@@ -5,3 +5,18 @@
 model: small
 device: cpu
 no_speech_threshold: 0.6
+
+# Abreviaturas cuyo punto NO cierra una frase. En datos porque dependen del
+# dominio: un brazo de contabilidad tendría otras. En minúsculas y con el punto.
+abbreviations:
+  - "dr."
+  - "dra."
+  - "sr."
+  - "sra."
+  - "ud."
+  - "mg."
+  - "ml."
+  - "gr."
+  - "cc."
+  - "aprox."
+  - "etc."

@@ -34,10 +34,12 @@ from aida.arms.health.capture import (
     ModelUnavailableError,
     NoSpeechError,
     TranscriptionError,
+    _split_by_sentence,
     build_local_capture,
     capture_diagnosis,
     load_capture_settings,
 )
+from aida.voice.diarize import TranscriptSegment
 
 
 class _DummySegment:
@@ -208,35 +210,41 @@ def test_transcribe_no_envia_vad_filter(tmp_path: Path) -> None:
 
 
 def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
-    """Caso 10: load_capture_settings sobre un YAML completo devuelve tipos;
+    """Caso 10 (base): load_capture_settings sobre un YAML completo devuelve tipos;
     el del pack real carga."""
     yaml_path = tmp_path / "capture.yaml"
     yaml_path.write_text(
-        "model: medium\ndevice: cpu\nno_speech_threshold: 0.55\n", encoding="utf-8"
+        "model: medium\ndevice: cpu\nno_speech_threshold: 0.55\nabbreviations:\n  - dr.\n  - mg.\n",
+        encoding="utf-8",
     )
     settings = load_capture_settings(yaml_path)
     assert settings.model == "medium"
     assert settings.device == "cpu"
     assert settings.no_speech_threshold == 0.55
     assert isinstance(settings.no_speech_threshold, float)
+    assert settings.abbreviations == ("dr.", "mg.")
 
     real = load_capture_settings()
     assert real.model == "small"
     assert real.device == "cpu"
     assert real.no_speech_threshold == 0.6
+    assert "dr." in real.abbreviations
 
 
 def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
-    """Caso 11: sin device, o con no_speech_threshold: 'alto', levanta ValueError
+    """Caso 11 (base): sin device, o con no_speech_threshold: 'alto', levanta ValueError
     nombrando la clave."""
     sin_device = tmp_path / "sin_device.yaml"
-    sin_device.write_text("model: small\nno_speech_threshold: 0.6\n", encoding="utf-8")
+    sin_device.write_text(
+        "model: small\nno_speech_threshold: 0.6\nabbreviations:\n  - dr.\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match=r"faltan claves.*device"):
         load_capture_settings(sin_device)
 
     umbral_str = tmp_path / "umbral_str.yaml"
     umbral_str.write_text(
-        "model: small\ndevice: cpu\nno_speech_threshold: alto\n", encoding="utf-8"
+        "model: small\ndevice: cpu\nno_speech_threshold: alto\nabbreviations:\n  - dr.\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"no_speech_threshold.*numérico"):
         load_capture_settings(umbral_str)
@@ -245,7 +253,7 @@ def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
 def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Caso 12: build_local_capture recibe modelo y device del ajuste,
+    """Caso 12 (base): build_local_capture recibe modelo y device del ajuste,
     local_files_only=True, y el STT resultante lleva el umbral del ajuste."""
     recibidos: dict[str, Any] = {}
 
@@ -258,12 +266,137 @@ def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
     monkeypatch.setitem(sys.modules, "faster_whisper", modulo)
     monkeypatch.setitem(sys.modules, "pytesseract", _modulo_doble("pytesseract"))
 
-    settings = CaptureSettings(model="base", device="cpu", no_speech_threshold=0.75)
+    settings = CaptureSettings(
+        model="base", device="cpu", no_speech_threshold=0.75, abbreviations=("dr.",)
+    )
     stt, _ocr = build_local_capture(settings)
     assert recibidos["model"] == "base"
     assert recibidos["device"] == "cpu"
     assert recibidos["local_files_only"] is True
     assert stt._no_speech_threshold == 0.75
+
+
+# ---------------------------------------------------------------------------
+# Plan 58: Partición por frases y abreviaturas (§B.2 y §B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_split_by_sentence_reparto_proporcional_y_speech_segments(tmp_path: Path) -> None:
+    """Caso 8: segmento 0.0-10.0 con dos frases de igual longitud se parte al punto medio;
+    end del último trozo coincide con el original. También se comprueba a través de
+    transcribe_segments en LocalWhisperSTT."""
+    seg = TranscriptSegment(0.0, 10.0, "Cinco uno. Cinco dos.")
+    trozos = _split_by_sentence(seg, frozenset())
+    assert len(trozos) == 2
+    assert trozos[0].text == "Cinco uno."
+    assert trozos[0].start == 0.0
+    assert trozos[0].end == 5.0
+    assert trozos[1].text == "Cinco dos."
+    assert trozos[1].start == 5.0
+    assert trozos[1].end == 10.0
+
+    # Comprobación de integración con LocalWhisperSTT._speech_segments
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"dummy")
+    model = _DummyWhisperModel([_DummySegment(0.0, 10.0, "Cinco uno. Cinco dos.", 0.1)])
+    stt = LocalWhisperSTT(model)
+    segs = stt.transcribe_segments(audio)
+    assert len(segs) == 2
+    assert segs[0].start == 0.0
+    assert segs[0].end == 5.0
+    assert segs[1].start == 5.0
+    assert segs[1].end == 10.0
+
+
+def test_split_by_sentence_una_sola_frase_devuelve_mismo_objeto() -> None:
+    """Caso 9: segmento con una sola frase devuelve el mismo objeto idéntico
+    sin tocar tiempos ni redondear."""
+    seg = TranscriptSegment(0.12345, 9.87654, "Solo una frase sin puntuacion fuerte")
+    trozos = _split_by_sentence(seg, frozenset())
+    assert len(trozos) == 1
+    assert trozos[0] is seg
+    assert trozos[0].start == 0.12345
+    assert trozos[0].end == 9.87654
+
+
+def test_split_by_sentence_tiempos_crecientes_y_sin_huecos() -> None:
+    """Caso 10: los tiempos son crecientes y sin huecos (end de cada trozo es start
+    del siguiente)."""
+    seg = TranscriptSegment(1.5, 12.3, "Frase corta. Otra frase bastante más larga. Y una final.")
+    trozos = _split_by_sentence(seg, frozenset())
+    assert len(trozos) == 3
+    for i in range(len(trozos) - 1):
+        assert trozos[i].end == trozos[i + 1].start
+        assert trozos[i].start < trozos[i].end
+    assert trozos[0].start == 1.5
+    assert trozos[-1].end == 12.3
+    assert trozos[0].end != seg.end
+
+
+def test_load_capture_settings_abreviaturas_minusculas_y_pack_real(tmp_path: Path) -> None:
+    """Caso 11: load_capture_settings devuelve abreviaturas en minúsculas y el pack real carga."""
+    yaml_path = tmp_path / "capture.yaml"
+    yaml_path.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\n"
+        "abbreviations:\n  - Dr.\n  - MG.\n  - ETC.\n",
+        encoding="utf-8",
+    )
+    settings = load_capture_settings(yaml_path)
+    assert settings.abbreviations == ("dr.", "mg.", "etc.")
+
+    real = load_capture_settings()
+    assert len(real.abbreviations) > 0
+    assert all(a == a.lower() for a in real.abbreviations)
+    assert "dr." in real.abbreviations
+    assert "mg." in real.abbreviations
+
+
+def test_load_capture_settings_sin_o_invalido_abbreviations_levanta_value_error(
+    tmp_path: Path,
+) -> None:
+    """Caso 12: sin abbreviations o no siendo lista de cadenas -> ValueError nombrando la clave."""
+    sin_abbrevs = tmp_path / "sin_abbrevs.yaml"
+    sin_abbrevs.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"faltan claves.*abbreviations"):
+        load_capture_settings(sin_abbrevs)
+
+    no_lista = tmp_path / "no_lista.yaml"
+    no_lista.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: dr.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"'abbreviations' debe ser una lista de cadenas"):
+        load_capture_settings(no_lista)
+
+    lista_no_str = tmp_path / "lista_no_str.yaml"
+    lista_no_str.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations:\n  - 123\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"'abbreviations' debe ser una lista de cadenas"):
+        load_capture_settings(lista_no_str)
+
+
+def test_build_local_capture_pasa_abreviaturas_a_stt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 13: build_local_capture pasa las abreviaturas del ajuste al STT."""
+    class MockWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    modulo = _modulo_doble("faster_whisper", WhisperModel=MockWhisperModel)
+    monkeypatch.setitem(sys.modules, "faster_whisper", modulo)
+    monkeypatch.setitem(sys.modules, "pytesseract", _modulo_doble("pytesseract"))
+
+    settings = CaptureSettings(
+        model="base",
+        device="cpu",
+        no_speech_threshold=0.75,
+        abbreviations=("dr.", "mg.", "ml."),
+    )
+    stt, _ocr = build_local_capture(settings)
+    assert stt._abbreviations == frozenset({"dr.", "mg.", "ml."})
 
 
 def test_build_local_capture_falla_levanta_model_unavailable_error(

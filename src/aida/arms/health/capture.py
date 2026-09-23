@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from aida.sentences import split_sentences
 from aida.voice.diarize import TranscriptSegment
 
 
@@ -47,6 +48,7 @@ class CaptureSettings:
     model: str
     device: str
     no_speech_threshold: float
+    abbreviations: tuple[str, ...]
 
 
 def load_capture_settings(path: Path | None = None) -> CaptureSettings:
@@ -56,15 +58,45 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{ruta} debe ser un mapeo YAML")
-    faltan = [k for k in ("model", "device", "no_speech_threshold") if k not in raw]
+    faltan = [
+        k for k in ("model", "device", "no_speech_threshold", "abbreviations") if k not in raw
+    ]
     if faltan:
         raise ValueError(f"faltan claves en {ruta}: {faltan}")
     umbral = raw["no_speech_threshold"]
     if not isinstance(umbral, int | float) or isinstance(umbral, bool):
         raise ValueError(f"'no_speech_threshold' debe ser numérico en {ruta}")
+    abreviaturas = raw["abbreviations"]
+    if not isinstance(abreviaturas, list) or not all(isinstance(a, str) for a in abreviaturas):
+        raise ValueError(f"'abbreviations' debe ser una lista de cadenas en {ruta}")
     return CaptureSettings(
-        model=str(raw["model"]), device=str(raw["device"]), no_speech_threshold=float(umbral)
+        model=str(raw["model"]),
+        device=str(raw["device"]),
+        no_speech_threshold=float(umbral),
+        abbreviations=tuple(a.lower() for a in abreviaturas),
     )
+
+
+def _split_by_sentence(
+    segment: TranscriptSegment, abbreviations: frozenset[str]
+) -> tuple[TranscriptSegment, ...]:
+    """Reparte el tramo de tiempo del segmento entre sus frases, en proporción
+    a lo que ocupa cada una. La diarización empareja por solapamiento, así que
+    necesita tiempos distintos por frase; cuál sea el reparto exacto importa
+    menos que el hecho de que sea determinista."""
+    frases = split_sentences(segment.text, abbreviations=abbreviations)
+    if len(frases) <= 1:
+        return (segment,)
+    total = sum(len(frase) for frase in frases)
+    duracion = segment.end - segment.start
+    trozos: list[TranscriptSegment] = []
+    consumido = 0
+    for frase in frases:
+        inicio = segment.start + duracion * consumido / total
+        consumido += len(frase)
+        fin = segment.start + duracion * consumido / total
+        trozos.append(TranscriptSegment(start=round(inicio, 3), end=round(fin, 3), text=frase))
+    return tuple(trozos)
 
 
 class LocalWhisperSTT:
@@ -73,9 +105,16 @@ class LocalWhisperSTT:
     con estado (pesos en memoria); un test lo sustituye por un doble sin
     tocar disco ni descargar nada."""
 
-    def __init__(self, model: object, *, no_speech_threshold: float = 0.6) -> None:
+    def __init__(
+        self,
+        model: object,
+        *,
+        no_speech_threshold: float = 0.6,
+        abbreviations: frozenset[str] = frozenset(),
+    ) -> None:
         self._model: Any = model
         self._no_speech_threshold = no_speech_threshold
+        self._abbreviations = abbreviations
 
     def transcribe(self, audio_path: Path) -> str:
         return " ".join(segment.text for segment in self._speech_segments(audio_path))
@@ -105,7 +144,11 @@ class LocalWhisperSTT:
             raise TranscriptionError(f"no se pudo transcribir {audio_path}: {exc}") from exc
         if not kept:
             raise NoSpeechError(f"no se detectó voz en {audio_path}")
-        return kept
+        return tuple(
+            trozo
+            for segmento in kept
+            for trozo in _split_by_sentence(segmento, self._abbreviations)
+        )
 
 
 class OCRError(RuntimeError):
@@ -173,7 +216,11 @@ def build_local_capture(
             f'"from faster_whisper import WhisperModel; WhisperModel(\'{ajustes.model}\')"'
         ) from exc
     return (
-        LocalWhisperSTT(model, no_speech_threshold=ajustes.no_speech_threshold),
+        LocalWhisperSTT(
+            model,
+            no_speech_threshold=ajustes.no_speech_threshold,
+            abbreviations=frozenset(ajustes.abbreviations),
+        ),
         LocalTesseractOCR(pytesseract),
     )
 
