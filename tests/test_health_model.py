@@ -14,11 +14,13 @@ def test_build_encounter_dos_secciones_varias_lineas() -> None:
         section_id="motivo_consulta",
         label="Motivo de Consulta",
         trigger_phrases=("consulta por",),
+        codable=True,
     )
     spec_plan = SectionSpec(
         section_id="plan",
         label="Plan y Tratamiento",
         trigger_phrases=("se indica",),
+        codable=False,
     )
     grouped_sections = (
         (spec_motivo, ("consulta por cefalea", "refiere mareos")),
@@ -78,11 +80,13 @@ def test_to_dict_conserva_orden_no_alfabetico() -> None:
         section_id="motivo_consulta",
         label="Motivo de consulta",
         trigger_phrases=(),
+        codable=True,
     )
     spec_enfermedad = SectionSpec(
         section_id="enfermedad_actual",
         label="Enfermedad actual",
         trigger_phrases=(),
+        codable=True,
     )
     # Alfabéticamente 'enfermedad_actual' va antes que 'motivo_consulta',
     # pero grouped_sections inserta 'motivo_consulta' primero.
@@ -103,7 +107,9 @@ def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
     no hubo extracción, sin incluir el `section_id` dentro de las listas.
     """
     owner = AgentId("doc")
-    spec = SectionSpec(section_id="motivo_consulta", label="Motivo", trigger_phrases=())
+    spec = SectionSpec(
+        section_id="motivo_consulta", label="Motivo", trigger_phrases=(), codable=True
+    )
     encounter = build_encounter(
         owner=owner,
         grouped_sections=((spec, ("consulta por dolor", "inició ayer")),),

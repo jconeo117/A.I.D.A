@@ -91,12 +91,14 @@ def test_segment_empate_exacto_coseno_gana_section_id_menor_alfabeticamente() ->
     """
     # Caso 1: 'alfa' vs 'beta', misma frase gatillo -> 'alfa' < 'beta', gana 'alfa'
     spec_alfa = SectionSpec(
-        section_id="alfa", label="Alfa", trigger_phrases=("palabra compartida",)
+        section_id="alfa", label="Alfa", trigger_phrases=("palabra compartida",), codable=True
     )
     spec_beta = SectionSpec(
-        section_id="beta", label="Beta", trigger_phrases=("palabra compartida",)
+        section_id="beta", label="Beta", trigger_phrases=("palabra compartida",), codable=True
     )
-    spec_fallback = SectionSpec(section_id="fallback", label="Fallback", trigger_phrases=())
+    spec_fallback = SectionSpec(
+        section_id="fallback", label="Fallback", trigger_phrases=(), codable=False
+    )
 
     index_1 = build_section_index((spec_beta, spec_alfa, spec_fallback))
     linea = "palabra compartida por ambas"
@@ -112,7 +114,7 @@ def test_segment_empate_exacto_coseno_gana_section_id_menor_alfabeticamente() ->
 
     # Caso 2: 'zeta' vs 'beta' -> 'beta' < 'zeta', gana 'beta' sin importar orden del catálogo
     spec_zeta = SectionSpec(
-        section_id="zeta", label="Zeta", trigger_phrases=("palabra compartida",)
+        section_id="zeta", label="Zeta", trigger_phrases=("palabra compartida",), codable=True
     )
     index_2 = build_section_index((spec_zeta, spec_beta, spec_fallback))
 
@@ -138,8 +140,11 @@ def test_segment_score_exactamente_igual_a_threshold_se_reconoce() -> None:
         section_id="sec_exacta",
         label="Sección Exacta",
         trigger_phrases=("cefalea constante intensa matutina",),
+        codable=True,
     )
-    spec_fallback = SectionSpec(section_id="fallback", label="Fallback", trigger_phrases=())
+    spec_fallback = SectionSpec(
+        section_id="fallback", label="Fallback", trigger_phrases=(), codable=False
+    )
     index = build_section_index((spec_sec, spec_fallback))
 
     # Con threshold exacto de 0.50: se debe reconocer sec_exacta
@@ -169,10 +174,18 @@ def test_group_by_section_conserva_orden_catalogo_y_omite_secciones_vacias() -> 
        NO el orden en que las líneas aparecieron en el transcript.
     2. Omite por completo las secciones del catálogo que no tienen líneas asignadas.
     """
-    sec_1 = SectionSpec(section_id="primera", label="Primera", trigger_phrases=("uno",))
-    sec_2 = SectionSpec(section_id="segunda", label="Segunda", trigger_phrases=("dos",))
-    sec_3 = SectionSpec(section_id="tercera", label="Tercera", trigger_phrases=("tres",))
-    sec_4 = SectionSpec(section_id="cuarta", label="Cuarta", trigger_phrases=("cuatro",))
+    sec_1 = SectionSpec(
+        section_id="primera", label="Primera", trigger_phrases=("uno",), codable=True
+    )
+    sec_2 = SectionSpec(
+        section_id="segunda", label="Segunda", trigger_phrases=("dos",), codable=True
+    )
+    sec_3 = SectionSpec(
+        section_id="tercera", label="Tercera", trigger_phrases=("tres",), codable=True
+    )
+    sec_4 = SectionSpec(
+        section_id="cuarta", label="Cuarta", trigger_phrases=("cuatro",), codable=True
+    )
 
     catalogo_orden = (sec_1, sec_2, sec_3, sec_4)
 
@@ -287,7 +300,8 @@ def test_build_health_segmenter_por_defecto_y_con_ruta(tmp_path: Path) -> None:
         "sections:\n"
         "  - id: s1\n"
         "    label: S1\n"
-        "    trigger_phrases: ['hola']\n",
+        "    trigger_phrases: ['hola']\n"
+        "    codable: true\n",
         encoding="utf-8",
     )
     seg_custom = build_health_segmenter(custom_yaml)

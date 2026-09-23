@@ -4,45 +4,60 @@ sections:
   - id: motivo_consulta
     label: "Motivo de consulta"
     trigger_phrases: ["motivo de consulta", "por qué viene", "qué lo trae", "consulta hoy por"]
+    codable: true
   - id: enfermedad_actual
     label: "Enfermedad actual"
     trigger_phrases: ["desde hace", "empezó hace", "comenzó hace", "hace dos semanas", "hace un mes"]
+    codable: true
   - id: antecedentes
     label: "Antecedentes"
     trigger_phrases: ["antecedentes", "en el pasado tuvo", "anteriormente", "hace un año tuvo", "historial de"]
+    codable: true
   - id: sintomas
     label: "Síntomas"
     trigger_phrases: ["le duele", "siente", "dolor", "molestia", "presenta"]
+    codable: true
   - id: signos
     label: "Signos"
     trigger_phrases: ["se observa", "presenta fiebre", "presión arterial", "frecuencia cardíaca", "temperatura de"]
+    codable: true
   - id: examen_fisico
     label: "Examen físico"
     trigger_phrases: ["al examen físico", "a la palpación", "a la auscultación", "se examina"]
+    codable: true
   - id: resultados
     label: "Resultados"
     trigger_phrases: ["el resultado", "el examen mostró", "análisis de sangre", "la radiografía muestra"]
+    codable: true
   - id: evaluacion
     label: "Evaluación"
     trigger_phrases: ["se evalúa", "impresión clínica", "en resumen"]
+    codable: true
   - id: diagnosticos
     label: "Diagnósticos"
     trigger_phrases: ["se diagnostica", "compatible con", "cuadro de", "impresión diagnóstica"]
+    codable: true
   - id: procedimientos
     label: "Procedimientos"
     trigger_phrases: ["se realiza", "se le practica", "procedimiento"]
+    codable: false
   - id: medicamentos
     label: "Medicamentos"
     trigger_phrases: ["se receta", "tome", "medicamento", "dosis de"]
+    codable: false
   - id: ordenes
     label: "Órdenes"
     trigger_phrases: ["se ordena", "se solicita", "orden de laboratorio"]
+    codable: false
   - id: plan
     label: "Plan"
     trigger_phrases: ["el plan es", "se indica", "seguimiento en"]
+    codable: false
   - id: recomendaciones
     label: "Recomendaciones"
     trigger_phrases: ["se recomienda", "recomendación", "debe evitar"]
+    codable: false
   - id: otros_comentarios
     label: "Otros comentarios"
     trigger_phrases: []
+    codable: false

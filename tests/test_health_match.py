@@ -18,8 +18,16 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import pytest
+
 from aida.arms.health.codes import DiagnosticCode, load_catalog
-from aida.arms.health.match import MatchedCode, build_index, match_codes
+from aida.arms.health.match import (
+    MatchedCode,
+    build_index,
+    load_matching_settings,
+    match_codes,
+    match_codes_each,
+)
 
 CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "codes.json"
 CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "cie-10.csv"
@@ -160,3 +168,204 @@ def test_match_codes_real_catalog_tongue_neoplasm_matches_c02() -> None:
     matched_codes = [m.diagnostic.code for m in matches]
     c02_codes = [c for c in matched_codes if c.startswith("C02")]
     assert len(c02_codes) > 0, f"Ningún código C02* encontrado entre resultados: {matched_codes}"
+
+
+# ---------------------------------------------------------------------------
+# Plan 59: Índice con stopwords, match_codes_each y ajustes (§B.1, §B.2, §B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_build_index_sin_stopwords_deja_vacio_y_vectores_completos() -> None:
+    """Caso 3 (§B.1): build_index sin palabras vacías deja index.stopwords vacío
+    y los vectores completos con todas las palabras."""
+    catalog = (
+        DiagnosticCode(
+            code="A01", description="el dolor de cabeza", level=3, source="test"
+        ),
+    )
+    index = build_index(catalog)
+    assert index.stopwords == frozenset()
+    assert index.entries[0][1] == {"el": 1, "dolor": 1, "de": 1, "cabeza": 1}
+
+
+def test_build_index_con_stopwords_y_match_codes_filtra_consulta() -> None:
+    """Caso 4 (§B.1): build_index guarda stopwords en el índice, match_codes
+    las aplica a la consulta: un texto de solo stopwords da (); y una consulta
+    con stopwords las descarta para alcanzar score perfecto."""
+    catalog = (
+        DiagnosticCode(code="A01", description="dolor agudo", level=3, source="test"),
+    )
+    index = build_index(catalog, stopwords=frozenset({"de"}))
+    assert index.stopwords == frozenset({"de"})
+    assert "de" not in index.entries[0][1]
+
+    # Texto con solo stopwords no genera query
+    assert match_codes("de", index, threshold=0.1, top_n=5) == ()
+
+    # Consulta con stopwords: al descartar 'de', coincide exactamente con 'dolor agudo'
+    matches = match_codes("dolor de agudo", index, threshold=0.9, top_n=1)
+    assert len(matches) == 1
+    assert math.isclose(matches[0].score, 1.0)
+    assert matches[0].diagnostic.code == "A01"
+
+
+def test_match_codes_each_dos_textos_codigos_distintos() -> None:
+    """Caso 5 (§B.2): dos textos con códigos distintos: ambos aparecen."""
+    catalog = (
+        DiagnosticCode(code="A01", description="dolor lumbar", level=3, source="test"),
+        DiagnosticCode(
+            code="B02", description="infección respiratoria", level=3, source="test"
+        ),
+    )
+    index = build_index(catalog)
+    textos = ("dolor lumbar agudo", "infección respiratoria alta")
+    matches = match_codes_each(textos, index, threshold=0.3, top_n=5)
+    codes = {m.diagnostic.code for m in matches}
+    assert "A01" in codes
+    assert "B02" in codes
+
+
+def test_match_codes_each_codigo_repetido_conserva_mejor_puntuacion() -> None:
+    """Caso 6 (§B.2): un código que sale en dos textos aparece una sola vez
+    con su mejor puntuación."""
+    catalog = (
+        DiagnosticCode(code="A01", description="dolor lumbar agudo", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    textos = ("dolor lumbar agudo", "dolor lumbar")
+    matches = match_codes_each(textos, index, threshold=0.5, top_n=5)
+    assert len(matches) == 1
+    assert matches[0].diagnostic.code == "A01"
+    assert math.isclose(matches[0].score, 1.0)
+
+
+def test_match_codes_each_garantiza_mejor_codigo_de_cada_texto() -> None:
+    """Caso 7 (§B.2): el mejor de cada texto está garantizado ante dos textos,
+    uno con 4 códigos con puntuación mayor y otro con 1 de puntuación menor.
+    Con top_n=3, el del segundo texto no desaparece."""
+    catalog = (
+        DiagnosticCode(
+            code="D01", description="diabetes avanzada tipo uno", level=3, source="test"
+        ),
+        DiagnosticCode(
+            code="D02", description="diabetes avanzada tipo dos", level=3, source="test"
+        ),
+        DiagnosticCode(
+            code="D03", description="diabetes avanzada tipo tres", level=3, source="test"
+        ),
+        DiagnosticCode(
+            code="D04", description="diabetes avanzada tipo cuatro", level=3, source="test"
+        ),
+        DiagnosticCode(
+            code="G01", description="gonartrosis leve moderada severa", level=3, source="test"
+        ),
+    )
+    index = build_index(catalog)
+    # Texto 1 produce score ~0.7071 para D01..D04.
+    # Texto 2 produce score 0.50 para G01.
+    matches = match_codes_each(("diabetes avanzada", "gonartrosis"), index, threshold=0.4, top_n=3)
+    assert len(matches) == 3
+    codes = [m.diagnostic.code for m in matches]
+    assert "G01" in codes, (
+        f"G01 debe estar garantizado por ser el mejor de texto 2; obtenidos: {codes}"
+    )
+
+
+def test_match_codes_each_orden_descendente_score_y_empate_codigo_ascendente() -> None:
+    """Caso 8 (§B.2): el orden final es puntuación descendente y, en empate, código ascendente."""
+    catalog = (
+        DiagnosticCode(code="Z01", description="cefalea aguda", level=3, source="test"),
+        DiagnosticCode(code="A01", description="cefalea aguda", level=3, source="test"),
+        DiagnosticCode(code="M01", description="cefalea intensa", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes_each(("cefalea aguda",), index, threshold=0.1, top_n=5)
+    codes = [m.diagnostic.code for m in matches]
+    # Z01 y A01 empatan en 1.0 -> A01 antes que Z01. M01 tiene menor score -> al final.
+    assert codes == ["A01", "Z01", "M01"]
+
+
+def test_match_codes_each_sin_textos_o_sin_aciertos_devuelve_tupla_vacia() -> None:
+    """Caso 9 (§B.2): sin textos, o ninguno por encima del umbral, devuelve ()."""
+    catalog = (DiagnosticCode(code="A01", description="cefalea", level=3, source="test"),)
+    index = build_index(catalog)
+    assert match_codes_each((), index, threshold=0.5, top_n=5) == ()
+    assert match_codes_each(("fractura de pie",), index, threshold=0.5, top_n=5) == ()
+
+
+def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None:
+    """Caso 10 (§B.3): load_matching_settings sobre el pack real da threshold=0.5,
+    top_n=5 y palabras en minúsculas; si falta una clave o el tipo no cuadra,
+    ValueError que la nombra."""
+    real = load_matching_settings()
+    assert real.threshold == 0.5
+    assert real.top_n == 5
+    assert len(real.stopwords) > 0
+    assert all(s == s.lower() for s in real.stopwords)
+    assert "de" in real.stopwords
+    assert "en" in real.stopwords
+
+    # YAML no mapeo
+    no_map = tmp_path / "no_map.yaml"
+    no_map.write_text("- item1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"debe ser un mapeo YAML"):
+        load_matching_settings(no_map)
+
+    # Clave faltante
+    sin_thresh = tmp_path / "sin_thresh.yaml"
+    sin_thresh.write_text("top_n: 5\nstopwords: ['de']\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"faltan claves.*threshold"):
+        load_matching_settings(sin_thresh)
+
+    # threshold no numérico o bool
+    thresh_str = tmp_path / "thresh_str.yaml"
+    thresh_str.write_text(
+        "threshold: medio\ntop_n: 5\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'threshold' debe ser numérico"):
+        load_matching_settings(thresh_str)
+
+    thresh_bool = tmp_path / "thresh_bool.yaml"
+    thresh_bool.write_text(
+        "threshold: true\ntop_n: 5\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'threshold' debe ser numérico"):
+        load_matching_settings(thresh_bool)
+
+    # top_n no int, bool o <= 0
+    top_cero = tmp_path / "top_cero.yaml"
+    top_cero.write_text(
+        "threshold: 0.5\ntop_n: 0\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
+        load_matching_settings(top_cero)
+
+    top_bool = tmp_path / "top_bool.yaml"
+    top_bool.write_text(
+        "threshold: 0.5\ntop_n: true\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
+        load_matching_settings(top_bool)
+
+    top_str = tmp_path / "top_str.yaml"
+    top_str.write_text(
+        "threshold: 0.5\ntop_n: '5'\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
+        load_matching_settings(top_str)
+
+    # stopwords no lista o elementos no str
+    stop_str = tmp_path / "stop_str.yaml"
+    stop_str.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: de\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'stopwords' debe ser una lista de cadenas"):
+        load_matching_settings(stop_str)
+
+    stop_num = tmp_path / "stop_num.yaml"
+    stop_num.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: [123]\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"'stopwords' debe ser una lista de cadenas"):
+        load_matching_settings(stop_num)
+

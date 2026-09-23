@@ -56,9 +56,19 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
         "threshold": 0.25,
         "fallback": "sec_b",
         "sections": [
-            {"id": "sec_a", "label": "Sección A", "trigger_phrases": ["frase a1", "frase a2"]},
-            {"id": "sec_b", "label": "Sección B", "trigger_phrases": []},
-            {"id": "sec_c", "label": "Sección C", "trigger_phrases": ["frase c1"]},
+            {
+                "id": "sec_a",
+                "label": "Sección A",
+                "trigger_phrases": ["frase a1", "frase a2"],
+                "codable": True,
+            },
+            {"id": "sec_b", "label": "Sección B", "trigger_phrases": [], "codable": False},
+            {
+                "id": "sec_c",
+                "label": "Sección C",
+                "trigger_phrases": ["frase c1"],
+                "codable": True,
+            },
         ],
     }
     custom_yaml = tmp_path / "custom_sections.yaml"
@@ -70,7 +80,9 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
     assert tuple(s.section_id for s in catalog.sections) == ("sec_a", "sec_b", "sec_c")
     assert catalog.sections[0].label == "Sección A"
     assert catalog.sections[0].trigger_phrases == ("frase a1", "frase a2")
+    assert catalog.sections[0].codable is True
     assert catalog.sections[1].trigger_phrases == ()
+    assert catalog.sections[1].codable is False
 
 
 def test_load_sections_no_es_mapeo_dict_lanza_value_error(tmp_path: Path) -> None:
@@ -152,7 +164,12 @@ def test_load_sections_fallback_no_esta_en_sections_lanza_value_error(tmp_path: 
             "threshold": 0.2,
             "fallback": "inexistente",
             "sections": [
-                {"id": "motivo", "label": "Motivo", "trigger_phrases": ["consulta"]},
+                {
+                    "id": "motivo",
+                    "label": "Motivo",
+                    "trigger_phrases": ["consulta"],
+                    "codable": True,
+                },
             ],
         }),
         encoding="utf-8",
@@ -271,11 +288,39 @@ def test_load_sections_id_repetido_lanza_value_error(tmp_path: Path) -> None:
             "threshold": 0.2,
             "fallback": "duplicado",
             "sections": [
-                {"id": "duplicado", "label": "Primera vez"},
-                {"id": "duplicado", "label": "Segunda vez"},
+                {"id": "duplicado", "label": "Primera vez", "codable": True},
+                {"id": "duplicado", "label": "Segunda vez", "codable": True},
             ],
         }),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"id de sección repetido: 'duplicado'"):
         load_sections(archivo)
+
+
+def test_load_sections_sin_codable_o_no_bool_lanza_value_error(tmp_path: Path) -> None:
+    """Caso 11 (§B.3): falta 'codable' o no es booleano -> ValueError nombrando la sección."""
+    sin_codable = tmp_path / "sin_codable.yaml"
+    sin_codable.write_text(
+        yaml.safe_dump({
+            "threshold": 0.2,
+            "fallback": "sec_a",
+            "sections": [{"id": "sec_a", "label": "A"}],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'codable' \(sí o no\) en la sección 'sec_a'"):
+        load_sections(sin_codable)
+
+    codable_str = tmp_path / "codable_str.yaml"
+    codable_str.write_text(
+        yaml.safe_dump({
+            "threshold": 0.2,
+            "fallback": "sec_a",
+            "sections": [{"id": "sec_a", "label": "A", "codable": "si"}],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'codable' \(sí o no\) en la sección 'sec_a'"):
+        load_sections(codable_str)
+

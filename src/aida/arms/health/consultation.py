@@ -13,7 +13,7 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
-from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes
+from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes_each
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
 from aida.arms.health.review import Reviewer, review_encounter
@@ -204,8 +204,11 @@ class Consultation:
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
 
-        matches = match_codes(
-            f"{transcript}\n{history}", self._index, threshold=self._threshold, top_n=self._top_n
+        matches = match_codes_each(
+            self._codable_texts(transcript, history, grouped_sections),
+            self._index,
+            threshold=self._threshold,
+            top_n=self._top_n,
         )
         self._log.emit(
             tick=0,
@@ -222,6 +225,27 @@ class Consultation:
             grouped_sections=grouped_sections,
             encounter=encounter,
         )
+
+    def _codable_texts(
+        self,
+        transcript: str,
+        history: str,
+        grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None,
+    ) -> tuple[str, ...]:
+        """Qué se cruza contra el catálogo: solo los hallazgos de las secciones
+        que el pack marca como portadoras de diagnóstico, más la historia.
+
+        Una frase de medicación o de plan no es un diagnóstico, y cotejarla
+        produce códigos sin relación — de ahí salía la mitad del ruido de
+        `I-125`. Sin segmentación no hay secciones que mirar, así que se cruza
+        la transcripción entera, línea a línea."""
+        lineas = [linea for linea in history.splitlines() if linea.strip()]
+        if grouped_sections is None:
+            return (*[t for t in transcript.splitlines() if t.strip()], *lineas)
+        codificables = [
+            texto for spec, textos in grouped_sections if spec.codable for texto in textos
+        ]
+        return (*codificables, *lineas)
 
     def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:

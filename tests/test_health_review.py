@@ -49,8 +49,12 @@ def _crear_fixture_base() -> tuple[
     tuple[MatchedCode, ...],
 ]:
     owner = AgentId("dra_martinez")
-    spec1 = SectionSpec(section_id="motivo", label="Motivo de consulta", trigger_phrases=())
-    spec2 = SectionSpec(section_id="examen", label="Examen físico", trigger_phrases=())
+    spec1 = SectionSpec(
+        section_id="motivo", label="Motivo de consulta", trigger_phrases=(), codable=True
+    )
+    spec2 = SectionSpec(
+        section_id="examen", label="Examen físico", trigger_phrases=(), codable=True
+    )
     f1 = ClinicalFinding(
         text="Cefalea frontal pulsátil",
         section_id="motivo",

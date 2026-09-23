@@ -227,3 +227,28 @@ def test_cosine_zero_overlap_short_circuits_without_computing_norm(
     monkeypatch.setattr("aida.textmatch._norm", _should_not_be_called)
     res = cosine({"palabra_a": 1}, {"palabra_b": 1})
     assert res == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Plan 59: Vectorización con palabras vacías (stopwords) (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_vectorize_sin_stopwords_cuenta_todas_las_palabras() -> None:
+    """Caso 1 (§B.1): vectorize sin stopwords cuenta todas las palabras;
+    el comportamiento preexistente no se altera."""
+    assert vectorize("el dolor de rodilla") == {
+        "el": 1,
+        "dolor": 1,
+        "de": 1,
+        "rodilla": 1,
+    }
+
+
+def test_vectorize_con_stopwords_descarta_palabras_indicadas() -> None:
+    """Caso 2 (§B.1): con stopwords={'el', 'de'}, quedan solo las palabras significativas."""
+    assert vectorize("el dolor de rodilla", stopwords=frozenset({"el", "de"})) == {
+        "dolor": 1,
+        "rodilla": 1,
+    }
+

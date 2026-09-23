@@ -30,7 +30,7 @@ from aida.arms.health.match import CatalogIndex, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
 from aida.arms.health.review import Answer, ReviewItem, Verdict
-from aida.arms.health.sections import load_sections
+from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.cognition.briefing import SpokenReply
@@ -2232,6 +2232,102 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
 
     assert not (tmp_path / "sin_store_file.jsonl").exists()
     assert list(log_a.to_jsonl()) == list(log_b.to_jsonl())
+
+
+# ---------------------------------------------------------------------------
+# Plan 59: Textos codificables y exclusión de medicación (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_codable_texts_con_y_sin_segmentacion(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 12 (§B.3): _codable_texts con secciones devuelve solo las de secciones
+    codificables más la historia (sin concatenar en un solo texto); sin segmentación,
+    devuelve las líneas de transcripción y de historia."""
+    catalog = build_index(())
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+    )
+
+    sec_motivo = SectionSpec(
+        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True
+    )
+    sec_plan = SectionSpec(
+        section_id="plan", label="Plan", trigger_phrases=(), codable=False
+    )
+    grouped = (
+        (sec_motivo, ("dolor agudo", "cefalea")),
+        (sec_plan, ("ibuprofeno cada 8h",)),
+    )
+
+    # Con segmentación: filtra la sección no codificable y devuelve tupla de textos individuales
+    res_con_seg = consultation._codable_texts(
+        "transcripcion original", "hipertensión previa\n\ndiabetes", grouped
+    )
+    assert res_con_seg == ("dolor agudo", "cefalea", "hipertensión previa", "diabetes")
+    assert len(res_con_seg) == 4
+
+    # Sin segmentación: devuelve cada línea no vacía de transcripción e historia
+    res_sin_seg = consultation._codable_texts(
+        "dolor de pecho\n\ndisnea", "hipertensión previa\n", None
+    )
+    assert res_sin_seg == ("dolor de pecho", "disnea", "hipertensión previa")
+    assert len(res_sin_seg) == 3
+
+
+def test_consultation_con_segmentador_excluye_codigos_de_medicacion(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 13 (§B.3): una consulta completa con segmentador excluye códigos
+    provenientes de secciones no codificables (p.ej. medicamentos)."""
+    # Catálogo con código para motivo (cefalea) y código para medicamento (amoxicilina)
+    catalog = build_index(
+        (
+            DiagnosticCode("R51", "cefalea", 3, "ambas"),
+            DiagnosticCode("T88.7", "amoxicilina", 3, "ambas"),
+        )
+    )
+    # Segmentos que el segmentador real clasifica en motivo_consulta y medicamentos
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="consulta hoy por cefalea"),
+        TranscriptSegment(start=2.0, end=4.0, text="se receta amoxicilina"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        segmenter=segmenter,
+        extractor=build_health_extractor(),
+        match_threshold=0.3,
+    )
+    owner = AgentId("doc_med_excl")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="",
+    )
+    codigos_cotejados = [m.diagnostic.code for m in prepared.matches]
+    # R51 (de motivo_consulta, codable=True) debe aparecer
+    assert "R51" in codigos_cotejados
+    # T88.7 (de medicamentos, codable=False) NO debe aparecer
+    assert "T88.7" not in codigos_cotejados
+
 
 
 

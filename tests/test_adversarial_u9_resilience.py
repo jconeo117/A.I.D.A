@@ -522,7 +522,7 @@ def test_consultation_run_event_emission_order_and_payload(
     assert ev3.tick == 0
     assert ev3.kind == EventKind.CATALOG_MATCHED
     assert ev3.owner == owner
-    assert ev3.data == {"codes": "R51,C02"}
+    assert ev3.data == {"codes": "R51"}
 
     # Resumen en resultado y guardado en caché
     assert result.summary_markdown == "## Resumen redactado por IA"

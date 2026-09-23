@@ -1,0 +1,54 @@
+# Cotejo contra el catálogo de códigos. En datos porque es calibración: el
+# umbral depende de qué palabras se descartan, y ambas cosas se ajustan juntas
+# midiendo, no adivinando.
+threshold: 0.50
+top_n: 5
+
+# Palabras que no distinguen un diagnóstico de otro. Sin quitarlas, «dolor en
+# la rodilla» empataba con «cuerpo flotante en la rodilla» porque compartían
+# «en» y «la» (I-125).
+stopwords:
+  - "a"
+  - "al"
+  - "cada"
+  - "con"
+  - "de"
+  - "del"
+  - "desde"
+  - "dos"
+  - "el"
+  - "en"
+  - "es"
+  - "especificada"
+  - "especificado"
+  - "hace"
+  - "hoy"
+  - "la"
+  - "las"
+  - "le"
+  - "lo"
+  - "los"
+  - "mas"
+  - "más"
+  - "muy"
+  - "no"
+  - "o"
+  - "otra"
+  - "otras"
+  - "otro"
+  - "otros"
+  - "para"
+  - "por"
+  - "que"
+  - "se"
+  - "sin"
+  - "sobre"
+  - "su"
+  - "sus"
+  - "tiene"
+  - "tres"
+  - "un"
+  - "una"
+  - "unas"
+  - "unos"
+  - "y"

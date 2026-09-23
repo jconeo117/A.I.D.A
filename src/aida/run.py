@@ -192,11 +192,12 @@ def _build_consultation(
     from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
     from aida.arms.health.codes import load_catalog
     from aida.arms.health.consultation import Consultation
-    from aida.arms.health.match import build_index
+    from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
+    cotejo = load_matching_settings()
     catalog = load_catalog(
         _RAIZ / "data" / "health" / "cie10" / "codes.json",
         _RAIZ / "data" / "health" / "cie10" / "cie-10.csv",
@@ -205,7 +206,9 @@ def _build_consultation(
         wording=default_summary_wording(),
         stt=stt if isinstance(stt, LocalWhisperSTT) else cast(Any, stt),
         ocr=ocr if isinstance(ocr, LocalTesseractOCR) else cast(Any, ocr),
-        catalog_index=build_index(catalog),
+        catalog_index=build_index(catalog, stopwords=cotejo.stopwords),
+        match_threshold=cotejo.threshold,
+        match_top_n=cotejo.top_n,
         provider=build_provider(args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")),
         cache=ConsultationCache(
             Path.home() / ".cache" / "aida" / "consultas", key=key.encode()

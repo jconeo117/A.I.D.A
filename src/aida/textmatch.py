@@ -22,10 +22,17 @@ def tokenize(text: str) -> tuple[str, ...]:
     return tuple(match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text))
 
 
-def vectorize(text: str) -> dict[str, int]:
-    """Recuento de palabras. Vacío si el texto no tiene ningún token."""
+def vectorize(text: str, *, stopwords: frozenset[str] = frozenset()) -> dict[str, int]:
+    """Recuento de palabras. Vacío si el texto no tiene ningún token.
+
+    `stopwords` llega vacío por defecto **a propósito**: la intención (U6) y la
+    segmentación clínica están calibradas con todas las palabras, y cambiarlas
+    aquí movería dos mecanismos sin que nadie lo pidiera. Quien quiera
+    descartar palabras las declara en sus datos y las pasa."""
     vector: dict[str, int] = {}
     for token in tokenize(text):
+        if token in stopwords:
+            continue
         vector[token] = vector.get(token, 0) + 1
     return vector
 
