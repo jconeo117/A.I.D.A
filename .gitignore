@@ -10,5 +10,11 @@ build/
 runs/
 
 # Copias de trabajo aisladas de los subagentes (worktrees de git por unidad).
-.claude/worktrees/
 .agents/
+
+# Documentación y registro de proceso. Viven en su propio repositorio, local:
+# `.claude/` tiene su historial aparte y no se publica. `CLAUDE.md` y `docs/`
+# son enlaces a archivos de dentro, para que sigan donde se los espera.
+.claude/
+/CLAUDE.md
+/docs
