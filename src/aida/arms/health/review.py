@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from aida.arms.health.match import MatchedCode
+from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.model import ClinicalFinding, Encounter
 from aida.arms.health.sections import SectionSpec
 from aida.engine.events import EventKind, EventLog
@@ -85,6 +85,7 @@ def review_encounter(
     reviewer: Reviewer,
     log: EventLog,
     refine: Callable[[ClinicalFinding, str], ClinicalFinding],
+    known_code_suffix: str | None = None,
 ) -> ReviewedConsultation:
     """Recorre `grouped_sections` —una tupla, en el orden del catálogo— y no
     `encounter.findings`, que es un mapa: el orden de las preguntas no puede
@@ -129,7 +130,11 @@ def review_encounter(
             kind=ItemKind.CODE,
             ref=match.diagnostic.code,
             label=match.diagnostic.code,
-            text=match.diagnostic.description,
+            text=(
+                f"{match.diagnostic.description} · {known_code_suffix}"
+                if known_code_suffix and match.origin is not CodeOrigin.TODAY
+                else match.diagnostic.description
+            ),
             allowed=CODE_VERDICTS,
         )
         answer = reviewer(item)
@@ -140,7 +145,12 @@ def review_encounter(
             tick=0,
             kind=EventKind.ITEM_REVIEWED,
             owner=owner,
-            data={"item": item.kind.value, "ref": item.ref, "verdict": answer.verdict.value},
+            data={
+                "item": item.kind.value,
+                "ref": item.ref,
+                "verdict": answer.verdict.value,
+                "origin": match.origin.value,
+            },
         )
 
     return ReviewedConsultation(

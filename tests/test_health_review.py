@@ -20,7 +20,7 @@ from dataclasses import replace
 import pytest
 
 from aida.arms.health.codes import DiagnosticCode
-from aida.arms.health.match import MatchedCode
+from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.model import ClinicalFinding, Encounter
 from aida.arms.health.review import (
     CODE_VERDICTS,
@@ -123,8 +123,8 @@ def test_review_todo_confirmado() -> None:
     assert [e.data for e in eventos_reviewed] == [
         {"item": "finding", "ref": "motivo:0", "verdict": "confirmed"},
         {"item": "finding", "ref": "examen:0", "verdict": "confirmed"},
-        {"item": "code", "ref": "G43.9", "verdict": "confirmed"},
-        {"item": "code", "ref": "R51", "verdict": "confirmed"},
+        {"item": "code", "ref": "G43.9", "verdict": "confirmed", "origin": "today"},
+        {"item": "code", "ref": "R51", "verdict": "confirmed", "origin": "today"},
     ]
     assert not any(e.kind == EventKind.INPUT_OBSERVED for e in log)
 
@@ -408,6 +408,119 @@ def test_review_codigo_rechazado_queda_fuera() -> None:
         if e.kind == EventKind.ITEM_REVIEWED and e.data.get("item") == "code"
     ]
     assert eventos_codes == [
-        {"item": "code", "ref": "G43.9", "verdict": "confirmed"},
-        {"item": "code", "ref": "R51", "verdict": "rejected"},
+        {"item": "code", "ref": "G43.9", "verdict": "confirmed", "origin": "today"},
+        {"item": "code", "ref": "R51", "verdict": "rejected", "origin": "today"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Plan 62: La revisión (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_review_encounter_sufijo_en_history_y_both_no_en_today() -> None:
+    """Caso 7 (§B.3): Un código HISTORY o BOTH se muestra con el sufijo del pack;
+    uno TODAY, sin él. Sin sufijo configurado, ninguno lo lleva."""
+    fixture = _crear_fixture_base()
+    owner, encounter, grouped_sections = fixture[0], fixture[5], fixture[6]
+
+    m_today = MatchedCode(
+        DiagnosticCode("T01", "Cefalea aguda", 3, "test"), score=1.0, origin=CodeOrigin.TODAY
+    )
+    m_hist = MatchedCode(
+        DiagnosticCode("H01", "Diabetes mellitus", 3, "test"), score=1.0, origin=CodeOrigin.HISTORY
+    )
+    m_both = MatchedCode(
+        DiagnosticCode("B01", "Hipertensión esencial", 3, "test"), score=1.0, origin=CodeOrigin.BOTH
+    )
+
+    items_con_sufijo: list[ReviewItem] = []
+
+    def rev_con_sufijo(item: ReviewItem) -> Answer:
+        items_con_sufijo.append(item)
+        return Answer(Verdict.CONFIRMED)
+
+    # 1. Con sufijo configurado
+    log1 = EventLog(window=20)
+    review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=(m_today, m_hist, m_both),
+        reviewer=rev_con_sufijo,
+        log=log1,
+        refine=lambda f, t: f,
+        known_code_suffix="ya en la historia",
+    )
+    cod_items = [it for it in items_con_sufijo if it.kind == ItemKind.CODE]
+    assert len(cod_items) == 3
+    # TODAY: sin sufijo
+    assert cod_items[0].ref == "T01"
+    assert cod_items[0].text == "Cefalea aguda"
+    assert "ya en la historia" not in cod_items[0].text
+
+    # HISTORY: con sufijo
+    assert cod_items[1].ref == "H01"
+    assert cod_items[1].text == "Diabetes mellitus · ya en la historia"
+
+    # BOTH: con sufijo
+    assert cod_items[2].ref == "B01"
+    assert cod_items[2].text == "Hipertensión esencial · ya en la historia"
+
+    # 2. Sin sufijo configurado (None): ninguno lo lleva
+    items_sin_sufijo: list[ReviewItem] = []
+
+    def rev_sin_sufijo(it: ReviewItem) -> Answer:
+        items_sin_sufijo.append(it)
+        return Answer(Verdict.CONFIRMED)
+
+    log2 = EventLog(window=20)
+    review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=(m_today, m_hist, m_both),
+        reviewer=rev_sin_sufijo,
+        log=log2,
+        refine=lambda f, t: f,
+        known_code_suffix=None,
+    )
+    cod_items_sin = [it for it in items_sin_sufijo if it.kind == ItemKind.CODE]
+    assert len(cod_items_sin) == 3
+    assert cod_items_sin[0].text == "Cefalea aguda"
+    assert cod_items_sin[1].text == "Diabetes mellitus"
+    assert cod_items_sin[2].text == "Hipertensión esencial"
+
+
+def test_review_encounter_evento_codigo_lleva_origin_hallazgo_no() -> None:
+    """Caso 8 (§B.3): El evento de un código lleva origin; el de un hallazgo no."""
+    fixture = _crear_fixture_base()
+    owner, encounter, grouped_sections = fixture[0], fixture[5], fixture[6]
+
+    m_hist = MatchedCode(
+        DiagnosticCode("H01", "Diabetes mellitus", 3, "test"), score=1.0, origin=CodeOrigin.HISTORY
+    )
+    log = EventLog(window=20)
+
+    review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=(m_hist,),
+        reviewer=lambda it: Answer(Verdict.CONFIRMED),
+        log=log,
+        refine=lambda f, t: f,
+    )
+
+    eventos = [e for e in log if e.kind == EventKind.ITEM_REVIEWED]
+    # Comprobar eventos de hallazgo: NO deben llevar "origin"
+    hallazgos = [e for e in eventos if e.data["item"] == "finding"]
+    assert len(hallazgos) >= 1
+    for h in hallazgos:
+        assert "origin" not in h.data
+
+    # Comprobar eventos de código: SÍ llevan "origin"
+    codigos = [e for e in eventos if e.data["item"] == "code"]
+    assert len(codigos) == 1
+    assert "origin" in codigos[0].data
+    assert codigos[0].data["origin"] == "history"

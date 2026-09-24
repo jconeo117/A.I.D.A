@@ -34,6 +34,8 @@ def default_summary_wording(path: Path | None = None) -> SummaryWording:
         "section_template",
         "confirmed_template",
         "no_confirmed_text",
+        "history_codes_template",
+        "known_code_suffix",
     )
     missing = [key for key in required_keys if key not in raw or not isinstance(raw[key], str)]
     if missing:
@@ -52,6 +54,8 @@ def default_summary_wording(path: Path | None = None) -> SummaryWording:
         section_template=raw["section_template"],
         confirmed_template=raw["confirmed_template"],
         no_confirmed_text=raw["no_confirmed_text"],
+        history_codes_template=raw["history_codes_template"],
+        known_code_suffix=raw["known_code_suffix"],
     )
 
 

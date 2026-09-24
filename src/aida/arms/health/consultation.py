@@ -13,7 +13,7 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
-from aida.arms.health.match import CatalogIndex, MatchedCode, match_codes_each
+from aida.arms.health.match import CatalogIndex, CodeOrigin, MatchedCode, match_by_origin
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
 from aida.arms.health.review import Reviewer, review_encounter
@@ -24,6 +24,13 @@ from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.engine.ports import CognitionProvider
 from aida.voice.diarize import DiarizationError, LocalPyannoteDiarizer, merge_by_speaker
+
+
+def _listado(codes: list[MatchedCode]) -> str:
+    """Un código por su identificador y su descripción, separados por punto y
+    coma. Una sola forma para las dos líneas del resumen: la de hoy y la de lo
+    que ya constaba."""
+    return "; ".join(f"{m.diagnostic.code} ({m.diagnostic.description})" for m in codes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +49,8 @@ class SummaryWording:
     section_template: str | None = None
     confirmed_template: str | None = None
     no_confirmed_text: str | None = None
+    history_codes_template: str | None = None
+    known_code_suffix: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,9 +213,11 @@ class Consultation:
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
 
-        matches = match_codes_each(
-            self._codable_texts(transcript, history, grouped_sections),
-            self._index,
+        de_hoy, de_historia = self._codable_texts(transcript, history, grouped_sections)
+        matches = match_by_origin(
+            today=de_hoy,
+            history=de_historia,
+            index=self._index,
             threshold=self._threshold,
             top_n=self._top_n,
         )
@@ -231,21 +242,25 @@ class Consultation:
         transcript: str,
         history: str,
         grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None,
-    ) -> tuple[str, ...]:
-        """Qué se cruza contra el catálogo: solo los hallazgos de las secciones
-        que el pack marca como portadoras de diagnóstico, más la historia.
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Qué se cruza contra el catálogo, como `(hoy, historia)`: los hallazgos
+        de las secciones que el pack marca como portadoras de diagnóstico, y por
+        otro lado la historia.
+
+        Van separados y no juntos porque el profesional necesita saber si un
+        diagnóstico es de hoy o ya constaba.
 
         Una frase de medicación o de plan no es un diagnóstico, y cotejarla
         produce códigos sin relación — de ahí salía la mitad del ruido de
         `I-125`. Sin segmentación no hay secciones que mirar, así que se cruza
         la transcripción entera, línea a línea."""
-        lineas = [linea for linea in history.splitlines() if linea.strip()]
+        lineas = tuple(linea for linea in history.splitlines() if linea.strip())
         if grouped_sections is None:
-            return (*[t for t in transcript.splitlines() if t.strip()], *lineas)
-        codificables = [
+            return tuple(t for t in transcript.splitlines() if t.strip()), lineas
+        codificables = tuple(
             texto for spec, textos in grouped_sections if spec.codable for texto in textos
-        ]
-        return (*codificables, *lineas)
+        )
+        return codificables, lineas
 
     def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:
@@ -337,6 +352,7 @@ class Consultation:
         section_template = self._wording.section_template
         confirmed_template = self._wording.confirmed_template
         no_confirmed_text = self._wording.no_confirmed_text
+        history_codes_template = self._wording.history_codes_template
         if section_template is None or confirmed_template is None or no_confirmed_text is None:
             raise ValueError(
                 "revisión activa pero wording no trae section_template, "
@@ -354,6 +370,7 @@ class Consultation:
                 reviewer=reviewer,
                 log=self._log,
                 refine=self._refine_edited,
+                known_code_suffix=self._wording.known_code_suffix,
             )
         except BaseException:
             self._record_review(start_seq, started, completed=False)
@@ -365,13 +382,13 @@ class Consultation:
             for spec, texts in reviewed.grouped_sections
         ]
         facts.append(self._wording.history_template.format(prepared.history))
-        if reviewed.confirmed_codes:
-            listado = "; ".join(
-                f"{m.diagnostic.code} ({m.diagnostic.description})"
-                for m in reviewed.confirmed_codes
-            )
-            facts.append(confirmed_template.format(listado))
-        else:
+        de_hoy = [m for m in reviewed.confirmed_codes if m.origin is not CodeOrigin.HISTORY]
+        ya_estaban = [m for m in reviewed.confirmed_codes if m.origin is not CodeOrigin.TODAY]
+        if de_hoy:
+            facts.append(confirmed_template.format(_listado(de_hoy)))
+        if ya_estaban and history_codes_template is not None:
+            facts.append(history_codes_template.format(_listado(ya_estaban)))
+        if not reviewed.confirmed_codes:
             facts.append(no_confirmed_text)
         summary = "\n".join(f"- {f}" for f in facts)
 

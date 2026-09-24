@@ -2318,6 +2318,7 @@ def test_cli_review_stats_sin_nada_y_con_registros(
             "motivo_consulta": {"confirmed": 1},
             "signos": {"rejected": 1},
         },
+        code_origins={"today": {"rejected": 2}},
     )
     r2 = ReviewRecord(
         completed=False,
@@ -2325,6 +2326,7 @@ def test_cli_review_stats_sin_nada_y_con_registros(
         findings={"confirmed": 1},
         codes={},
         sections={"motivo_consulta": {"confirmed": 1}},
+        code_origins={},
     )
     store.append(r1)
     store.append(r2)
@@ -2337,6 +2339,8 @@ def test_cli_review_stats_sin_nada_y_con_registros(
         "tiempo medio por revisión completa: 42.5 s\n"
         "hallazgos: 5 (confirmados 60.0 %, editados 20.0 %, rechazados 20.0 %)\n"
         "códigos: 2 (confirmados 0.0 %, rechazados 100.0 %)\n"
+        "códigos por origen:\n"
+        "  de esta consulta: 2 (confirmados 0.0 %, rechazados 100.0 %)\n"
         "por sección:\n"
         "  enfermedad_actual: 1 (confirmados 0.0 %, editados 100.0 %, rechazados 0.0 %)\n"
         "  examen_fisico: 1 (confirmados 100.0 %, editados 0.0 %, rechazados 0.0 %)\n"

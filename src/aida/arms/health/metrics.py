@@ -27,12 +27,16 @@ class ReviewRecord:
     findings: Mapping[str, int]
     codes: Mapping[str, int]
     sections: Mapping[str, Mapping[str, int]]
+    code_origins: Mapping[str, Mapping[str, int]]
 
     def to_json(self) -> str:
         """Claves ordenadas a todos los niveles: dos registros iguales dan la
         misma línea, se construyan como se construyan."""
         return json.dumps(
             {
+                "code_origins": {
+                    o: dict(sorted(c.items())) for o, c in sorted(self.code_origins.items())
+                },
                 "codes": dict(sorted(self.codes.items())),
                 "completed": self.completed,
                 "findings": dict(sorted(self.findings.items())),
@@ -58,6 +62,10 @@ class ReviewRecord:
                 str(s): {str(k): int(v) for k, v in sorted(c.items())}
                 for s, c in sorted(raw["sections"].items())
             },
+            code_origins={
+                str(o): {str(k): int(v) for k, v in sorted(c.items())}
+                for o, c in sorted(raw.get("code_origins", {}).items())
+            },
         )
 
 
@@ -67,6 +75,7 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
     findings: dict[str, int] = {}
     codes: dict[str, int] = {}
     sections: dict[str, dict[str, int]] = {}
+    origenes: dict[str, dict[str, int]] = {}
     for event in events:
         if event.kind is not EventKind.ITEM_REVIEWED:
             continue
@@ -74,6 +83,11 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
         item = event.data["item"]
         if item == ItemKind.CODE.value:
             codes[verdict] = codes.get(verdict, 0) + 1
+            # El origen lo escribe `review.py`; si un evento viejo no lo trae,
+            # se cuenta como de hoy, que es lo que significaba antes.
+            origen = str(event.data.get("origin", "today"))
+            por_origen = origenes.setdefault(origen, {})
+            por_origen[verdict] = por_origen.get(verdict, 0) + 1
         elif item == ItemKind.FINDING.value:
             findings[verdict] = findings.get(verdict, 0) + 1
             section_id = str(event.data["ref"]).rpartition(":")[0]
@@ -82,7 +96,12 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
         else:
             raise ValueError(f"clase de ítem desconocida en ITEM_REVIEWED: {item!r}")
     return ReviewRecord(
-        completed=completed, seconds=seconds, findings=findings, codes=codes, sections=sections
+        completed=completed,
+        seconds=seconds,
+        findings=findings,
+        codes=codes,
+        sections=sections,
+        code_origins=origenes,
     )
 
 
@@ -120,6 +139,7 @@ _NAMES = {
     Verdict.EDITED.value: "editados",
     Verdict.REJECTED.value: "rechazados",
 }
+_ORIGENES = {"today": "de esta consulta", "history": "solo en la historia", "both": "en ambas"}
 _FINDING_ORDER = tuple(v.value for v in FINDING_VERDICTS)
 _CODE_ORDER = tuple(v.value for v in CODE_VERDICTS)
 
@@ -157,6 +177,15 @@ def format_stats(records: tuple[ReviewRecord, ...]) -> str:
         lines.append(f"tiempo medio por revisión completa: {mean:.1f} s")
     lines.append("hallazgos: " + _line(_add(r.findings for r in records), _FINDING_ORDER))
     lines.append("códigos: " + _line(_add(r.codes for r in records), _CODE_ORDER))
+    por_origen: dict[str, dict[str, int]] = {}
+    for record in records:
+        for origen in sorted(record.code_origins):
+            por_origen[origen] = _add((por_origen.get(origen, {}), record.code_origins[origen]))
+    if por_origen:
+        lines.append("códigos por origen:")
+        for origen in sorted(por_origen):
+            etiqueta = _ORIGENES.get(origen, origen)
+            lines.append(f"  {etiqueta}: " + _line(por_origen[origen], _CODE_ORDER))
     by_section: dict[str, dict[str, int]] = {}
     for record in records:
         for section_id in sorted(record.sections):

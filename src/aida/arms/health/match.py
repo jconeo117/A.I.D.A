@@ -9,7 +9,8 @@ trabajo repetido sin ninguna razón.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 
 import yaml
@@ -77,10 +78,21 @@ def build_index(
     )
 
 
+class CodeOrigin(StrEnum):
+    """De dónde salió el código. Es la distinción entre un diagnóstico de hoy y
+    uno que ya constaba, que `AIDA-health.md` pide en su Fase 4 y que el
+    profesional necesita para saber qué está registrando de nuevo."""
+
+    TODAY = "today"
+    HISTORY = "history"
+    BOTH = "both"
+
+
 @dataclass(frozen=True, slots=True)
 class MatchedCode:
     diagnostic: DiagnosticCode
     score: float
+    origin: CodeOrigin = CodeOrigin.TODAY
 
 
 def match_codes_each(
@@ -139,3 +151,40 @@ def match_codes(
         MatchedCode(diagnostic=entry, score=score)
         for score, entry in scored[:top_n]
     )
+
+
+def match_by_origin(
+    *,
+    today: tuple[str, ...],
+    history: tuple[str, ...],
+    index: CatalogIndex,
+    threshold: float,
+    top_n: int,
+) -> tuple[MatchedCode, ...]:
+    """Coteja los dos orígenes **por separado** y los funde marcando cuál es
+    cuál. Un código que sale en los dos es `BOTH`: es el caso interesante, un
+    diagnóstico que ya constaba y del que hoy se vuelve a hablar.
+
+    El tope se aplica **por origen**, no al total: con un tope global, los
+    códigos de la historia desaparecen por puntuación y el profesional deja de
+    ver lo que ya estaba registrado.
+    """
+    de_hoy = {
+        m.diagnostic.code: m
+        for m in match_codes_each(today, index, threshold=threshold, top_n=top_n)
+    }
+    de_historia = {
+        m.diagnostic.code: m
+        for m in match_codes_each(history, index, threshold=threshold, top_n=top_n)
+    }
+    fundidos: list[MatchedCode] = []
+    for codigo, encontrado in de_hoy.items():
+        if codigo in de_historia:
+            mejor = max(encontrado, de_historia[codigo], key=lambda m: m.score)
+            fundidos.append(replace(mejor, origin=CodeOrigin.BOTH))
+        else:
+            fundidos.append(replace(encontrado, origin=CodeOrigin.TODAY))
+    for codigo, encontrado in de_historia.items():
+        if codigo not in de_hoy:
+            fundidos.append(replace(encontrado, origin=CodeOrigin.HISTORY))
+    return tuple(sorted(fundidos, key=lambda m: (-m.score, m.diagnostic.code)))

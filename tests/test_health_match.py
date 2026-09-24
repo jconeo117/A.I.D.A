@@ -22,9 +22,11 @@ import pytest
 
 from aida.arms.health.codes import DiagnosticCode, load_catalog
 from aida.arms.health.match import (
+    CodeOrigin,
     MatchedCode,
     build_index,
     load_matching_settings,
+    match_by_origin,
     match_codes,
     match_codes_each,
 )
@@ -368,4 +370,130 @@ def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None
     )
     with pytest.raises(ValueError, match=r"'stopwords' debe ser una lista de cadenas"):
         load_matching_settings(stop_num)
+
+
+# ---------------------------------------------------------------------------
+# Plan 62: match_by_origin (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_match_by_origin_today_history_y_both_con_mejor_puntuacion() -> None:
+    """Caso 1 (§B.1): Un código que solo sale hoy es TODAY; uno que solo sale en
+    la historia es HISTORY; uno en los dos es BOTH con la mejor de las dos puntuaciones."""
+    catalog = (
+        DiagnosticCode(code="A01", description="cefalea aguda", level=3, source="test"),
+        DiagnosticCode(code="B02", description="diabetes mellitus", level=3, source="test"),
+        DiagnosticCode(code="C03", description="hipertensión arterial", level=3, source="test"),
+    )
+    index = build_index(catalog)
+
+    # A01 solo en today (score 1.0)
+    # B02 en today ("diabetes mellitus descompensada" -> score ~0.8165)
+    # B02 en history ("diabetes mellitus" -> score 1.0)
+    # C03 solo en history (score 1.0)
+    today = ("cefalea aguda", "diabetes mellitus descompensada")
+    history = ("diabetes mellitus", "hipertensión arterial")
+
+    matches = match_by_origin(
+        today=today,
+        history=history,
+        index=index,
+        threshold=0.5,
+        top_n=5,
+    )
+    por_codigo = {m.diagnostic.code: m for m in matches}
+
+    assert por_codigo["A01"].origin == CodeOrigin.TODAY
+    assert math.isclose(por_codigo["A01"].score, 1.0)
+
+    assert por_codigo["C03"].origin == CodeOrigin.HISTORY
+    assert math.isclose(por_codigo["C03"].score, 1.0)
+
+    assert por_codigo["B02"].origin == CodeOrigin.BOTH
+    # B02 debe quedarse con la mejor de las dos puntuaciones (1.0 vs 0.8165)
+    assert math.isclose(por_codigo["B02"].score, 1.0)
+
+
+def test_match_by_origin_tope_es_por_origen() -> None:
+    """Caso 2 (§B.1): El tope es por origen: con top_n=2, dos de hoy y dos de la
+    historia pueden convivir; ninguno tapa al otro."""
+    catalog = (
+        DiagnosticCode(code="T01", description="dolor brazo", level=3, source="test"),
+        DiagnosticCode(code="T02", description="dolor pierna", level=3, source="test"),
+        DiagnosticCode(code="H01", description="asma cronica", level=3, source="test"),
+        DiagnosticCode(code="H02", description="rinitis cronica", level=3, source="test"),
+    )
+    index = build_index(catalog)
+
+    today = ("dolor brazo", "dolor pierna")
+    history = ("asma cronica", "rinitis cronica")
+
+    matches = match_by_origin(
+        today=today,
+        history=history,
+        index=index,
+        threshold=0.5,
+        top_n=2,
+    )
+    assert len(matches) == 4
+    codigos = {m.diagnostic.code for m in matches}
+    assert codigos == {"T01", "T02", "H01", "H02"}
+    assert {m.diagnostic.code for m in matches if m.origin == CodeOrigin.TODAY} == {"T01", "T02"}
+    assert {m.diagnostic.code for m in matches if m.origin == CodeOrigin.HISTORY} == {"H01", "H02"}
+
+
+def test_match_by_origin_orden_final_puntuacion_descendente_codigo_ascendente() -> None:
+    """Caso 3 (§B.1): Orden final: puntuación descendente, código ascendente en empate."""
+    catalog = (
+        DiagnosticCode(code="Z01", description="tos severa", level=3, source="test"),
+        DiagnosticCode(code="A01", description="tos severa", level=3, source="test"),
+        DiagnosticCode(code="M01", description="fiebre leve moderada", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    # Z01 y A01 tienen score 1.0; M01 tiene score 0.5774
+    today = ("tos severa", "fiebre")
+    history = ()
+
+    matches = match_by_origin(
+        today=today,
+        history=history,
+        index=index,
+        threshold=0.4,
+        top_n=5,
+    )
+    assert len(matches) == 3
+    # A01 empata con Z01 a 1.0, pero 'A01' < 'Z01' en desempate léxico
+    assert [m.diagnostic.code for m in matches] == ["A01", "Z01", "M01"]
+
+
+def test_match_by_origin_history_vacio_todos_today_y_mismo_resultado() -> None:
+    """Caso 4 (§B.1): Con history=(), todos son TODAY y el resultado coincide
+    con el de match_codes_each."""
+    catalog = (
+        DiagnosticCode(code="A01", description="cefalea aguda", level=3, source="test"),
+        DiagnosticCode(code="B02", description="lumbalgia", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    today = ("cefalea aguda", "lumbalgia")
+
+    matches_origin = match_by_origin(
+        today=today,
+        history=(),
+        index=index,
+        threshold=0.5,
+        top_n=5,
+    )
+    matches_each = match_codes_each(
+        today,
+        index,
+        threshold=0.5,
+        top_n=5,
+    )
+
+    assert len(matches_origin) == len(matches_each)
+    assert all(m.origin == CodeOrigin.TODAY for m in matches_origin)
+    for mo, me in zip(matches_origin, matches_each, strict=True):
+        assert mo.diagnostic.code == me.diagnostic.code
+        assert math.isclose(mo.score, me.score)
+
 

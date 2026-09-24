@@ -64,7 +64,8 @@ def test_review_record_serializado_to_json_exacto() -> None:
     record = review_record(log, completed=True, seconds=42.5)
 
     expected = (
-        '{"codes":{"rejected":2},'
+        '{"code_origins":{"today":{"rejected":2}},'
+        '"codes":{"rejected":2},'
         '"completed":true,'
         '"findings":{"confirmed":2,"edited":1,"rejected":1},'
         '"seconds":42.5,'
@@ -117,7 +118,14 @@ def test_review_record_sin_datos_del_paciente() -> None:
     assert "secreto_x" not in json_line
     assert "dijo algo" not in json_line
     raw = json.loads(json_line)
-    assert set(raw.keys()) == {"codes", "completed", "findings", "seconds", "sections"}
+    assert set(raw.keys()) == {
+        "code_origins",
+        "codes",
+        "completed",
+        "findings",
+        "seconds",
+        "sections",
+    }
 
 
 def test_review_record_estabilidad_y_determinismo() -> None:
@@ -132,6 +140,7 @@ def test_review_record_estabilidad_y_determinismo() -> None:
             "signos": {"rejected": 1},
             "motivo_consulta": {"confirmed": 2, "edited": 1},
         },
+        code_origins={"today": {"rejected": 2, "confirmed": 1}},
     )
 
     line1 = r1.to_json()
@@ -149,6 +158,7 @@ def test_review_record_estabilidad_y_determinismo() -> None:
             "motivo_consulta": {"edited": 1, "confirmed": 2},
             "signos": {"rejected": 1},
         },
+        code_origins={"today": {"confirmed": 1, "rejected": 2}},
     )
     assert r1.to_json() == r2.to_json()
 
@@ -168,6 +178,7 @@ def test_review_metrics_store_append_read_y_linea_ilegible(tmp_path: Path) -> No
         findings={"confirmed": 1},
         codes={},
         sections={"motivo_consulta": {"confirmed": 1}},
+        code_origins={},
     )
     r2 = ReviewRecord(
         completed=False,
@@ -175,6 +186,7 @@ def test_review_metrics_store_append_read_y_linea_ilegible(tmp_path: Path) -> No
         findings={"rejected": 1},
         codes={"rejected": 1},
         sections={"signos": {"rejected": 1}},
+        code_origins={},
     )
 
     store.append(r1)
@@ -211,6 +223,7 @@ def test_format_stats_salida_literal_y_vacio() -> None:
             "motivo_consulta": {"confirmed": 1},
             "signos": {"rejected": 1},
         },
+        code_origins={},
     )
     r2 = ReviewRecord(
         completed=False,
@@ -218,6 +231,7 @@ def test_format_stats_salida_literal_y_vacio() -> None:
         findings={"confirmed": 1},
         codes={},
         sections={"motivo_consulta": {"confirmed": 1}},
+        code_origins={},
     )
 
     stats = format_stats((r1, r2))
@@ -233,3 +247,138 @@ def test_format_stats_salida_literal_y_vacio() -> None:
         "  signos: 1 (confirmados 0.0 %, editados 0.0 %, rechazados 100.0 %)"
     )
     assert stats == expected
+
+
+# ---------------------------------------------------------------------------
+# Plan 62: Las métricas (§B.4)
+# ---------------------------------------------------------------------------
+
+
+def test_review_record_cuenta_por_origen_y_veredicto() -> None:
+    """Caso 9 (§B.4): review_record cuenta los códigos por origen y por veredicto."""
+    log = EventLog(window=20)
+    owner = AgentId("doc_metrics_origin")
+    # today: 1 confirmed, 1 rejected
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "T01", "verdict": "confirmed", "origin": "today"},
+    )
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "T02", "verdict": "rejected", "origin": "today"},
+    )
+    # history: 2 confirmed
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "H01", "verdict": "confirmed", "origin": "history"},
+    )
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "H02", "verdict": "confirmed", "origin": "history"},
+    )
+    # both: 1 confirmed, 1 rejected
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "B01", "verdict": "confirmed", "origin": "both"},
+    )
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "B02", "verdict": "rejected", "origin": "both"},
+    )
+
+    record = review_record(log, completed=True, seconds=10.0)
+    assert record.codes == {"confirmed": 4, "rejected": 2}
+    assert record.code_origins == {
+        "today": {"confirmed": 1, "rejected": 1},
+        "history": {"confirmed": 2},
+        "both": {"confirmed": 1, "rejected": 1},
+    }
+
+
+def test_review_record_evento_sin_origin_cuenta_como_today() -> None:
+    """Caso 10 (§B.4): Un evento de código sin origin se cuenta como today."""
+    log = EventLog(window=10)
+    owner = AgentId("doc_legacy")
+    # Evento viejo de versión anterior (sin clave origin)
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "M01", "verdict": "confirmed"},
+    )
+    log.emit(
+        tick=0, kind=EventKind.ITEM_REVIEWED, owner=owner,
+        data={"item": "code", "ref": "M02", "verdict": "rejected"},
+    )
+
+    record = review_record(log, completed=True, seconds=5.0)
+    assert record.codes == {"confirmed": 1, "rejected": 1}
+    assert record.code_origins == {"today": {"confirmed": 1, "rejected": 1}}
+
+
+def test_review_record_to_json_y_from_json_con_y_sin_code_origins() -> None:
+    """Caso 11 (§B.4): to_json incluye code_origins ordenado;
+    from_json de una línea sin esa clave da un registro con el desglose vacío."""
+    # 1. to_json incluye code_origins ordenado y from_json lo recupera
+    record = ReviewRecord(
+        completed=True,
+        seconds=15.0,
+        findings={"confirmed": 1},
+        codes={"confirmed": 2, "rejected": 1},
+        sections={"motivo": {"confirmed": 1}},
+        code_origins={"today": {"confirmed": 1}, "both": {"confirmed": 1, "rejected": 1}},
+    )
+    json_str = record.to_json()
+    esperado_bloque = '"code_origins":{"both":{"confirmed":1,"rejected":1},"today":{"confirmed":1}}'
+    assert esperado_bloque in json_str
+
+    parsed = ReviewRecord.from_json(json_str)
+    assert parsed.code_origins == {
+        "both": {"confirmed": 1, "rejected": 1},
+        "today": {"confirmed": 1},
+    }
+    assert parsed == record
+
+    # 2. from_json de una línea legacy sin 'code_origins'
+    legacy_json = json.dumps({
+        "completed": True,
+        "seconds": 15.0,
+        "findings": {"confirmed": 1},
+        "codes": {"confirmed": 1},
+        "sections": {"motivo": {"confirmed": 1}},
+    })
+    legacy_record = ReviewRecord.from_json(legacy_json)
+    assert legacy_record.code_origins == {}
+
+
+def test_format_stats_imprime_bloque_codigos_por_origen() -> None:
+    """Caso 12 (§B.4): format_stats imprime el bloque «códigos por origen» con
+    las etiquetas en castellano, y no lo imprime si no hay ninguno."""
+    # 1. Con orígenes: imprime "códigos por origen:" y las 3 etiquetas en castellano
+    r1 = ReviewRecord(
+        completed=True,
+        seconds=10.0,
+        findings={"confirmed": 1},
+        codes={"confirmed": 3, "rejected": 1},
+        sections={"motivo": {"confirmed": 1}},
+        code_origins={
+            "today": {"confirmed": 1},
+            "history": {"confirmed": 1, "rejected": 1},
+            "both": {"confirmed": 1},
+        },
+    )
+    salida = format_stats((r1,))
+    assert "códigos por origen:\n" in salida
+    assert "  de esta consulta: 1 (confirmados 100.0 %, rechazados 0.0 %)" in salida
+    assert "  solo en la historia: 2 (confirmados 50.0 %, rechazados 50.0 %)" in salida
+    assert "  en ambas: 1 (confirmados 100.0 %, rechazados 0.0 %)" in salida
+
+    # 2. Sin códigos / sin orígenes: no imprime el bloque "códigos por origen:"
+    r_vacio = ReviewRecord(
+        completed=True,
+        seconds=5.0,
+        findings={"confirmed": 1},
+        codes={},
+        sections={"motivo": {"confirmed": 1}},
+        code_origins={},
+    )
+    salida_vacia = format_stats((r_vacio,))
+    assert "códigos por origen" not in salida_vacia

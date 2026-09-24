@@ -29,7 +29,7 @@ from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
-from aida.arms.health.review import Answer, ReviewItem, Verdict
+from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.arms.health.wording import default_summary_wording
@@ -126,6 +126,8 @@ def sample_wording_review() -> SummaryWording:
         section_template="### {}\n{}",
         confirmed_template="Códigos confirmados por el profesional: {}",
         no_confirmed_text="El profesional no confirmó ningún código.",
+        history_codes_template="Códigos que ya constaban en la historia: {}",
+        known_code_suffix="ya en la historia",
     )
 
 
@@ -1524,9 +1526,10 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
     assert spy_provider_a.think_calls == 0
     assert result_a.matched_codes == ("I10",)
     assert (
-        "Códigos confirmados por el profesional: I10 (Hipertensión esencial (primaria))"
+        "Códigos que ya constaban en la historia: I10 (Hipertensión esencial (primaria))"
         in result_a.summary_markdown
     )
+    assert "Códigos confirmados por el profesional:" not in result_a.summary_markdown
     assert "R51" not in result_a.summary_markdown
     assert "El profesional no confirmó ningún código." not in result_a.summary_markdown
     assert sample_cache.load(owner=owner_a) == result_a.summary_markdown
@@ -1563,6 +1566,7 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
     assert result_b.matched_codes == ()
     assert "El profesional no confirmó ningún código." in result_b.summary_markdown
     assert "Códigos confirmados por el profesional:" not in result_b.summary_markdown
+    assert "Códigos que ya constaban en la historia:" not in result_b.summary_markdown
     assert sample_cache.load(owner=owner_b) == result_b.summary_markdown
 
 
@@ -2268,19 +2272,121 @@ def test_consultation_codable_texts_con_y_sin_segmentacion(
         (sec_plan, ("ibuprofeno cada 8h",)),
     )
 
-    # Con segmentación: filtra la sección no codificable y devuelve tupla de textos individuales
-    res_con_seg = consultation._codable_texts(
+    # Con segmentación: filtra la sección no codificable y devuelve dos tuplas: (hoy, historia)
+    hoy_con_seg, hist_con_seg = consultation._codable_texts(
         "transcripcion original", "hipertensión previa\n\ndiabetes", grouped
     )
-    assert res_con_seg == ("dolor agudo", "cefalea", "hipertensión previa", "diabetes")
-    assert len(res_con_seg) == 4
+    assert hoy_con_seg == ("dolor agudo", "cefalea")
+    assert hist_con_seg == ("hipertensión previa", "diabetes")
 
-    # Sin segmentación: devuelve cada línea no vacía de transcripción e historia
-    res_sin_seg = consultation._codable_texts(
+    # Sin segmentación: devuelve cada línea no vacía de transcripción y de historia por separado
+    hoy_sin_seg, hist_sin_seg = consultation._codable_texts(
         "dolor de pecho\n\ndisnea", "hipertensión previa\n", None
     )
-    assert res_sin_seg == ("dolor de pecho", "disnea", "hipertensión previa")
-    assert len(res_sin_seg) == 3
+    assert hoy_sin_seg == ("dolor de pecho", "disnea")
+    assert hist_sin_seg == ("hipertensión previa",)
+
+
+def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 6 (§B.2): El resumen tras revisar: los confirmados de hoy en una línea,
+    los que ya constaban en otra, y un código 'both' en las dos. Sin ninguno
+    confirmado, no_confirmed_text y ninguna de las dos líneas."""
+    catalog = build_index(
+        (
+            DiagnosticCode("T01", "asma bronquial", 3, "ambas"),
+            DiagnosticCode("H01", "hipertensión esencial", 3, "ambas"),
+            DiagnosticCode("B01", "diabetes mellitus", 3, "ambas"),
+        )
+    )
+    # T01 solo en transcripción ("asma bronquial") -> TODAY
+    # H01 solo en historia ("hipertensión esencial") -> HISTORY
+    # B01 en ambos ("diabetes mellitus") -> BOTH
+    transcript_text = "motivo de consulta: asma bronquial y diabetes mellitus"
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text=transcript_text),
+    )
+    full_text = transcript_text
+    stt = _SpyWhisperSTT(segments=segments, full_text=full_text)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+
+    # Escenario 1: Todos confirmados
+    log1 = EventLog(window=100)
+    c1 = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log1,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner1 = AgentId("doc_origen_1")
+    prep1 = c1.prepare(
+        owner=owner1,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="hipertensión esencial\ndiabetes mellitus",
+    )
+    res1 = c1.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    assert "Códigos confirmados por el profesional: " in res1.summary_markdown
+    assert "Códigos que ya constaban en la historia: " in res1.summary_markdown
+    assert "El profesional no confirmó ningún código." not in res1.summary_markdown
+
+    # Extraer las dos líneas del resumen
+    lineas = res1.summary_markdown.splitlines()
+    linea_hoy = next(line for line in lineas if "Códigos confirmados por el profesional:" in line)
+    linea_hist = next(line for line in lineas if "Códigos que ya constaban en la historia:" in line)
+
+    # T01 (today) solo en linea_hoy
+    assert "T01" in linea_hoy
+    assert "T01" not in linea_hist
+
+    # H01 (history) solo en linea_hist
+    assert "H01" not in linea_hoy
+    assert "H01" in linea_hist
+
+    # B01 (both) DEBE estar en las DOS líneas
+    assert "B01" in linea_hoy
+    assert "B01" in linea_hist
+
+    # Escenario 2: Todos los códigos rechazados
+    log2 = EventLog(window=100)
+    c2 = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log2,
+        diarizer=None,
+        segmenter=segmenter,
+        extractor=extractor,
+    )
+    owner2 = AgentId("doc_origen_2")
+    prep2 = c2.prepare(
+        owner=owner2,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="hipertensión esencial\ndiabetes mellitus",
+    )
+
+    def rechaza_codigos(item: ReviewItem) -> Answer:
+        if item.kind == ItemKind.CODE:
+            return Answer(Verdict.REJECTED)
+        return Answer(Verdict.CONFIRMED)
+
+    res2 = c2.review(prep2, reviewer=rechaza_codigos)
+    assert "El profesional no confirmó ningún código." in res2.summary_markdown
+    assert "Códigos confirmados por el profesional:" not in res2.summary_markdown
+    assert "Códigos que ya constaban en la historia:" not in res2.summary_markdown
 
 
 def test_consultation_con_segmentador_excluye_codigos_de_medicacion(
