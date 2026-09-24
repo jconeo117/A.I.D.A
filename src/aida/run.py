@@ -102,6 +102,13 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="resume las revisiones registradas (por defecto, el archivo de --review)",
     )
     parser.add_argument(
+        "--export",
+        nargs="?",
+        const="",
+        metavar="RUTA",
+        help="escribe la consulta revisada en un archivo (sin RUTA, en la carpeta por defecto)",
+    )
+    parser.add_argument(
         "--check-capture",
         action="store_true",
         help="comprueba modelo, dispositivo, OCR y entrada de audio, y termina",
@@ -497,6 +504,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"aida: error: {exc}", file=sys.stderr)
             return 1
         print(result.summary_markdown)
+        if args.export is not None:
+            from datetime import datetime
+
+            from aida.arms.health.export import default_export_dir, export_consultation
+
+            destino = Path(args.export) if args.export else default_export_dir()
+            escritos = export_consultation(
+                result,
+                destination=destino,
+                moment=datetime.now(),
+                include_model=bool(args.print_model),
+            )
+            print(f"aida: consulta escrita en {escritos.summary}", file=sys.stderr)
+            if escritos.model is not None:
+                print(f"aida: modelo escrito en {escritos.model}", file=sys.stderr)
+            print(
+                "aida: aviso: queda en claro, sin cifrar; dónde vive es cosa tuya",
+                file=sys.stderr,
+            )
         if args.print_model:
             if result.encounter is None:
                 print("aida: aviso: --print-model requiere --segment", file=sys.stderr)

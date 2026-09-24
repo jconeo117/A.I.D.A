@@ -2429,6 +2429,183 @@ def test_cli_sin_review_no_mide(
     assert not metrics_path.exists()
 
 
+# ---------------------------------------------------------------------------
+# Plan 60: Exportar la consulta revisada (§B.2)
+# ---------------------------------------------------------------------------
+
+
+def _preparar_entorno_consultation_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[Path, Path]:
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _MockWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            seg = MagicMock()
+            seg.start = 0.0
+            seg.end = 2.0
+            seg.text = "consulta hoy por dolor en rodilla derecha"
+            seg.no_speech_prob = 0.0
+            return [seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _MockWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio bytes")
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+    return audio_path, img_path
+
+
+def test_cli_consultation_export_con_ruta_escribe_resumen_y_aviso_en_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 8 (§B.2): --consultation ... --export RUTA escribe el resumen
+    y emite avisos en stderr sin ensuciar stdout."""
+    audio_path, img_path = _preparar_entorno_consultation_cli(monkeypatch, tmp_path)
+    custom_export = tmp_path / "carpeta_salida" / "resumen_exportado.md"
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_export_ruta",
+            "--export",
+            str(custom_export),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert custom_export.exists()
+    assert custom_export.read_text(encoding="utf-8").strip() != ""
+    assert f"aida: consulta escrita en {custom_export}" in captured.err
+    assert "aida: aviso: queda en claro, sin cifrar; dónde vive es cosa tuya" in captured.err
+    # Los avisos van a stderr, no a stdout
+    assert "aida: consulta escrita en" not in captured.out
+
+
+def test_cli_consultation_export_sin_ruta_escribe_en_carpeta_por_defecto(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 9 (§B.2): --export sin ruta escribe bajo
+    Path.home() / 'Documentos' / 'aida' / 'consultas'."""
+    audio_path, img_path = _preparar_entorno_consultation_cli(monkeypatch, tmp_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_export_defecto",
+            "--export",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+
+    export_dir = tmp_path / "Documentos" / "aida" / "consultas"
+    assert export_dir.exists()
+    archivos = list(export_dir.glob("*.md"))
+    assert len(archivos) == 1
+    assert archivos[0].read_text(encoding="utf-8").strip() != ""
+    assert f"aida: consulta escrita en {archivos[0]}" in captured.err
+    assert "aida: aviso: queda en claro, sin cifrar; dónde vive es cosa tuya" in captured.err
+
+
+def test_cli_consultation_sin_export_no_escribe_en_carpeta_por_defecto(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 10 (§B.2): Sin --export no se crea ningún archivo bajo esa carpeta."""
+    audio_path, img_path = _preparar_entorno_consultation_cli(monkeypatch, tmp_path)
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_sin_export",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+
+    export_dir = tmp_path / "Documentos" / "aida" / "consultas"
+    assert not export_dir.exists() or len(list(export_dir.glob("*.md"))) == 0
+    assert "aida: consulta escrita en" not in captured.err
+    assert "aida: consulta escrita en" not in captured.out
+
+
+def test_cli_consultation_export_con_print_model_escribe_json_al_lado(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 11 (§B.2): --export junto con --print-model escribe también el .json."""
+    audio_path, img_path = _preparar_entorno_consultation_cli(monkeypatch, tmp_path)
+    custom_export = tmp_path / "carpeta_salida" / "resumen_modelo.md"
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(img_path),
+            "--owner",
+            "paciente_export_model",
+            "--export",
+            str(custom_export),
+            "--print-model",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert custom_export.exists()
+
+    model_path = custom_export.with_suffix(".json")
+    assert model_path.exists()
+    model_data = json.loads(model_path.read_text(encoding="utf-8"))
+    assert isinstance(model_data, dict)
+    assert f"aida: consulta escrita en {custom_export}" in captured.err
+    assert f"aida: modelo escrito en {model_path}" in captured.err
+
+
 
 
 
