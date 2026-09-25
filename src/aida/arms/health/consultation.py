@@ -13,6 +13,7 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
+from aida.arms.health.lexicon import Lexicon, clinical_terms
 from aida.arms.health.match import CatalogIndex, CodeOrigin, MatchedCode, match_by_origin
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
@@ -94,6 +95,7 @@ class Consultation:
         diarizer: LocalPyannoteDiarizer | None = None,
         segmenter: ClinicalSegmenter | None = None,
         extractor: ClinicalExtractor | None = None,
+        lexicon: Lexicon = (),
         review_metrics: ReviewMetricsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -109,6 +111,7 @@ class Consultation:
         self._diarizer = diarizer
         self._segmenter = segmenter
         self._extractor = extractor
+        self._lexicon = lexicon
         self._review_metrics = review_metrics
         self._clock = clock
 
@@ -256,11 +259,33 @@ class Consultation:
         la transcripción entera, línea a línea."""
         lineas = tuple(linea for linea in history.splitlines() if linea.strip())
         if grouped_sections is None:
-            return tuple(t for t in transcript.splitlines() if t.strip()), lineas
-        codificables = tuple(
-            texto for spec, textos in grouped_sections if spec.codable for texto in textos
+            dichos = tuple(t for t in transcript.splitlines() if t.strip())
+        else:
+            dichos = tuple(
+                texto for spec, textos in grouped_sections if spec.codable for texto in textos
+            )
+        return (
+            (*dichos, *self._clinical_equivalents(dichos)),
+            (*lineas, *self._clinical_equivalents(lineas)),
         )
-        return codificables, lineas
+
+    def _clinical_equivalents(self, texts: tuple[str, ...]) -> tuple[str, ...]:
+        """El término clínico de lo que el paciente dijo con sus palabras, como
+        consulta aparte y sin repetir.
+
+        Aparte y no dentro de la frase: medido, añadirlo a la frase la alarga y
+        hunde la puntuación por debajo del umbral; consultarlo solo acierta.
+
+        Se aplica **también a la historia**, aunque venga en lenguaje clínico:
+        medido, la historia dice «dislipidemia» y el catálogo «hiperlipidemia»,
+        así que sin traducir los dos lados el mismo hecho salía como diagnóstico
+        nuevo en vez de como algo que ya constaba."""
+        equivalentes: list[str] = []
+        for texto in texts:
+            for termino in clinical_terms(texto, self._lexicon):
+                if termino not in equivalentes:
+                    equivalentes.append(termino)
+        return tuple(equivalentes)
 
     def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:

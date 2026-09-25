@@ -26,6 +26,7 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
+from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
@@ -2285,6 +2286,122 @@ def test_consultation_codable_texts_con_y_sin_segmentacion(
     )
     assert hoy_sin_seg == ("dolor de pecho", "disnea")
     assert hist_sin_seg == ("hipertensión previa",)
+
+
+def test_consultation_codable_texts_con_lexico_amplia_hoy_e_historia(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 9 (§B.2): _codable_texts con léxico añade los términos clínicos
+    detrás de lo hablado y también detrás de la historia."""
+    lexicon: Lexicon = (
+        ("azucar", "diabetes mellitus"),
+        ("tension alta", "hipertensión esencial"),
+    )
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        lexicon=lexicon,
+    )
+
+    sec_motivo = SectionSpec(
+        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True
+    )
+    grouped = (
+        (sec_motivo, ("sufro de tension alta",)),
+    )
+
+    hoy, historia = consultation._codable_texts(
+        "transcripcion", "antecedente de azucar en sangre", grouped
+    )
+    # Lo hablado lleva su término clínico traducido detrás
+    assert hoy == ("sufro de tension alta", "hipertensión esencial")
+    # La historia también lleva su término clínico traducido detrás
+    assert historia == ("antecedente de azucar en sangre", "diabetes mellitus")
+
+
+def test_consultation_sin_lexico_mantiene_comportamiento_plan_62(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 10 (§B.2): Con lexicon=() (o por defecto) _codable_texts no añade
+    equivalentes y se comporta idéntico al plan 62."""
+    c_defecto = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+    )
+    c_vacio = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        lexicon=(),
+    )
+
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    grouped = ((sec, ("tengo azucar y tension alta",)),)
+    historia_txt = "azucar descompensada"
+
+    hoy1, hist1 = c_defecto._codable_texts("t", historia_txt, grouped)
+    hoy2, hist2 = c_vacio._codable_texts("t", historia_txt, grouped)
+
+    assert hoy1 == ("tengo azucar y tension alta",)
+    assert hist1 == ("azucar descompensada",)
+    assert hoy1 == hoy2
+    assert hist1 == hist2
+
+
+def test_consultation_codable_texts_no_repite_terminos_clinicos(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 11 (§B.2): Los términos clínicos añadidos no se repiten aunque
+    múltiples hallazgos o líneas hagan referencia al mismo concepto."""
+    lexicon: Lexicon = (
+        ("azucar", "diabetes mellitus"),
+        ("diabetes", "diabetes mellitus"),
+    )
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        lexicon=lexicon,
+    )
+
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    grouped = ((sec, ("tengo problemas con el azucar", "control de diabetes")),)
+    historia_txt = "azucar alta\ndiabetes previa"
+
+    hoy, historia = consultation._codable_texts("t", historia_txt, grouped)
+
+    # Solo debe haber una aparición del término clínico
+    assert hoy == (
+        "tengo problemas con el azucar",
+        "control de diabetes",
+        "diabetes mellitus",
+    )
+    assert historia == (
+        "azucar alta",
+        "diabetes previa",
+        "diabetes mellitus",
+    )
 
 
 def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(

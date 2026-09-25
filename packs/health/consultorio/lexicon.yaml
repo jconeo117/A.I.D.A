@@ -1,0 +1,82 @@
+# Cómo dice el paciente lo que la historia clínica escribe de otra forma.
+#
+# El cotejo compara palabras, no significados: «sufro del azúcar» no lleva a
+# «diabetes mellitus» por sí solo. Cada entrada de aquí añade el término clínico
+# como una consulta más contra el catálogo — no lo mete dentro de la frase, que
+# hunde la puntuación (medido).
+#
+# En datos porque es vocabulario, y el vocabulario cambia con el país y con la
+# especialidad. Cada entrada se verificó contra el catálogo real: el código al
+# que lleva está anotado al lado.
+terms:
+  # Metabólico y endocrino
+  "azúcar": "diabetes mellitus"                    # E10-E14
+  "azúcar alta": "diabetes mellitus"               # E10-E14
+  "colesterol": "hiperlipidemia"                   # E784
+  "triglicéridos": "hiperlipidemia"                # E784
+  "dislipidemia": "hiperlipidemia"                 # E784
+  "tiroides": "hipotiroidismo"                     # E039
+  "obesidad": "obesidad"                           # E66
+  "sobrepeso": "obesidad"                          # E66
+
+  # Cardiovascular
+  "tensión alta": "hipertensión esencial"          # I10
+  "presión alta": "hipertensión esencial"          # I10
+  "tensión baja": "hipotensión"                    # I95
+  "palpitaciones": "palpitaciones"                 # R002
+  "dolor de pecho": "dolor precordial"             # R072
+  "infarto": "infarto agudo de miocardio"          # I21
+  "derrame cerebral": "accidente cerebrovascular"  # I679
+  "trombosis": "flebitis y tromboflebitis"         # I80
+  "várices": "venas varicosas"                     # I83
+
+  # Digestivo
+  "reflujo": "reflujo gastroesofágico"             # K21
+  "acidez": "reflujo gastroesofágico"              # K21
+  "agruras": "reflujo gastroesofágico"             # K21
+  "gastritis": "gastritis"                         # K296
+  "úlcera": "úlcera péptica"                       # K27
+  "estreñimiento": "constipación"                  # K590
+  "diarrea": "diarrea"                             # K591
+
+  # Respiratorio
+  "asma": "asma"                                   # J45
+  "falta de aire": "disnea"                        # R060
+  "ahogo": "disnea"                                # R060
+  "tos con flema": "bronquitis"                    # J20
+
+  # Neurológico
+  "dolor de cabeza": "cefalea"                     # R51
+  "duele la cabeza": "cefalea"                     # R51
+  "migraña": "migraña"                             # G43
+  "jaqueca": "migraña"                             # G43
+  "me mareo": "mareo"                              # R42
+  "mareos": "mareo"                                # R42
+  "vértigo": "mareo"                               # R42
+  "epilepsia": "epilepsia"                         # G40
+  "convulsiones": "convulsiones no especificadas"  # R568
+
+  # Musculoesquelético
+  "artrosis": "artrosis"                           # M15-M19
+  "artritis": "artritis"                           # M13
+  "reuma": "artritis reumatoide"                    # M069
+  "dolor de espalda": "dorsalgia"                  # M54
+  "dolor de cintura": "lumbago"                    # M545
+  "dolor lumbar": "lumbago"                        # M545
+
+  # Genitourinario
+  "riñones": "insuficiencia renal"                 # N17-N19
+  "cálculos": "cálculo del riñón"                  # N200
+  "piedras en el riñón": "cálculo del riñón"       # N200
+  "próstata": "hiperplasia de la próstata"         # N40
+  "ardor al orinar": "infección de vías urinarias" # N390
+  "infección de orina": "infección de vías urinarias" # N390
+
+  # Salud mental y otros
+  "depresión": "episodio depresivo"                # F32
+  "ansiedad": "trastorno de ansiedad"              # F419
+  "insomnio": "insomnio"                           # F510
+  "anemia": "otras anemias"                        # D64
+  "alergia en la piel": "dermatitis"               # L30
+  "sarpullido": "dermatitis"                       # L30
+  "hernia": "hernia inguinal"                      # K40

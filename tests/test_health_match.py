@@ -297,11 +297,11 @@ def test_match_codes_each_sin_textos_o_sin_aciertos_devuelve_tupla_vacia() -> No
 
 def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None:
     """Caso 10 (§B.3): load_matching_settings sobre el pack real da threshold=0.5,
-    top_n=5 y palabras en minúsculas; si falta una clave o el tipo no cuadra,
+    top_n=6 y palabras en minúsculas; si falta una clave o el tipo no cuadra,
     ValueError que la nombra."""
     real = load_matching_settings()
     assert real.threshold == 0.5
-    assert real.top_n == 5
+    assert real.top_n == 6
     assert len(real.stopwords) > 0
     assert all(s == s.lower() for s in real.stopwords)
     assert "de" in real.stopwords

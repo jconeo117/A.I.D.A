@@ -2,7 +2,10 @@
 # umbral depende de qué palabras se descartan, y ambas cosas se ajustan juntas
 # midiendo, no adivinando.
 threshold: 0.50
-top_n: 5
+# Seis y no cinco: con el léxico, los términos clínicos añadidos empujan, y con
+# cinco desaparecían dos de los cinco enlaces correctos. Medido: con seis salen
+# los cinco y todavía no entra ruido; con ocho entran tres códigos sin relación.
+top_n: 6
 
 # Palabras que no distinguen un diagnóstico de otro. Sin quitarlas, «dolor en
 # la rodilla» empataba con «cuerpo flotante en la rodilla» porque compartían
