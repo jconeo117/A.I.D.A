@@ -176,6 +176,26 @@ def _review_metrics_path() -> Path:
     return Path.home() / ".local" / "share" / "aida" / "revisiones.jsonl"
 
 
+def _cached_stt(stt: object, key: str) -> object:
+    """El STT con la caché de transcripciones delante. Medido: transcribir siete
+    minutos cuesta ~105 s y el resto de la tubería 0,8, así que reanudar una
+    revisión cortada sin esto significa esperar otra vez."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcripts import CachedSTT, TranscriptCache
+
+    ajustes = load_capture_settings()
+    cache = TranscriptCache(
+        Path.home() / ".cache" / "aida" / "transcripciones", key=key.encode()
+    )
+    cache.purge_expired()
+    return CachedSTT(
+        stt,
+        cache,
+        model=ajustes.model,
+        no_speech_threshold=ajustes.no_speech_threshold,
+    )
+
+
 def _build_consultation(
     args: argparse.Namespace,
     *,
@@ -196,7 +216,7 @@ def _build_consultation(
             return None
 
     from aida.arms.health.cache import ConsultationCache
-    from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+    from aida.arms.health.capture import LocalTesseractOCR
     from aida.arms.health.codes import load_catalog
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.history import load_history_layout
@@ -213,7 +233,7 @@ def _build_consultation(
     )
     return Consultation(
         wording=default_summary_wording(),
-        stt=stt if isinstance(stt, LocalWhisperSTT) else cast(Any, stt),
+        stt=cast(Any, _cached_stt(stt, key)),
         ocr=ocr if isinstance(ocr, LocalTesseractOCR) else cast(Any, ocr),
         catalog_index=build_index(catalog, stopwords=cotejo.stopwords),
         match_threshold=cotejo.threshold,

@@ -721,6 +721,8 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
 
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
+            mock_seg.start = 0.0
+            mock_seg.end = 1.0
             mock_seg.text = self.text
             mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
@@ -1159,6 +1161,8 @@ def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
 
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
+            mock_seg.start = 0.0
+            mock_seg.end = 1.0
             mock_seg.text = self.text
             mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
@@ -1280,6 +1284,8 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
 
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             mock_seg = MagicMock()
+            mock_seg.start = 0.0
+            mock_seg.end = 1.0
             mock_seg.text = self.text
             mock_seg.no_speech_prob = 0.0
             return [mock_seg], None
@@ -2608,6 +2614,142 @@ def test_cli_consultation_export_con_print_model_escribe_json_al_lado(
     assert isinstance(model_data, dict)
     assert f"aida: consulta escrita en {custom_export}" in captured.err
     assert f"aida: modelo escrito en {model_path}" in captured.err
+
+
+def test_consultation_cli_cached_stt_segunda_ejecucion_no_llama_modelo(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 12 (§B.2): --consultation dos veces con el mismo audio y la misma clave:
+    la segunda no llama al modelo de transcripción."""
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    transcribe_calls = 0
+
+    class _CountingWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            nonlocal transcribe_calls
+            transcribe_calls += 1
+            mock_seg = MagicMock()
+            mock_seg.start = 0.0
+            mock_seg.end = 2.0
+            mock_seg.text = "El paciente refiere cefalea intensa y dolor de cabeza."
+            mock_seg.no_speech_prob = 0.0
+            return [mock_seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _CountingWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: cefalea recurrente.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio content for cache test")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    cmd = [
+        "--consultation",
+        "--audio",
+        str(audio_path),
+        "--history",
+        str(img_path),
+        "--owner",
+        "paciente_cached_stt",
+    ]
+
+    # Primera ejecución: transcribe
+    codigo1 = main(cmd)
+    assert codigo1 == 0
+    assert transcribe_calls == 1
+
+    # Segunda ejecución con la misma clave y mismo audio: usa caché y NO transcribe
+    codigo2 = main(cmd)
+    assert codigo2 == 0
+    assert transcribe_calls == 1
+
+
+def test_consultation_cli_cached_stt_clave_distinta_vuelve_a_transcribir(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 13 (§B.2): Con AIDA_CONSULT_CACHE_KEY distinta entre las dos ejecuciones,
+    la segunda vuelve a transcribir porque no puede descifrar la caché anterior."""
+    image_mod = pytest.importorskip(
+        "PIL.Image",
+        reason="requiere el extra 'capture' (faster-whisper, pytesseract, Pillow)",
+    )
+    _clean_llm_env(monkeypatch)
+    key1 = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key1)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    transcribe_calls = 0
+
+    class _CountingWhisperBackend:
+        def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
+            nonlocal transcribe_calls
+            transcribe_calls += 1
+            mock_seg = MagicMock()
+            mock_seg.start = 0.0
+            mock_seg.end = 2.0
+            mock_seg.text = "El paciente refiere cefalea intensa y dolor de cabeza."
+            mock_seg.no_speech_prob = 0.0
+            return [mock_seg], None
+
+    monkeypatch.setattr(
+        "faster_whisper.WhisperModel",
+        lambda *args, **kwargs: _CountingWhisperBackend(),
+    )
+    monkeypatch.setattr(
+        "pytesseract.image_to_string",
+        lambda *args, **kwargs: "Historia clínica previa: cefalea recurrente.",
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio content for key test")
+
+    img_path = tmp_path / "historia.png"
+    img = image_mod.new("RGB", (20, 20), color="white")
+    img.save(img_path)
+
+    cmd = [
+        "--consultation",
+        "--audio",
+        str(audio_path),
+        "--history",
+        str(img_path),
+        "--owner",
+        "paciente_diff_key",
+    ]
+
+    # Primera ejecución con key1
+    codigo1 = main(cmd)
+    assert codigo1 == 0
+    assert transcribe_calls == 1
+
+    # Segunda ejecución con key2 distinta: no puede leer caché de key1 y vuelve a transcribir
+    key2 = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key2)
+
+    codigo2 = main(cmd)
+    assert codigo2 == 0
+    assert transcribe_calls == 2
+
 
 
 
