@@ -1,0 +1,44 @@
+# Qué parte de la historia clínica puede llevar un código de diagnóstico.
+#
+# Una historia impresa viene por secciones, y no todas hablan del paciente:
+# «ANTECEDENTES FAMILIARES» habla de su madre, y la cabecera con «Sexo:
+# Femenino» no habla de nada. Cotejarlas propone diagnósticos que nadie tiene:
+# medido, «Sexo: Femenino» llevaba a «uretrocele femenino» y «Madre con
+# hipertensión esencial» atribuía la hipertensión al paciente.
+#
+# Los encabezados se comparan en mayúsculas y sin tildes, por prefijo: basta que
+# la línea empiece por el encabezado declarado.
+sections:
+  - heading: "ANTECEDENTES PERSONALES"
+    codable: true
+  - heading: "DIAGNOSTICOS"
+    codable: true
+  - heading: "PROBLEMAS ACTIVOS"
+    codable: true
+  - heading: "ANTECEDENTES QUIRURGICOS"
+    codable: true
+  - heading: "CONSULTAS PREVIAS"
+    codable: false
+  - heading: "ANTECEDENTES FAMILIARES"
+    codable: false
+  - heading: "ALERGIAS"
+    codable: false
+  - heading: "MEDICACION ACTUAL"
+    codable: false
+  - heading: "TRATAMIENTO"
+    codable: false
+  - heading: "HISTORIA CLINICA"
+    codable: false
+
+# Líneas que no describen ningún hecho clínico, aunque caigan bajo un encabezado
+# codificable: cabeceras, pies de página y fechas sueltas. Se comparan por
+# prefijo, en mayúsculas y sin tildes. Medido: «Página 1 de 1» proponía un
+# defecto de la función del linfocito, y «Página 2 de 2», propanol.
+ignore:
+  - "PAGINA"
+  - "DOCUMENTO GENERADO"
+  - "CENTRO"
+  - "IDENTIFICADOR"
+  - "EDAD:"
+  - "SEXO:"
+  - "FECHA:"

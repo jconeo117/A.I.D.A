@@ -199,6 +199,7 @@ def _build_consultation(
     from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
     from aida.arms.health.codes import load_catalog
     from aida.arms.health.consultation import Consultation
+    from aida.arms.health.history import load_history_layout
     from aida.arms.health.lexicon import load_lexicon
     from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
@@ -226,6 +227,7 @@ def _build_consultation(
         segmenter=cast(Any, segmenter),
         extractor=cast(Any, extractor),
         lexicon=load_lexicon(),
+        history_layout=load_history_layout(),
         review_metrics=ReviewMetricsStore(_review_metrics_path()),
     )
 

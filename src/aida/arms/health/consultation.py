@@ -13,6 +13,7 @@ from pathlib import Path
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
+from aida.arms.health.history import HistoryLayout, codable_history_lines
 from aida.arms.health.lexicon import Lexicon, clinical_terms
 from aida.arms.health.match import CatalogIndex, CodeOrigin, MatchedCode, match_by_origin
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
@@ -96,6 +97,7 @@ class Consultation:
         segmenter: ClinicalSegmenter | None = None,
         extractor: ClinicalExtractor | None = None,
         lexicon: Lexicon = (),
+        history_layout: HistoryLayout | None = None,
         review_metrics: ReviewMetricsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -112,6 +114,7 @@ class Consultation:
         self._segmenter = segmenter
         self._extractor = extractor
         self._lexicon = lexicon
+        self._history_layout = history_layout
         self._review_metrics = review_metrics
         self._clock = clock
 
@@ -257,7 +260,11 @@ class Consultation:
         produce códigos sin relación — de ahí salía la mitad del ruido de
         `I-125`. Sin segmentación no hay secciones que mirar, así que se cruza
         la transcripción entera, línea a línea."""
-        lineas = tuple(linea for linea in history.splitlines() if linea.strip())
+        lineas = (
+            codable_history_lines(history, self._history_layout)
+            if self._history_layout is not None
+            else tuple(linea for linea in history.splitlines() if linea.strip())
+        )
         if grouped_sections is None:
             dichos = tuple(t for t in transcript.splitlines() if t.strip())
         else:

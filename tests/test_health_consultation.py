@@ -26,6 +26,7 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
+from aida.arms.health.history import HistoryLayout, HistorySection
 from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
@@ -2550,6 +2551,143 @@ def test_consultation_con_segmentador_excluye_codigos_de_medicacion(
     assert "R51" in codigos_cotejados
     # T88.7 (de medicamentos, codable=False) NO debe aparecer
     assert "T88.7" not in codigos_cotejados
+
+
+def test_consultation_codable_texts_con_history_layout_filtra_solo_lineas_codificables(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 8 (§B.2): _codable_texts con history_layout: la historia aporta
+    solo sus líneas codificables; el lado hablado no cambia."""
+    layout = HistoryLayout(
+        sections=(
+            HistorySection(heading="ANTECEDENTES PERSONALES", codable=True),
+            HistorySection(heading="ANTECEDENTES FAMILIARES", codable=False),
+        ),
+        ignore=("FECHA:",),
+    )
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        history_layout=layout,
+    )
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    grouped = ((sec, ("dolor agudo de cabeza",)),)
+    historia = """FECHA: 2026-09-24
+ANTECEDENTES PERSONALES
+Hipertensión esencial
+ANTECEDENTES FAMILIARES
+Padre con diabetes
+"""
+    hoy, hist = consultation._codable_texts("transcripcion", historia, grouped)
+    assert hoy == ("dolor agudo de cabeza",)
+    assert hist == ("Hipertensión esencial",)
+
+
+def test_consultation_sin_history_layout_mantiene_comportamiento_previo(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 9 (§B.2): Con history_layout=None (o por defecto), la historia
+    se divide línea a línea idéntico a antes de esta unidad."""
+    c_defecto = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+    )
+    c_none = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(segments=()),
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        history_layout=None,
+    )
+    historia = """Centro Médico X
+Sexo: Femenino
+ANTECEDENTES PERSONALES
+Diabetes tipo 2
+"""
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    grouped = ((sec, ("habla de hoy",)),)
+
+    hoy1, hist1 = c_defecto._codable_texts("t", historia, grouped)
+    hoy2, hist2 = c_none._codable_texts("t", historia, grouped)
+
+    assert hist1 == (
+        "Centro Médico X",
+        "Sexo: Femenino",
+        "ANTECEDENTES PERSONALES",
+        "Diabetes tipo 2",
+    )
+    assert hist1 == hist2
+    assert hoy1 == hoy2
+
+
+def test_consultation_review_resumen_conserva_historia_entera(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 10 (§B.2): El resumen tras revisar sigue llevando la historia entera:
+    filtrar es para cotejar, no para redactar."""
+    layout = HistoryLayout(
+        sections=(
+            HistorySection(heading="ANTECEDENTES PERSONALES", codable=True),
+            HistorySection(heading="ANTECEDENTES FAMILIARES", codable=False),
+        ),
+        ignore=("PAGINA",),
+    )
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        segmenter=segmenter,
+        extractor=build_health_extractor(),
+        history_layout=layout,
+    )
+    owner = AgentId("doc_hist_full")
+    historia_entera = """Centro Médico Demo
+PAGINA 1 DE 1
+ANTECEDENTES PERSONALES
+Hipertensión arterial
+ANTECEDENTES FAMILIARES
+Madre con infarto
+"""
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text=historia_entera,
+    )
+    result = consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+
+    # El extracto de historia y el resumen final deben contener la historia completa
+    assert result.history_excerpt == historia_entera
+    assert "Centro Médico Demo" in result.summary_markdown
+    assert "PAGINA 1 DE 1" in result.summary_markdown
+    assert "ANTECEDENTES FAMILIARES" in result.summary_markdown
+    assert "Madre con infarto" in result.summary_markdown
+
 
 
 
