@@ -26,6 +26,10 @@ class ClinicalFinding:
     duration: str | None = None
     laterality: str | None = None
     reported_by: str | None = None
+    negated: str | None = None
+    """El tramo de `text` que está negado, tal como se dijo. `None` significa
+    que no se detectó ninguna negación, **no** que se haya comprobado que no
+    hay: sin extractor configurado nadie lo rellena."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +51,7 @@ class Encounter:
                     "duration": f.duration,
                     "laterality": f.laterality,
                     "reported_by": f.reported_by,
+                    "negated": f.negated,
                 }
                 for f in items
             ]

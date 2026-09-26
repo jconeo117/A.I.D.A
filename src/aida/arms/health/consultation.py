@@ -15,9 +15,16 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.history import HistoryLayout, codable_history_lines
 from aida.arms.health.lexicon import Lexicon, clinical_terms
-from aida.arms.health.match import CatalogIndex, CodeOrigin, MatchedCode, match_by_origin
+from aida.arms.health.match import (
+    CatalogIndex,
+    CodableText,
+    CodeOrigin,
+    MatchedCode,
+    match_by_origin,
+)
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
+from aida.arms.health.negation import NO_NEGATION, NegationCatalog, split_polarity
 from aida.arms.health.review import Reviewer, review_encounter
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
@@ -53,6 +60,8 @@ class SummaryWording:
     no_confirmed_text: str | None = None
     history_codes_template: str | None = None
     known_code_suffix: str | None = None
+    evidence_template: str | None = None
+    negated_suffix: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +106,7 @@ class Consultation:
         segmenter: ClinicalSegmenter | None = None,
         extractor: ClinicalExtractor | None = None,
         lexicon: Lexicon = (),
+        negation: NegationCatalog = NO_NEGATION,
         history_layout: HistoryLayout | None = None,
         review_metrics: ReviewMetricsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -114,6 +124,7 @@ class Consultation:
         self._segmenter = segmenter
         self._extractor = extractor
         self._lexicon = lexicon
+        self._negation = negation
         self._history_layout = history_layout
         self._review_metrics = review_metrics
         self._clock = clock
@@ -205,6 +216,7 @@ class Consultation:
                         for name, value in (
                             ("duration", finding.duration),
                             ("laterality", finding.laterality),
+                            ("negated", finding.negated),
                             ("reported_by", finding.reported_by),
                         )
                         if value is not None
@@ -248,7 +260,7 @@ class Consultation:
         transcript: str,
         history: str,
         grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    ) -> tuple[tuple[CodableText, ...], tuple[CodableText, ...]]:
         """Qué se cruza contra el catálogo, como `(hoy, historia)`: los hallazgos
         de las secciones que el pack marca como portadoras de diagnóstico, y por
         otro lado la historia.
@@ -259,7 +271,8 @@ class Consultation:
         Una frase de medicación o de plan no es un diagnóstico, y cotejarla
         produce códigos sin relación — de ahí salía la mitad del ruido de
         `I-125`. Sin segmentación no hay secciones que mirar, así que se cruza
-        la transcripción entera, línea a línea."""
+        la transcripción entera, línea a línea.
+        """
         lineas = (
             codable_history_lines(history, self._history_layout)
             if self._history_layout is not None
@@ -271,28 +284,40 @@ class Consultation:
             dichos = tuple(
                 texto for spec, textos in grouped_sections if spec.codable for texto in textos
             )
-        return (
-            (*dichos, *self._clinical_equivalents(dichos)),
-            (*lineas, *self._clinical_equivalents(lineas)),
-        )
+        return (self._affirmed(dichos), self._affirmed(lineas))
 
-    def _clinical_equivalents(self, texts: tuple[str, ...]) -> tuple[str, ...]:
-        """El término clínico de lo que el paciente dijo con sus palabras, como
-        consulta aparte y sin repetir.
+    def _affirmed(self, texts: tuple[str, ...]) -> tuple[CodableText, ...]:
+        """Lo negado no se coteja: «no refiere dolor torácico» comparte todas
+        sus palabras útiles con la frase afirmada, así que propondría el mismo
+        código. Cada texto conserva la frase completa como procedencia, también
+        cuando solo se coteja un tramo de ella: es lo que se le muestra al
+        profesional para que juzgue el código.
 
-        Aparte y no dentro de la frase: medido, añadirlo a la frase la alarga y
-        hunde la puntuación por debajo del umbral; consultarlo solo acierta.
+        Después, el término clínico de lo que se dijo con palabras del
+        paciente, como consulta aparte y sin repetir. Aparte y no dentro de la
+        frase: medido, añadirlo a la frase la alarga y hunde la puntuación por
+        debajo del umbral; consultarlo solo acierta. Y se aplica también a la
+        historia, aunque venga en lenguaje clínico: la historia dice
+        «dislipidemia» y el catálogo «hiperlipidemia», así que sin traducir los
+        dos lados el mismo hecho salía como diagnóstico nuevo.
 
-        Se aplica **también a la historia**, aunque venga en lenguaje clínico:
-        medido, la historia dice «dislipidemia» y el catálogo «hiperlipidemia»,
-        así que sin traducir los dos lados el mismo hecho salía como diagnóstico
-        nuevo en vez de como algo que ya constaba."""
-        equivalentes: list[str] = []
+        El término sale del tramo afirmado, no de la frase entera: traducir «no
+        sufro del azúcar» a «diabetes mellitus» volvería a colar por el léxico
+        justo lo que la polaridad acaba de excluir.
+        """
+        afirmados: list[CodableText] = []
         for texto in texts:
-            for termino in clinical_terms(texto, self._lexicon):
-                if termino not in equivalentes:
-                    equivalentes.append(termino)
-        return tuple(equivalentes)
+            tramo = split_polarity(texto, self._negation).affirmed
+            if tramo:
+                afirmados.append(CodableText(query=tramo, source=texto))
+        vistos: list[str] = []
+        equivalentes: list[CodableText] = []
+        for codable in afirmados:
+            for termino in clinical_terms(codable.query, self._lexicon):
+                if termino not in vistos:
+                    vistos.append(termino)
+                    equivalentes.append(CodableText(query=termino, source=codable.source))
+        return (*afirmados, *equivalentes)
 
     def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:
@@ -403,6 +428,8 @@ class Consultation:
                 log=self._log,
                 refine=self._refine_edited,
                 known_code_suffix=self._wording.known_code_suffix,
+                evidence_template=self._wording.evidence_template,
+                negated_suffix=self._wording.negated_suffix,
             )
         except BaseException:
             self._record_review(start_seq, started, completed=False)

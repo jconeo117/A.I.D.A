@@ -243,3 +243,29 @@ def test_export_consultation_resumen_fiel_con_salto_de_linea_final(
 
     contenido_leido = archivos.summary.read_text(encoding="utf-8")
     assert contenido_leido == texto_resumen + "\n"
+
+
+def test_export_consultation_json_incluye_negated(tmp_path: Path) -> None:
+    """Caso 35 (§B.6): El JSON exportado incluye negated en cada hallazgo."""
+    finding = ClinicalFinding(
+        text="No refiere fiebre",
+        section_id="motivo_consulta",
+        negated="No refiere fiebre",
+    )
+    enc = Encounter(owner=AgentId("paciente_1"), findings={"motivo_consulta": (finding,)})
+    res = ConsultationResult(
+        owner=AgentId("paciente_1"),
+        transcript="",
+        history_excerpt="",
+        matched_codes=(),
+        summary_markdown="## Resumen",
+        encounter=enc,
+    )
+    archivos = export_consultation(
+        res, destination=tmp_path, moment=datetime(2026, 9, 26, 12, 0), include_model=True
+    )
+    assert archivos.model is not None
+    data = json.loads(archivos.model.read_text(encoding="utf-8"))
+    assert "motivo_consulta" in data
+    assert data["motivo_consulta"][0]["negated"] == "No refiere fiebre"
+

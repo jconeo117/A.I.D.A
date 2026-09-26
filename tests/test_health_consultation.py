@@ -28,9 +28,10 @@ from aida.arms.health.consultation import Consultation, PreparedConsultation, Su
 from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.history import HistoryLayout, HistorySection
 from aida.arms.health.lexicon import Lexicon
-from aida.arms.health.match import CatalogIndex, build_index
+from aida.arms.health.match import CatalogIndex, CodableText, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
+from aida.arms.health.negation import load_negation
 from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -45,6 +46,11 @@ from aida.voice.diarize import (
     SpeakerTurn,
     TranscriptSegment,
 )
+
+
+def _codables(*textos: str) -> tuple[CodableText, ...]:
+    return tuple(CodableText(query=t, source=t) for t in textos)
+
 
 # ---------------------------------------------------------------------------
 # Dobles de prueba para STT, OCR y Diarización
@@ -2278,15 +2284,15 @@ def test_consultation_codable_texts_con_y_sin_segmentacion(
     hoy_con_seg, hist_con_seg = consultation._codable_texts(
         "transcripcion original", "hipertensión previa\n\ndiabetes", grouped
     )
-    assert hoy_con_seg == ("dolor agudo", "cefalea")
-    assert hist_con_seg == ("hipertensión previa", "diabetes")
+    assert hoy_con_seg == _codables("dolor agudo", "cefalea")
+    assert hist_con_seg == _codables("hipertensión previa", "diabetes")
 
     # Sin segmentación: devuelve cada línea no vacía de transcripción y de historia por separado
     hoy_sin_seg, hist_sin_seg = consultation._codable_texts(
         "dolor de pecho\n\ndisnea", "hipertensión previa\n", None
     )
-    assert hoy_sin_seg == ("dolor de pecho", "disnea")
-    assert hist_sin_seg == ("hipertensión previa",)
+    assert hoy_sin_seg == _codables("dolor de pecho", "disnea")
+    assert hist_sin_seg == _codables("hipertensión previa")
 
 
 def test_consultation_codable_texts_con_lexico_amplia_hoy_e_historia(
@@ -2321,9 +2327,17 @@ def test_consultation_codable_texts_con_lexico_amplia_hoy_e_historia(
         "transcripcion", "antecedente de azucar en sangre", grouped
     )
     # Lo hablado lleva su término clínico traducido detrás
-    assert hoy == ("sufro de tension alta", "hipertensión esencial")
+    assert hoy == (
+        CodableText(query="sufro de tension alta", source="sufro de tension alta"),
+        CodableText(query="hipertensión esencial", source="sufro de tension alta"),
+    )
     # La historia también lleva su término clínico traducido detrás
-    assert historia == ("antecedente de azucar en sangre", "diabetes mellitus")
+    assert historia == (
+        CodableText(
+            query="antecedente de azucar en sangre", source="antecedente de azucar en sangre"
+        ),
+        CodableText(query="diabetes mellitus", source="antecedente de azucar en sangre"),
+    )
 
 
 def test_consultation_sin_lexico_mantiene_comportamiento_plan_62(
@@ -2359,8 +2373,8 @@ def test_consultation_sin_lexico_mantiene_comportamiento_plan_62(
     hoy1, hist1 = c_defecto._codable_texts("t", historia_txt, grouped)
     hoy2, hist2 = c_vacio._codable_texts("t", historia_txt, grouped)
 
-    assert hoy1 == ("tengo azucar y tension alta",)
-    assert hist1 == ("azucar descompensada",)
+    assert hoy1 == _codables("tengo azucar y tension alta")
+    assert hist1 == _codables("azucar descompensada")
     assert hoy1 == hoy2
     assert hist1 == hist2
 
@@ -2394,14 +2408,14 @@ def test_consultation_codable_texts_no_repite_terminos_clinicos(
 
     # Solo debe haber una aparición del término clínico
     assert hoy == (
-        "tengo problemas con el azucar",
-        "control de diabetes",
-        "diabetes mellitus",
+        CodableText(query="tengo problemas con el azucar", source="tengo problemas con el azucar"),
+        CodableText(query="control de diabetes", source="control de diabetes"),
+        CodableText(query="diabetes mellitus", source="tengo problemas con el azucar"),
     )
     assert historia == (
-        "azucar alta",
-        "diabetes previa",
-        "diabetes mellitus",
+        CodableText(query="azucar alta", source="azucar alta"),
+        CodableText(query="diabetes previa", source="diabetes previa"),
+        CodableText(query="diabetes mellitus", source="azucar alta"),
     )
 
 
@@ -2585,8 +2599,8 @@ ANTECEDENTES FAMILIARES
 Padre con diabetes
 """
     hoy, hist = consultation._codable_texts("transcripcion", historia, grouped)
-    assert hoy == ("dolor agudo de cabeza",)
-    assert hist == ("Hipertensión esencial",)
+    assert hoy == _codables("dolor agudo de cabeza")
+    assert hist == _codables("Hipertensión esencial")
 
 
 def test_consultation_sin_history_layout_mantiene_comportamiento_previo(
@@ -2625,7 +2639,7 @@ Diabetes tipo 2
     hoy1, hist1 = c_defecto._codable_texts("t", historia, grouped)
     hoy2, hist2 = c_none._codable_texts("t", historia, grouped)
 
-    assert hist1 == (
+    assert hist1 == _codables(
         "Centro Médico X",
         "Sexo: Femenino",
         "ANTECEDENTES PERSONALES",
@@ -2687,6 +2701,379 @@ Madre con infarto
     assert "PAGINA 1 DE 1" in result.summary_markdown
     assert "ANTECEDENTES FAMILIARES" in result.summary_markdown
     assert "Madre con infarto" in result.summary_markdown
+
+
+# ---------------------------------------------------------------------------
+# Pruebas B.5 & B.7: Negación clínica y evidencia (68-plan-negacion-evidencia.md)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_frase_negada_no_propone_codigo(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 25 (§B.5): Una frase negada no propone su código; con frase afirmada sí."""
+    catalog = build_index(
+        (DiagnosticCode("R07", "dolor toracico", 3, "test"),)
+    )
+    neg_cat = load_negation()
+
+    # Frase negada: no propone
+    stt_neg = _SpyWhisperSTT(full_text="No refiere dolor toracico")
+    c_neg = Consultation(
+        wording=sample_wording_review,
+        stt=stt_neg,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=neg_cat,
+        match_threshold=0.3,
+    )
+    prep_neg = c_neg.prepare(
+        owner=AgentId("doc_neg"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert prep_neg.matches == ()
+
+    # Frase afirmada: sí propone
+    stt_aff = _SpyWhisperSTT(full_text="Refiere dolor toracico")
+    c_aff = Consultation(
+        wording=sample_wording_review,
+        stt=stt_aff,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=neg_cat,
+        match_threshold=0.3,
+    )
+    prep_aff = c_aff.prepare(
+        owner=AgentId("doc_aff"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert len(prep_aff.matches) == 1
+    assert prep_aff.matches[0].diagnostic.code == "R07"
+
+
+def test_consultation_frase_mixta_propone_solo_lo_afirmado(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 26 (§B.5): Frase mixta conserva el diagnóstico afirmado y descarta el negado."""
+    catalog = build_index(
+        (
+            DiagnosticCode("R51", "dolor de cabeza", 3, "test"),
+            DiagnosticCode("R50", "fiebre", 3, "test"),
+        )
+    )
+    stt = _SpyWhisperSTT(full_text="Tiene dolor de cabeza pero no fiebre")
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        match_threshold=0.3,
+    )
+    prep = c.prepare(owner=AgentId("doc_mix"), audio_path=Path("/tmp/a.wav"), history_text="")
+    codigos = {m.diagnostic.code for m in prep.matches}
+    assert "R51" in codigos
+    assert "R50" not in codigos
+
+
+def test_consultation_negacion_se_aplica_a_historia(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 27 (§B.5): La negación se aplica también a las líneas de historia clínica."""
+    catalog = build_index(
+        (DiagnosticCode("E11", "diabetes mellitus", 3, "test"),)
+    )
+    stt = _SpyWhisperSTT(full_text="")
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        match_threshold=0.3,
+    )
+    prep = c.prepare(
+        owner=AgentId("doc_hist_neg"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="Sin antecedentes de diabetes",
+    )
+    assert not any(m.diagnostic.code == "E11" for m in prep.matches)
+
+
+def test_consultation_lexico_no_cuela_lo_negado(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 28 (§B.5): El léxico no reintroduce términos negados."""
+    catalog = build_index(
+        (DiagnosticCode("E11", "diabetes mellitus", 3, "test"),)
+    )
+    lexicon: Lexicon = (("azucar", "diabetes mellitus"),)
+    stt = _SpyWhisperSTT(full_text="No sufro del azucar")
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        lexicon=lexicon,
+        negation=load_negation(),
+        match_threshold=0.3,
+    )
+    prep = c.prepare(owner=AgentId("doc_lex_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    assert not any(m.diagnostic.code == "E11" for m in prep.matches)
+
+
+def test_consultation_evidencia_en_review_item(
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 29 (§B.5): La evidencia llega al ReviewItem si hay plantilla;
+    si no, solo descripción."""
+    catalog = build_index(
+        (DiagnosticCode("R07", "dolor toracico", 3, "test"),)
+    )
+    segments = (TranscriptSegment(0.0, 1.0, "consulta hoy por dolor toracico pero no fiebre"),)
+    stt = _SpyWhisperSTT(segments=segments)
+
+    # Con plantilla
+    wording_con_ev = default_summary_wording()
+    c_con = Consultation(
+        wording=wording_con_ev,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        match_threshold=0.3,
+    )
+    prep_con = c_con.prepare(
+        owner=AgentId("doc_ev_1"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    items_con: list[ReviewItem] = []
+
+    def _rev_con(item: ReviewItem) -> Answer:
+        items_con.append(item)
+        return Answer(Verdict.CONFIRMED)
+
+    c_con.review(prep_con, reviewer=_rev_con)
+    item_cod_con = next(it for it in items_con if it.kind == ItemKind.CODE)
+    assert "dicho: «consulta hoy por dolor toracico pero no fiebre»" in item_cod_con.text
+
+    # Sin plantilla
+    wording_sin_ev = replace(wording_con_ev, evidence_template=None)
+    c_sin = Consultation(
+        wording=wording_sin_ev,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        match_threshold=0.3,
+    )
+    prep_sin = c_sin.prepare(
+        owner=AgentId("doc_ev_2"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    items_sin: list[ReviewItem] = []
+
+    def _rev_sin(item: ReviewItem) -> Answer:
+        items_sin.append(item)
+        return Answer(Verdict.CONFIRMED)
+
+    c_sin.review(prep_sin, reviewer=_rev_sin)
+    item_cod_sin = next(it for it in items_sin if it.kind == ItemKind.CODE)
+    assert item_cod_sin.text == "dolor toracico"
+
+
+def test_consultation_hallazgo_enteramente_negado_marcado_mixto_no(
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 30 (§B.5): El hallazgo enteramente negado se marca con sufijo; el mixto no."""
+    wording = default_summary_wording()
+    # Dos líneas: una enteramente negada y una mixta
+    segments = (
+        TranscriptSegment(0.0, 1.0, "No refiere fiebre"),
+        TranscriptSegment(1.0, 2.0, "Tiene dolor de cabeza pero no náuseas"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    c = Consultation(
+        wording=wording,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        extractor=build_health_extractor(),
+        segmenter=ClinicalSegmenter(load_sections()),
+    )
+    prep = c.prepare(owner=AgentId("doc_find_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    items: list[ReviewItem] = []
+
+    def _rev(item: ReviewItem) -> Answer:
+        items.append(item)
+        return Answer(Verdict.CONFIRMED)
+
+    c.review(prep, reviewer=_rev)
+    find_items = [it for it in items if it.kind == ItemKind.FINDING]
+
+    item_fiebre = next(it for it in find_items if "No refiere fiebre" in it.text)
+    assert item_fiebre.text == f"No refiere fiebre · {wording.negated_suffix}"
+
+    item_cabeza = next(it for it in find_items if "Tiene dolor de cabeza" in it.text)
+    assert item_cabeza.text == "Tiene dolor de cabeza pero no náuseas"
+    assert wording.negated_suffix is not None
+    assert wording.negated_suffix not in item_cabeza.text
+
+
+def test_consultation_fields_extracted_incluye_negated(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 31 (§B.5): FIELDS_EXTRACTED incluye negated en fields en orden alfabético."""
+    stt = _SpyWhisperSTT(
+        segments=(
+            TranscriptSegment(
+                0.0, 1.0, "MÉDICO: no refiere dolor en ojo derecho desde hace 2 semanas"
+            ),
+        )
+    )
+    log = EventLog()
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=build_index(()),
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        negation=load_negation(),
+        extractor=build_health_extractor(),
+        segmenter=ClinicalSegmenter(load_sections()),
+    )
+    prep = c.prepare(owner=AgentId("doc_evt_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    evt = next(e for e in log if e.kind == EventKind.FIELDS_EXTRACTED)
+    assert evt.data["fields"] == "duration,laterality,negated,reported_by"
+    assert prep.encounter is not None
+    findings = [f for items in prep.encounter.findings.values() for f in items]
+    assert any(f.negated is not None for f in findings)
+
+
+def test_consultation_sin_negation_inyectado_default_no_cambia_nada(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 32 (§B.5): Sin negation inyectado (default) produce mismos códigos
+    para consulta sin negaciones."""
+    catalog = build_index(
+        (DiagnosticCode("R51", "cefalea aguda", 3, "test"),)
+    )
+    stt = _SpyWhisperSTT(full_text="cefalea aguda intensa")
+    c_default = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+    )
+    c_explicit = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        negation=load_negation(),
+        match_threshold=0.3,
+    )
+    p1 = c_default.prepare(
+        owner=AgentId("doc_def_1"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    p2 = c_explicit.prepare(
+        owner=AgentId("doc_def_2"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert [m.diagnostic.code for m in p1.matches] == [m.diagnostic.code for m in p2.matches]
+    assert [m.score for m in p1.matches] == [m.score for m in p2.matches]
+
+
+def test_default_summary_wording_claves_obligatorias(tmp_path: Path) -> None:
+    """Caso 36 (§B.7): Faltan evidence_template o negated_suffix levanta
+    ValueError que las nombra."""
+    base_dict = {
+        "system_prompt": "Organiza:",
+        "said_template": "Dijo: {}",
+        "history_template": "Historia: {}",
+        "matched_template": "CIE: {}",
+        "no_match_text": "Sin códigos",
+        "professional_label": "MÉDICO",
+        "patient_label": "PACIENTE",
+        "section_template": "### {}\n{}",
+        "confirmed_template": "Códigos confirmados: {}",
+        "no_confirmed_text": "Sin confirmados",
+        "history_codes_template": "Hist: {}",
+        "known_code_suffix": "previo",
+        "evidence_template": "{} · dicho: «{}»",
+        "negated_suffix": "negado",
+    }
+
+    # Falta evidence_template
+    d1 = dict(base_dict)
+    del d1["evidence_template"]
+    p1 = tmp_path / "w1.yaml"
+    p1.write_text(yaml.dump(d1), encoding="utf-8")
+    with pytest.raises(ValueError, match="evidence_template"):
+        default_summary_wording(p1)
+
+    # Falta negated_suffix
+    d2 = dict(base_dict)
+    del d2["negated_suffix"]
+    p2 = tmp_path / "w2.yaml"
+    p2.write_text(yaml.dump(d2), encoding="utf-8")
+    with pytest.raises(ValueError, match="negated_suffix"):
+        default_summary_wording(p2)
+
+    # No es cadena
+    d3 = dict(base_dict)
+    d3["evidence_template"] = 123  # type: ignore[assignment]
+    p3 = tmp_path / "w3.yaml"
+    p3.write_text(yaml.dump(d3), encoding="utf-8")
+    with pytest.raises(ValueError, match="evidence_template"):
+        default_summary_wording(p3)
+
+
+def test_default_summary_wording_pack_real_las_trae() -> None:
+    """Caso 37 (§B.7): El pack real trae evidence_template y negated_suffix en SummaryWording."""
+    w = default_summary_wording()
+    assert w.evidence_template == "{} · dicho: «{}»"
+    assert w.negated_suffix == "negado"
+
 
 
 

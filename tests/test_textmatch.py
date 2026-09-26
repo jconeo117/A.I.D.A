@@ -19,7 +19,7 @@ from collections.abc import Iterator, Mapping
 
 import pytest
 
-from aida.textmatch import _norm, cosine, tokenize, vectorize
+from aida.textmatch import _norm, cosine, fold, token_spans, tokenize, vectorize
 
 # ---------------------------------------------------------------------------
 # Tokenización léxica
@@ -251,4 +251,35 @@ def test_vectorize_con_stopwords_descarta_palabras_indicadas() -> None:
         "dolor": 1,
         "rodilla": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# Plan 68: token_spans y fold (§B.2)
+# ---------------------------------------------------------------------------
+
+
+def test_token_spans_posiciones_utilizables() -> None:
+    """Caso 12 (§B.2): token_spans devuelve posiciones utilizables para reconstruir tramos."""
+    texto = "No refiere fiebre"
+    spans = token_spans(texto)
+    assert len(spans) == 3
+    recortes = tuple(texto[inicio:fin] for _, inicio, fin in spans)
+    assert recortes == ("No", "refiere", "fiebre")
+    tokens = tuple(token for token, _, _ in spans)
+    assert tokens == ("no", "refiere", "fiebre")
+
+
+def test_tokenize_intacto_contrato() -> None:
+    """Caso 13 (§B.2): tokenize devuelve exactamente lo mismo de siempre."""
+    sample = "¡No refiere fiebre, tos ni dolor!"
+    assert tokenize(sample) == ("no", "refiere", "fiebre", "tos", "ni", "dolor")
+
+
+def test_fold_minusculas_y_sin_tildes() -> None:
+    """Caso 14 (§B.2): fold pasa a minúsculas y quita tildes sin tocar puntuación ni espacios."""
+    assert fold("AZÚCAR") == "azucar"
+    assert fold("azúcar") == "azucar"
+    assert fold("AZÚCAR") == fold("azucar")
+    assert fold("¡Hola, mundo!") == "¡hola, mundo!"
+
 

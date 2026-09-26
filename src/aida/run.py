@@ -266,6 +266,7 @@ def _build_consultation(
     from aida.arms.health.lexicon import load_lexicon
     from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
+    from aida.arms.health.negation import load_negation
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
@@ -290,6 +291,7 @@ def _build_consultation(
         segmenter=cast(Any, segmenter),
         extractor=cast(Any, extractor),
         lexicon=load_lexicon(),
+        negation=load_negation(),
         history_layout=load_history_layout(),
         review_metrics=ReviewMetricsStore(_review_metrics_path()),
     )

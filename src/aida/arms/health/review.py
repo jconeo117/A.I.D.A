@@ -86,6 +86,8 @@ def review_encounter(
     log: EventLog,
     refine: Callable[[ClinicalFinding, str], ClinicalFinding],
     known_code_suffix: str | None = None,
+    evidence_template: str | None = None,
+    negated_suffix: str | None = None,
 ) -> ReviewedConsultation:
     """Recorre `grouped_sections` —una tupla, en el orden del catálogo— y no
     `encounter.findings`, que es un mapa: el orden de las preguntas no puede
@@ -104,7 +106,11 @@ def review_encounter(
                 kind=ItemKind.FINDING,
                 ref=f"{spec.section_id}:{position}",
                 label=spec.label,
-                text=finding.text,
+                text=(
+                    f"{finding.text} · {negated_suffix}"
+                    if negated_suffix and finding.negated == finding.text.strip()
+                    else finding.text
+                ),
                 allowed=FINDING_VERDICTS,
             )
             answer = reviewer(item)
@@ -126,15 +132,16 @@ def review_encounter(
 
     confirmed: list[MatchedCode] = []
     for match in matches:
+        descripcion = match.diagnostic.description
+        if known_code_suffix and match.origin is not CodeOrigin.TODAY:
+            descripcion = f"{descripcion} · {known_code_suffix}"
+        if evidence_template and match.evidence:
+            descripcion = evidence_template.format(descripcion, match.evidence)
         item = ReviewItem(
             kind=ItemKind.CODE,
             ref=match.diagnostic.code,
             label=match.diagnostic.code,
-            text=(
-                f"{match.diagnostic.description} · {known_code_suffix}"
-                if known_code_suffix and match.origin is not CodeOrigin.TODAY
-                else match.diagnostic.description
-            ),
+            text=descripcion,
             allowed=CODE_VERDICTS,
         )
         answer = reviewer(item)

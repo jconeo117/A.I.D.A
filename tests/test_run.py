@@ -938,6 +938,7 @@ def test_consultation_cli_segment_print_model(
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             }
         ],
         "medicamentos": [
@@ -946,6 +947,7 @@ def test_consultation_cli_segment_print_model(
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             }
         ],
     }
@@ -1125,6 +1127,7 @@ def test_consultation_cli_segment_extract_print_model(
                 "duration": "2 semanas",
                 "laterality": "derecho",
                 "reported_by": None,
+                "negated": None,
             }
         ],
         "medicamentos": [
@@ -1133,6 +1136,7 @@ def test_consultation_cli_segment_extract_print_model(
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             }
         ],
     }
@@ -1883,6 +1887,7 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
                 "duration": "2 semanas",
                 "laterality": "izquierdo",
                 "reported_by": None,
+                "negated": None,
             }
         ],
         "medicamentos": [
@@ -1891,6 +1896,7 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             }
         ],
     }
@@ -2903,6 +2909,43 @@ def test_identidad_cache_distingue_nube_de_local_no_reutiliza(
     assert res_local[0].text == "Texto desde local"
     # No debió reutilizar la caché de cloud: debió llamar al backend local
     assert mock_local_backend.transcribe_segments.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Pruebas B.8: Inyección de catálogo de negación en la CLI (68-plan-negacion-evidencia.md)
+# ---------------------------------------------------------------------------
+
+
+def test_build_consultation_inyecta_catalogo_negacion_real(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 38 (§B.8): Con --consultation, la CLI inyecta un NegationCatalog
+    no vacío cargado del pack."""
+    import argparse
+    from unittest.mock import MagicMock
+
+    from aida.arms.health.negation import NegationCatalog
+    from aida.run import _build_consultation
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    args = argparse.Namespace(llm=None)
+    consultation = _build_consultation(
+        args,
+        stt=MagicMock(),
+        ocr=MagicMock(),
+        key=key,
+    )
+    assert consultation is not None
+    assert isinstance(consultation._negation, NegationCatalog)
+    assert len(consultation._negation.cues) > 0
+    assert len(consultation._negation.stoppers) > 0
+    assert ("no",) in consultation._negation.cues
+    assert ("pero",) in consultation._negation.stoppers
+
 
 
 

@@ -22,6 +22,7 @@ import pytest
 
 from aida.arms.health.codes import DiagnosticCode, load_catalog
 from aida.arms.health.match import (
+    CodableText,
     CodeOrigin,
     MatchedCode,
     build_index,
@@ -30,6 +31,11 @@ from aida.arms.health.match import (
     match_codes,
     match_codes_each,
 )
+
+
+def _codables(*textos: str) -> tuple[CodableText, ...]:
+    return tuple(CodableText(query=t, source=t) for t in textos)
+
 
 CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "codes.json"
 CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "cie-10.csv"
@@ -221,7 +227,7 @@ def test_match_codes_each_dos_textos_codigos_distintos() -> None:
     )
     index = build_index(catalog)
     textos = ("dolor lumbar agudo", "infección respiratoria alta")
-    matches = match_codes_each(textos, index, threshold=0.3, top_n=5)
+    matches = match_codes_each(_codables(*textos), index, threshold=0.3, top_n=5)
     codes = {m.diagnostic.code for m in matches}
     assert "A01" in codes
     assert "B02" in codes
@@ -235,7 +241,7 @@ def test_match_codes_each_codigo_repetido_conserva_mejor_puntuacion() -> None:
     )
     index = build_index(catalog)
     textos = ("dolor lumbar agudo", "dolor lumbar")
-    matches = match_codes_each(textos, index, threshold=0.5, top_n=5)
+    matches = match_codes_each(_codables(*textos), index, threshold=0.5, top_n=5)
     assert len(matches) == 1
     assert matches[0].diagnostic.code == "A01"
     assert math.isclose(matches[0].score, 1.0)
@@ -265,7 +271,9 @@ def test_match_codes_each_garantiza_mejor_codigo_de_cada_texto() -> None:
     index = build_index(catalog)
     # Texto 1 produce score ~0.7071 para D01..D04.
     # Texto 2 produce score 0.50 para G01.
-    matches = match_codes_each(("diabetes avanzada", "gonartrosis"), index, threshold=0.4, top_n=3)
+    matches = match_codes_each(
+        _codables("diabetes avanzada", "gonartrosis"), index, threshold=0.4, top_n=3
+    )
     assert len(matches) == 3
     codes = [m.diagnostic.code for m in matches]
     assert "G01" in codes, (
@@ -281,7 +289,7 @@ def test_match_codes_each_orden_descendente_score_y_empate_codigo_ascendente() -
         DiagnosticCode(code="M01", description="cefalea intensa", level=3, source="test"),
     )
     index = build_index(catalog)
-    matches = match_codes_each(("cefalea aguda",), index, threshold=0.1, top_n=5)
+    matches = match_codes_each(_codables("cefalea aguda"), index, threshold=0.1, top_n=5)
     codes = [m.diagnostic.code for m in matches]
     # Z01 y A01 empatan en 1.0 -> A01 antes que Z01. M01 tiene menor score -> al final.
     assert codes == ["A01", "Z01", "M01"]
@@ -292,7 +300,7 @@ def test_match_codes_each_sin_textos_o_sin_aciertos_devuelve_tupla_vacia() -> No
     catalog = (DiagnosticCode(code="A01", description="cefalea", level=3, source="test"),)
     index = build_index(catalog)
     assert match_codes_each((), index, threshold=0.5, top_n=5) == ()
-    assert match_codes_each(("fractura de pie",), index, threshold=0.5, top_n=5) == ()
+    assert match_codes_each(_codables("fractura de pie"), index, threshold=0.5, top_n=5) == ()
 
 
 def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None:
@@ -395,8 +403,8 @@ def test_match_by_origin_today_history_y_both_con_mejor_puntuacion() -> None:
     history = ("diabetes mellitus", "hipertensión arterial")
 
     matches = match_by_origin(
-        today=today,
-        history=history,
+        today=_codables(*today),
+        history=_codables(*history),
         index=index,
         threshold=0.5,
         top_n=5,
@@ -429,8 +437,8 @@ def test_match_by_origin_tope_es_por_origen() -> None:
     history = ("asma cronica", "rinitis cronica")
 
     matches = match_by_origin(
-        today=today,
-        history=history,
+        today=_codables(*today),
+        history=_codables(*history),
         index=index,
         threshold=0.5,
         top_n=2,
@@ -455,8 +463,8 @@ def test_match_by_origin_orden_final_puntuacion_descendente_codigo_ascendente() 
     history = ()
 
     matches = match_by_origin(
-        today=today,
-        history=history,
+        today=_codables(*today),
+        history=_codables(*history),
         index=index,
         threshold=0.4,
         top_n=5,
@@ -477,14 +485,14 @@ def test_match_by_origin_history_vacio_todos_today_y_mismo_resultado() -> None:
     today = ("cefalea aguda", "lumbalgia")
 
     matches_origin = match_by_origin(
-        today=today,
+        today=_codables(*today),
         history=(),
         index=index,
         threshold=0.5,
         top_n=5,
     )
     matches_each = match_codes_each(
-        today,
+        _codables(*today),
         index,
         threshold=0.5,
         top_n=5,
@@ -495,5 +503,87 @@ def test_match_by_origin_history_vacio_todos_today_y_mismo_resultado() -> None:
     for mo, me in zip(matches_origin, matches_each, strict=True):
         assert mo.diagnostic.code == me.diagnostic.code
         assert math.isclose(mo.score, me.score)
+
+
+# ---------------------------------------------------------------------------
+# Pruebas B.4: Evidencia en el cotejo (68-plan-negacion-evidencia.md)
+# ---------------------------------------------------------------------------
+
+
+def test_match_codes_each_evidencia_es_la_frase_fuente() -> None:
+    """Caso 20 (§B.4): La evidencia es la frase fuente, no el término sintético."""
+    catalog = (
+        DiagnosticCode(code="E11", description="diabetes mellitus tipo 2", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    codable = CodableText(query="diabetes mellitus", source="sufro del azúcar")
+    matches = match_codes_each((codable,), index, threshold=0.4, top_n=5)
+    assert len(matches) == 1
+    assert matches[0].diagnostic.code == "E11"
+    assert matches[0].evidence == "sufro del azúcar"
+
+
+def test_match_codes_each_gana_frase_de_mejor_puntuacion() -> None:
+    """Caso 21 (§B.4): Gana la frase que produjo la mejor puntuación del código."""
+    catalog = (
+        DiagnosticCode(code="E11", description="diabetes mellitus", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    c1 = CodableText(query="diabetes", source="frase con diabetes leve")
+    c2 = CodableText(query="diabetes mellitus", source="frase exacta diabetes mellitus")
+    matches = match_codes_each((c1, c2), index, threshold=0.4, top_n=5)
+    assert len(matches) == 1
+    assert matches[0].evidence == "frase exacta diabetes mellitus"
+
+
+def test_match_codes_each_empate_gana_la_primera() -> None:
+    """Caso 22 (§B.4): En empate de puntuación, gana la primera frase que apareció."""
+    catalog = (
+        DiagnosticCode(code="R51", description="cefalea aguda", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    c1 = CodableText(query="cefalea aguda", source="primera mención de dolor")
+    c2 = CodableText(query="cefalea aguda", source="segunda mención de dolor")
+    matches = match_codes_each((c1, c2), index, threshold=0.4, top_n=5)
+    assert len(matches) == 1
+    assert matches[0].evidence == "primera mención de dolor"
+
+
+def test_match_codes_no_inventa_evidencia() -> None:
+    """Caso 23 (§B.4): match_codes de bajo nivel sigue devolviendo evidence=""."""
+    catalog = (
+        DiagnosticCode(code="R51", description="cefalea aguda", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes("cefalea aguda", index, threshold=0.4, top_n=5)
+    assert len(matches) == 1
+    assert matches[0].evidence == ""
+
+
+def test_match_by_origin_propaga_evidencia_en_todos_los_origenes() -> None:
+    """Caso 24 (§B.4): match_by_origin propaga la evidencia en TODAY, HISTORY y BOTH."""
+    catalog = (
+        DiagnosticCode(code="A01", description="cefalea intensa", level=3, source="test"),
+        DiagnosticCode(code="B02", description="hipertensión arterial", level=3, source="test"),
+        DiagnosticCode(code="C03", description="asma bronquial", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    today = (
+        CodableText(query="cefalea intensa", source="dijo cefalea hoy"),
+        CodableText(query="hipertensión", source="dijo hipertensión hoy"),
+    )
+    history = (
+        CodableText(query="hipertensión arterial", source="antecedente de hipertensión"),
+        CodableText(query="asma bronquial", source="antecedente de asma"),
+    )
+    matches = match_by_origin(today=today, history=history, index=index, threshold=0.4, top_n=5)
+    por_codigo = {m.diagnostic.code: m for m in matches}
+    assert por_codigo["A01"].origin == CodeOrigin.TODAY
+    assert por_codigo["A01"].evidence == "dijo cefalea hoy"
+    assert por_codigo["C03"].origin == CodeOrigin.HISTORY
+    assert por_codigo["C03"].evidence == "antecedente de asma"
+    assert por_codigo["B02"].origin == CodeOrigin.BOTH
+    assert por_codigo["B02"].evidence == "antecedente de hipertensión"
+
 
 

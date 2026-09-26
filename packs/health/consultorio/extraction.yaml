@@ -2,3 +2,25 @@ laterality:
   bilateral: ["bilateral", "ambos", "ambos lados", "los dos", "las dos"]
   derecho: ["derecho", "derecha"]
   izquierdo: ["izquierdo", "izquierda"]
+
+# Qué abre una negación y qué la cierra. En datos porque cambia con el país y
+# con la especialidad, y porque el motor no sabe en qué dominio corre. Los
+# cortadores se prueban ANTES que las señales: sin esa precedencia, «sin
+# embargo» abriría un ámbito por su primera palabra en vez de cerrar el que
+# estuviera abierto.
+negation:
+  cues:
+    - "ausencia de"
+    - "descarta"
+    - "descartamos"
+    - "niega"
+    - "no"
+    - "nunca"
+    - "sin"
+    - "tampoco"
+  stoppers:
+    - "aunque"
+    - "excepto"
+    - "pero"
+    - "salvo"
+    - "sin embargo"

@@ -13,11 +13,14 @@ Cubre:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aida.arms.health.extract import (
     ClinicalExtractor,
     build_health_extractor,
     extract_reported_by,
 )
+from aida.arms.health.laterality import LateralityCatalog
 from aida.arms.health.model import ClinicalFinding
 
 
@@ -136,3 +139,64 @@ def test_clinical_extractor_sin_coincidencias_conserva_nones() -> None:
     assert enriched.duration is None
     assert enriched.laterality is None
     assert enriched.reported_by is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 68: Extracción de negated (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_clinical_extractor_rellena_negated() -> None:
+    """Caso 15 (§B.3): El extractor rellena negated en hallazgo con negación."""
+    extractor = build_health_extractor()
+    finding = ClinicalFinding(text="No refiere fiebre", section_id="motivo")
+    enriched = extractor.extract(finding, professional_label=None, patient_label=None)
+    assert enriched.negated == "No refiere fiebre"
+
+
+def test_clinical_extractor_sin_negacion_negated_is_none() -> None:
+    """Caso 16 (§B.3): Sin negación, negated es None (no cadena vacía)."""
+    extractor = build_health_extractor()
+    finding = ClinicalFinding(text="Refiere dolor de cabeza", section_id="motivo")
+    enriched = extractor.extract(finding, professional_label=None, patient_label=None)
+    assert enriched.negated is None
+
+
+def test_clinical_extractor_catalogo_por_defecto_vacio() -> None:
+    """Caso 17 (§B.3): Catálogo por defecto vacío deja negated=None incluso si hay negación."""
+    extractor = ClinicalExtractor(laterality=LateralityCatalog(categories=()))
+    finding = ClinicalFinding(text="No refiere fiebre", section_id="motivo")
+    enriched = extractor.extract(finding, professional_label=None, patient_label=None)
+    assert enriched.negated is None
+
+
+def test_build_health_extractor_carga_ambas_cosas(tmp_path: Path) -> None:
+    """Caso 18 (§B.3): build_health_extractor carga lateralidad y negación del mismo archivo."""
+    yaml_path = tmp_path / "custom_extraction.yaml"
+    yaml_path.write_text(
+        "laterality:\n"
+        "  derecho: ['derecho']\n"
+        "negation:\n"
+        "  cues:\n"
+        "    - 'niega'\n"
+        "  stoppers:\n"
+        "    - 'pero'\n",
+        encoding="utf-8",
+    )
+    extractor = build_health_extractor(yaml_path)
+    assert extractor.laterality.find("ojo derecho") == "derecho"
+    assert extractor.negation.cues == (("niega",),)
+
+
+def test_clinical_extractor_duration_y_laterality_sobre_texto_entero() -> None:
+    """Caso 19 (§B.3): duration y laterality siguen saliendo del texto entero
+    aunque haya negación."""
+    extractor = build_health_extractor()
+    finding = ClinicalFinding(
+        text="No le duele el ojo derecho desde hace dos semanas", section_id="motivo"
+    )
+    enriched = extractor.extract(finding, professional_label=None, patient_label=None)
+    assert enriched.laterality == "derecho"
+    assert enriched.duration == "2 semanas"
+    assert enriched.negated is not None
+

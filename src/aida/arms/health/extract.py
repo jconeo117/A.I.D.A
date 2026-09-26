@@ -12,6 +12,7 @@ from pathlib import Path
 
 from aida.arms.health.laterality import LateralityCatalog, load_laterality
 from aida.arms.health.model import ClinicalFinding
+from aida.arms.health.negation import NO_NEGATION, NegationCatalog, load_negation, split_polarity
 from aida.timeparse import find_duration
 
 
@@ -31,6 +32,7 @@ def extract_reported_by(text: str, *, professional_label: str, patient_label: st
 @dataclass(frozen=True, slots=True)
 class ClinicalExtractor:
     laterality: LateralityCatalog
+    negation: NegationCatalog = NO_NEGATION
 
     def extract(
         self,
@@ -44,13 +46,15 @@ class ClinicalExtractor:
             reported_by = extract_reported_by(
                 finding.text, professional_label=professional_label, patient_label=patient_label
             )
+        partes = split_polarity(finding.text, self.negation)
         return replace(
             finding,
             duration=find_duration(finding.text),
             laterality=self.laterality.find(finding.text),
             reported_by=reported_by,
+            negated=partes.negated or None,
         )
 
 
 def build_health_extractor(path: Path | None = None) -> ClinicalExtractor:
-    return ClinicalExtractor(laterality=load_laterality(path))
+    return ClinicalExtractor(laterality=load_laterality(path), negation=load_negation(path))

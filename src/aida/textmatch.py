@@ -12,14 +12,39 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Mapping
 
 _TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9áéíóúüñÁÉÍÓÚÜÑ]+")
 
 
+def token_spans(text: str) -> tuple[tuple[str, int, int], ...]:
+    """Cada palabra con su posición en el texto original: `(token, inicio,
+    fin)`. Existe porque quien necesita reconstruir un tramo *tal como se
+    dijo* —no una bolsa de palabras— no puede hacerlo desde `tokenize`, y
+    duplicar el patrón de tokens serían dos puertas para el mismo
+    mecanismo."""
+    return tuple(
+        (match.group(0).lower(), match.start(), match.end())
+        for match in _TOKEN_PATTERN.finditer(text)
+    )
+
+
 def tokenize(text: str) -> tuple[str, ...]:
     """Palabras en minúscula, sin puntuación. Nada de raíces ni sinónimos."""
-    return tuple(match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text))
+    return tuple(token for token, _, _ in token_spans(text))
+
+
+def fold(text: str) -> str:
+    """Minúsculas y sin tildes. Un transcriptor escribe «azucar» tanto como
+    «azúcar», y ningún vocabulario declarado en datos puede depender de cuál
+    de las dos salga. Vive aquí y no en cada consumidor: ya hubo dos copias
+    privadas de esto."""
+    return "".join(
+        c
+        for c in unicodedata.normalize("NFD", text.lower())
+        if unicodedata.category(c) != "Mn"
+    )
 
 
 def vectorize(text: str, *, stopwords: frozenset[str] = frozenset()) -> dict[str, int]:

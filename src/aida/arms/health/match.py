@@ -78,6 +78,18 @@ def build_index(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class CodableText:
+    """Lo que se coteja y la frase de la que salió. Van juntas porque no
+    siempre coinciden: un término del léxico clínico se consulta como texto
+    propio («diabetes mellitus») y la frase que lo motivó es otra («sufro del
+    azúcar»). Mostrar el término sintético como evidencia diría al profesional
+    algo que nadie dijo."""
+
+    query: str
+    source: str
+
+
 class CodeOrigin(StrEnum):
     """De dónde salió el código. Es la distinción entre un diagnóstico de hoy y
     uno que ya constaba, que `AIDA-health.md` pide en su Fase 4 y que el
@@ -93,29 +105,35 @@ class MatchedCode:
     diagnostic: DiagnosticCode
     score: float
     origin: CodeOrigin = CodeOrigin.TODAY
+    evidence: str = ""
+    """La frase que produjo la mejor puntuación de este código. Vacía solo
+    cuando el cotejo se hizo por la puerta de un texto suelto (`match_codes`),
+    que no sabe de qué frase viene."""
 
 
 def match_codes_each(
-    texts: tuple[str, ...], index: CatalogIndex, *, threshold: float, top_n: int
+    texts: tuple[CodableText, ...], index: CatalogIndex, *, threshold: float, top_n: int
 ) -> tuple[MatchedCode, ...]:
     """Coteja **cada texto por separado** y funde los resultados.
 
     Cotejar un texto largo contra descripciones de seis palabras hunde todas
     las puntuaciones: medido, la consulta entera no alcanzaba ningún umbral
     razonable mientras que sus frases sueltas sí. Un código que aparece en
-    varias frases se queda con su mejor puntuación, y el orden final es el de
-    siempre: puntuación descendente y, en empate, código ascendente.
+    varias frases se queda con su mejor puntuación —y con la frase que la
+    produjo, que es lo que el profesional necesita para juzgarlo—, y el orden
+    final es el de siempre: puntuación descendente y, en empate, código
+    ascendente.
     """
     mejor: dict[str, MatchedCode] = {}
     primeros: list[str] = []
-    for texto in texts:
+    for codable in texts:
         for posicion, encontrado in enumerate(
-            match_codes(texto, index, threshold=threshold, top_n=top_n)
+            match_codes(codable.query, index, threshold=threshold, top_n=top_n)
         ):
             codigo = encontrado.diagnostic.code
             previo = mejor.get(codigo)
             if previo is None or encontrado.score > previo.score:
-                mejor[codigo] = encontrado
+                mejor[codigo] = replace(encontrado, evidence=codable.source)
             if posicion == 0 and codigo not in primeros:
                 primeros.append(codigo)
 
@@ -155,8 +173,8 @@ def match_codes(
 
 def match_by_origin(
     *,
-    today: tuple[str, ...],
-    history: tuple[str, ...],
+    today: tuple[CodableText, ...],
+    history: tuple[CodableText, ...],
     index: CatalogIndex,
     threshold: float,
     top_n: int,

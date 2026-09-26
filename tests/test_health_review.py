@@ -524,3 +524,33 @@ def test_review_encounter_evento_codigo_lleva_origin_hallazgo_no() -> None:
     assert len(codigos) == 1
     assert "origin" in codigos[0].data
     assert codigos[0].data["origin"] == "history"
+
+
+def test_review_encounter_sin_textos_nuevos_comportamiento_identico() -> None:
+    """Caso 34 (§B.6): review_encounter sin los textos nuevos se comporta exactamente como antes."""
+    owner, spec1, _spec2, f1, _f2, _encounter, _grouped_sections, m1, _m2, _matches = (
+        _crear_fixture_base()
+    )
+    f_neg = replace(f1, negated=f1.text)
+    m_ev = replace(m1, evidence="frase con migraña")
+    enc = Encounter(owner=owner, findings={"motivo": (f_neg,)})
+
+    items: list[ReviewItem] = []
+
+    def _reviewer(it: ReviewItem) -> Answer:
+        items.append(it)
+        return Answer(Verdict.CONFIRMED)
+
+    review_encounter(
+        owner=owner,
+        grouped_sections=((spec1, (f_neg.text,)),),
+        encounter=enc,
+        matches=(m_ev,),
+        reviewer=_reviewer,
+        log=EventLog(),
+        refine=lambda f, t: f,
+    )
+    assert len(items) == 2
+    assert items[0].text == f1.text  # Sin sufijo negado
+    assert items[1].text == m1.diagnostic.description  # Sin plantilla de evidencia
+

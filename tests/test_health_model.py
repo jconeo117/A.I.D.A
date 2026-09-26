@@ -102,8 +102,8 @@ def test_to_dict_conserva_orden_no_alfabetico() -> None:
 
 
 def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
-    """7.4: `to_dict()` devuelve una lista de diccionarios con las cuatro claves:
-    'text', 'duration', 'laterality', 'reported_by', los tres últimos en None cuando
+    """7.4: `to_dict()` devuelve una lista de diccionarios con las cinco claves:
+    'text', 'duration', 'laterality', 'reported_by', 'negated', los cuatro últimos en None cuando
     no hubo extracción, sin incluir el `section_id` dentro de las listas.
     """
     owner = AgentId("doc")
@@ -123,12 +123,14 @@ def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             },
             {
                 "text": "inició ayer",
                 "duration": None,
                 "laterality": None,
                 "reported_by": None,
+                "negated": None,
             },
         ]
     }
@@ -136,20 +138,23 @@ def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
         assert isinstance(items, list)
         for item in items:
             assert isinstance(item, dict)
-            assert set(item.keys()) == {"text", "duration", "laterality", "reported_by"}
+            assert set(item.keys()) == {"text", "duration", "laterality", "reported_by", "negated"}
             assert item["duration"] is None
             assert item["laterality"] is None
             assert item["reported_by"] is None
+            assert item["negated"] is None
 
 
 def test_to_dict_con_campos_extraidos() -> None:
-    """7.4: `to_dict()` preserva duration, laterality y reported_by cuando están presentes."""
+    """7.4: `to_dict()` preserva duration, laterality, reported_by y negated
+    cuando están presentes."""
     finding = ClinicalFinding(
         text="dolor en ojo derecho hace 2 semanas",
         section_id="motivo_consulta",
         duration="2 semanas",
         laterality="derecho",
         reported_by="Paciente",
+        negated=None,
     )
     encounter = Encounter(
         owner=AgentId("doc"),
@@ -162,6 +167,25 @@ def test_to_dict_con_campos_extraidos() -> None:
                 "duration": "2 semanas",
                 "laterality": "derecho",
                 "reported_by": "Paciente",
+                "negated": None,
             }
         ]
     }
+
+
+def test_to_dict_trae_negated_como_ultima_clave() -> None:
+    """Caso 33 (§B.6): to_dict trae negated como última clave de cada hallazgo,
+    con None si no hay."""
+    finding = ClinicalFinding(
+        text="No refiere fiebre",
+        section_id="motivo_consulta",
+        negated="No refiere fiebre",
+    )
+    encounter = Encounter(owner=AgentId("doc"), findings={"motivo_consulta": (finding,)})
+    d = encounter.to_dict()
+    item = d["motivo_consulta"][0]
+    keys = list(item.keys())
+    assert keys == ["text", "duration", "laterality", "reported_by", "negated"]
+    assert keys[-1] == "negated"
+    assert item["negated"] == "No refiere fiebre"
+
