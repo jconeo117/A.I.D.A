@@ -176,6 +176,48 @@ def _review_metrics_path() -> Path:
     return Path.home() / ".local" / "share" / "aida" / "revisiones.jsonl"
 
 
+def _transcription(stt: object, ajustes: object) -> object:
+    """El transcriptor que verá la consulta: la nube si el pack la declara, con
+    el modelo local de respaldo.
+
+    Si falta la credencial, no se avisa a medias ni se falla: se usa el local y
+    se dice. Un consultorio sin clave tiene que poder trabajar."""
+    import os
+
+    from aida.arms.health.transcription import CloudWhisperSTT, FallbackTranscription
+
+    settings: Any = ajustes
+    if settings.provider != "cloud":
+        return stt
+    api_key = os.environ.get("AIDA_STT_API_KEY")
+    if not api_key:
+        print(
+            "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local",
+            file=sys.stderr,
+        )
+        return stt
+
+    import httpx
+
+    http = httpx.Client(
+        base_url=settings.cloud_base_url,
+        timeout=settings.timeout_seconds,
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    nube = CloudWhisperSTT(
+        http, model=settings.cloud_model, language=settings.cloud_language
+    )
+
+    def aviso(notice: object) -> None:
+        print(
+            f"aida: aviso: la transcripción en la nube falló, se usa el modelo local "
+            f"({getattr(notice, 'reason', '')[:120]})",
+            file=sys.stderr,
+        )
+
+    return FallbackTranscription(nube, cast(Any, stt), on_fallback=aviso)
+
+
 def _cached_stt(stt: object, key: str) -> object:
     """El STT con la caché de transcripciones delante. Medido: transcribir siete
     minutos cuesta ~105 s y el resto de la tubería 0,8, así que reanudar una
@@ -184,6 +226,7 @@ def _cached_stt(stt: object, key: str) -> object:
     from aida.arms.health.transcripts import CachedSTT, TranscriptCache
 
     ajustes = load_capture_settings()
+    stt = _transcription(stt, ajustes)
     cache = TranscriptCache(
         Path.home() / ".cache" / "aida" / "transcripciones", key=key.encode()
     )
@@ -191,7 +234,7 @@ def _cached_stt(stt: object, key: str) -> object:
     return CachedSTT(
         stt,
         cache,
-        model=ajustes.model,
+        model=f"{ajustes.provider}:{ajustes.cloud_model}:{ajustes.model}",
         no_speech_threshold=ajustes.no_speech_threshold,
     )
 

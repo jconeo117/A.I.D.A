@@ -49,6 +49,11 @@ class CaptureSettings:
     device: str
     no_speech_threshold: float
     abbreviations: tuple[str, ...]
+    provider: str
+    cloud_model: str
+    cloud_language: str
+    cloud_base_url: str
+    timeout_seconds: float
 
 
 def load_capture_settings(path: Path | None = None) -> CaptureSettings:
@@ -59,7 +64,19 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
     if not isinstance(raw, dict):
         raise ValueError(f"{ruta} debe ser un mapeo YAML")
     faltan = [
-        k for k in ("model", "device", "no_speech_threshold", "abbreviations") if k not in raw
+        k
+        for k in (
+            "model",
+            "device",
+            "no_speech_threshold",
+            "abbreviations",
+            "provider",
+            "cloud_model",
+            "cloud_language",
+            "cloud_base_url",
+            "timeout_seconds",
+        )
+        if k not in raw
     ]
     if faltan:
         raise ValueError(f"faltan claves en {ruta}: {faltan}")
@@ -69,11 +86,22 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
     abreviaturas = raw["abbreviations"]
     if not isinstance(abreviaturas, list) or not all(isinstance(a, str) for a in abreviaturas):
         raise ValueError(f"'abbreviations' debe ser una lista de cadenas en {ruta}")
+    proveedor = str(raw["provider"]).lower()
+    if proveedor not in ("cloud", "local"):
+        raise ValueError(f"'provider' debe ser 'cloud' o 'local' en {ruta}")
+    espera = raw["timeout_seconds"]
+    if not isinstance(espera, int | float) or isinstance(espera, bool) or espera <= 0:
+        raise ValueError(f"'timeout_seconds' debe ser un número positivo en {ruta}")
     return CaptureSettings(
         model=str(raw["model"]),
         device=str(raw["device"]),
         no_speech_threshold=float(umbral),
         abbreviations=tuple(a.lower() for a in abreviaturas),
+        provider=proveedor,
+        cloud_model=str(raw["cloud_model"]),
+        cloud_language=str(raw["cloud_language"]),
+        cloud_base_url=str(raw["cloud_base_url"]),
+        timeout_seconds=float(espera),
     )
 
 

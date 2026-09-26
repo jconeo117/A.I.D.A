@@ -308,6 +308,9 @@ def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
 
 
+_AVISO_FALTA_KEY = "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local\n"
+
+
 def test_converse_flujo_entrada_stdin_termina_con_cero_e_imprime_respuesta(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -763,7 +766,7 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
     assert "- La historia registra:" in captured.out
     assert "El paciente refiere cefalea" in captured.out
     assert "cefalea tensional" in captured.out
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
     # Comprueba que el caché cifrado fue escrito en disco y es descifrable con la clave
     cache_file = tmp_path / ".cache" / "aida" / "consultas" / "paciente_test_cli.cache"
@@ -843,7 +846,7 @@ def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
     assert "### Medicamentos" in captured.out
     assert "se receta ibuprofeno cada 8 horas" in captured.out
     assert "- El paciente dijo:" not in captured.out
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
 
 def test_consultation_cli_segment_print_model(
@@ -914,7 +917,7 @@ def test_consultation_cli_segment_print_model(
 
     captured = capsys.readouterr()
     assert codigo == 0
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
     # Extraer el JSON tras el resumen en stdout
     json_start = captured.out.find("{")
@@ -1107,7 +1110,7 @@ def test_consultation_cli_segment_extract_print_model(
 
     captured = capsys.readouterr()
     assert codigo == 0
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
     # Extraer el JSON tras el resumen en stdout
     json_start = captured.out.find("{")
@@ -1203,7 +1206,7 @@ def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
     captured = capsys.readouterr()
     assert codigo == 0
     assert captured.out.startswith("VOZ DEL MODELO EN EL RESUMEN")
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
 
 def test_default_summary_wording_desde_cwd_arbitrario_no_lanza_filenotfound(
@@ -1325,7 +1328,7 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
     assert "- La historia registra:" in captured.out
     assert "El paciente refiere cefalea" in captured.out
     assert "cefalea tensional" in captured.out
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1865,7 +1868,7 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
 
     captured = capsys.readouterr()
     assert codigo == 0
-    assert captured.err == ""
+    assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
     # Extraer el JSON tras el resumen en stdout
     json_start = captured.out.find("{")
@@ -2749,6 +2752,157 @@ def test_consultation_cli_cached_stt_clave_distinta_vuelve_a_transcribir(
     codigo2 = main(cmd)
     assert codigo2 == 0
     assert transcribe_calls == 2
+
+
+# ---------------------------------------------------------------------------
+# Plan 67: Puerto de transcripción (nube y respaldo local) (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_provider_local_no_construye_cliente_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 12: Con provider: local, no se construye ningún cliente HTTP:
+    el transcriptor que llega a la consulta es el local tal cual.
+    """
+    from aida.arms.health.capture import CaptureSettings
+    from aida.run import _transcription
+
+    cliente_construido = False
+
+    def mock_httpx_client(*args: Any, **kwargs: Any) -> Any:
+        nonlocal cliente_construido
+        cliente_construido = True
+        raise AssertionError("No debió construirse ningún httpx.Client con provider: local")
+
+    monkeypatch.setattr("httpx.Client", mock_httpx_client, raising=False)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "clave-prueba-para-test")
+
+    ajustes = CaptureSettings(
+        model="small",
+        device="cpu",
+        no_speech_threshold=0.6,
+        abbreviations=(),
+        provider="local",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
+    )
+    stt_base = MagicMock()
+    resultado = _transcription(stt_base, ajustes)
+    assert resultado is stt_base
+    assert not cliente_construido
+
+
+def test_transcription_provider_cloud_sin_api_key_usa_local_y_avisa_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 13: Con provider: cloud y sin AIDA_STT_API_KEY: se usa el local
+    y stderr lo avisa.
+    """
+    from aida.arms.health.capture import CaptureSettings
+    from aida.run import _transcription
+
+    monkeypatch.delenv("AIDA_STT_API_KEY", raising=False)
+
+    ajustes = CaptureSettings(
+        model="small",
+        device="cpu",
+        no_speech_threshold=0.6,
+        abbreviations=(),
+        provider="cloud",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
+    )
+    stt_base = MagicMock()
+    resultado = _transcription(stt_base, ajustes)
+
+    assert resultado is stt_base
+    captured = capsys.readouterr()
+    assert "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local" in captured.err
+
+
+def test_identidad_cache_distingue_nube_de_local_no_reutiliza(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 14: La identidad de la caché distingue nube de local: el mismo audio
+    transcrito con provider: cloud y luego con local no reutiliza la primera transcripción.
+    """
+    from aida.arms.health.capture import CaptureSettings
+    from aida.arms.health.transcripts import CachedSTT
+    from aida.run import _cached_stt
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    audio = tmp_path / "consulta.wav"
+    audio.write_bytes(b"RIFF dummy audio bytes para distincion de cache")
+
+    # 1. Ejecución con provider: cloud
+    ajustes_cloud = CaptureSettings(
+        model="small",
+        device="cpu",
+        no_speech_threshold=0.6,
+        abbreviations=(),
+        provider="cloud",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
+    )
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda *args: ajustes_cloud,
+    )
+
+    mock_cloud_backend = MagicMock()
+    mock_seg_cloud = MagicMock()
+    mock_seg_cloud.start = 0.0
+    mock_seg_cloud.end = 2.0
+    mock_seg_cloud.text = "Texto desde nube"
+    mock_cloud_backend.transcribe_segments.return_value = (mock_seg_cloud,)
+
+    stt_cloud = _cached_stt(mock_cloud_backend, key)
+    assert isinstance(stt_cloud, CachedSTT)
+    res_cloud = stt_cloud.transcribe_segments(audio)
+    assert res_cloud[0].text == "Texto desde nube"
+    assert mock_cloud_backend.transcribe_segments.call_count == 1
+
+    # 2. Ejecución con provider: local sobre el mismo audio
+    ajustes_local = CaptureSettings(
+        model="small",
+        device="cpu",
+        no_speech_threshold=0.6,
+        abbreviations=(),
+        provider="local",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
+    )
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda *args: ajustes_local,
+    )
+
+    mock_local_backend = MagicMock()
+    mock_seg_local = MagicMock()
+    mock_seg_local.start = 0.0
+    mock_seg_local.end = 2.0
+    mock_seg_local.text = "Texto desde local"
+    mock_local_backend.transcribe_segments.return_value = (mock_seg_local,)
+
+    stt_local = _cached_stt(mock_local_backend, key)
+    assert isinstance(stt_local, CachedSTT)
+    res_local = stt_local.transcribe_segments(audio)
+    assert res_local[0].text == "Texto desde local"
+    # No debió reutilizar la caché de cloud: debió llamar al backend local
+    assert mock_local_backend.transcribe_segments.call_count == 1
 
 
 

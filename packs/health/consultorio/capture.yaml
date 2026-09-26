@@ -2,6 +2,19 @@
 # elegir modelo o dispositivo es una decisión de despliegue, y el guardián de
 # vocabulario (tests/test_agnosticism.py) prohíbe nombres de hardware dentro
 # de src/.
+
+# Transcripción: la nube hace el trabajo pesado para que AIDA funcione en el
+# equipo que tenga el profesional, y el modelo local es la red de seguridad. Si
+# la nube falla, tarda más pero no se detiene.
+#
+# `provider: local` desactiva la nube por completo, para un consultorio sin
+# internet o para una clínica que no autorice sacar los datos.
+provider: cloud
+cloud_model: whisper-1
+cloud_language: es
+cloud_base_url: https://api.openai.com
+timeout_seconds: 120.0
+
 model: small
 device: cpu
 no_speech_threshold: 0.6

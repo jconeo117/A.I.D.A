@@ -210,11 +210,21 @@ def test_transcribe_no_envia_vad_filter(tmp_path: Path) -> None:
 
 
 def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
-    """Caso 10 (base): load_capture_settings sobre un YAML completo devuelve tipos;
-    el del pack real carga."""
+    """Caso 10: load_capture_settings sobre un YAML completo devuelve tipos;
+    el del pack real carga con provider == 'cloud' y los cinco campos nuevos."""
     yaml_path = tmp_path / "capture.yaml"
     yaml_path.write_text(
-        "model: medium\ndevice: cpu\nno_speech_threshold: 0.55\nabbreviations:\n  - dr.\n  - mg.\n",
+        "provider: cloud\n"
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "timeout_seconds: 120.0\n"
+        "model: medium\n"
+        "device: cpu\n"
+        "no_speech_threshold: 0.55\n"
+        "abbreviations:\n"
+        "  - dr.\n"
+        "  - mg.\n",
         encoding="utf-8",
     )
     settings = load_capture_settings(yaml_path)
@@ -223,12 +233,22 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     assert settings.no_speech_threshold == 0.55
     assert isinstance(settings.no_speech_threshold, float)
     assert settings.abbreviations == ("dr.", "mg.")
+    assert settings.provider == "cloud"
+    assert settings.cloud_model == "whisper-1"
+    assert settings.cloud_language == "es"
+    assert settings.cloud_base_url == "https://api.openai.com"
+    assert settings.timeout_seconds == 120.0
 
     real = load_capture_settings()
     assert real.model == "small"
     assert real.device == "cpu"
     assert real.no_speech_threshold == 0.6
     assert "dr." in real.abbreviations
+    assert real.provider == "cloud"
+    assert real.cloud_model == "whisper-1"
+    assert real.cloud_language == "es"
+    assert real.cloud_base_url == "https://api.openai.com"
+    assert real.timeout_seconds == 120.0
 
 
 def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
@@ -236,18 +256,75 @@ def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
     nombrando la clave."""
     sin_device = tmp_path / "sin_device.yaml"
     sin_device.write_text(
-        "model: small\nno_speech_threshold: 0.6\nabbreviations:\n  - dr.\n", encoding="utf-8"
+        "provider: cloud\n"
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "timeout_seconds: 120.0\n"
+        "model: small\n"
+        "no_speech_threshold: 0.6\n"
+        "abbreviations:\n"
+        "  - dr.\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"faltan claves.*device"):
         load_capture_settings(sin_device)
 
     umbral_str = tmp_path / "umbral_str.yaml"
     umbral_str.write_text(
-        "model: small\ndevice: cpu\nno_speech_threshold: alto\nabbreviations:\n  - dr.\n",
+        "provider: cloud\n"
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "timeout_seconds: 120.0\n"
+        "model: small\n"
+        "device: cpu\n"
+        "no_speech_threshold: alto\n"
+        "abbreviations:\n"
+        "  - dr.\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"no_speech_threshold.*numérico"):
         load_capture_settings(umbral_str)
+
+
+def test_load_capture_settings_provider_y_timeout_invalidos_nombran_clave(tmp_path: Path) -> None:
+    """Caso 11: provider distinto de 'cloud' o 'local' da ValueError nombrando la clave.
+    timeout_seconds <= 0 o no numérico da ValueError nombrando la clave."""
+    base_yaml = (
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "model: small\n"
+        "device: cpu\n"
+        "no_speech_threshold: 0.6\n"
+        "abbreviations:\n  - dr.\n"
+    )
+
+    p_invalido = tmp_path / "provider_invalido.yaml"
+    p_invalido.write_text(f"provider: nube\ntimeout_seconds: 120.0\n{base_yaml}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"'provider' debe ser 'cloud' o 'local'"):
+        load_capture_settings(p_invalido)
+
+    t_cero = tmp_path / "timeout_cero.yaml"
+    t_cero.write_text(f"provider: cloud\ntimeout_seconds: 0\n{base_yaml}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"'timeout_seconds' debe ser un número positivo"):
+        load_capture_settings(t_cero)
+
+    t_neg = tmp_path / "timeout_negativo.yaml"
+    t_neg.write_text(f"provider: cloud\ntimeout_seconds: -10.5\n{base_yaml}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"'timeout_seconds' debe ser un número positivo"):
+        load_capture_settings(t_neg)
+
+    t_str = tmp_path / "timeout_str.yaml"
+    t_str.write_text(f"provider: cloud\ntimeout_seconds: '120'\n{base_yaml}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"'timeout_seconds' debe ser un número positivo"):
+        load_capture_settings(t_str)
+
+    t_bool = tmp_path / "timeout_bool.yaml"
+    t_bool.write_text(f"provider: cloud\ntimeout_seconds: true\n{base_yaml}", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"'timeout_seconds' debe ser un número positivo"):
+        load_capture_settings(t_bool)
 
 
 def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
@@ -267,7 +344,15 @@ def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
     monkeypatch.setitem(sys.modules, "pytesseract", _modulo_doble("pytesseract"))
 
     settings = CaptureSettings(
-        model="base", device="cpu", no_speech_threshold=0.75, abbreviations=("dr.",)
+        model="base",
+        device="cpu",
+        no_speech_threshold=0.75,
+        abbreviations=("dr.",),
+        provider="cloud",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
     )
     stt, _ocr = build_local_capture(settings)
     assert recibidos["model"] == "base"
@@ -337,6 +422,11 @@ def test_load_capture_settings_abreviaturas_minusculas_y_pack_real(tmp_path: Pat
     """Caso 11: load_capture_settings devuelve abreviaturas en minúsculas y el pack real carga."""
     yaml_path = tmp_path / "capture.yaml"
     yaml_path.write_text(
+        "provider: cloud\n"
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "timeout_seconds: 120.0\n"
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\n"
         "abbreviations:\n  - Dr.\n  - MG.\n  - ETC.\n",
         encoding="utf-8",
@@ -355,16 +445,23 @@ def test_load_capture_settings_sin_o_invalido_abbreviations_levanta_value_error(
     tmp_path: Path,
 ) -> None:
     """Caso 12: sin abbreviations o no siendo lista de cadenas -> ValueError nombrando la clave."""
+    prefijo = (
+        "provider: cloud\n"
+        "cloud_model: whisper-1\n"
+        "cloud_language: es\n"
+        "cloud_base_url: https://api.openai.com\n"
+        "timeout_seconds: 120.0\n"
+    )
     sin_abbrevs = tmp_path / "sin_abbrevs.yaml"
     sin_abbrevs.write_text(
-        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\n", encoding="utf-8"
+        f"{prefijo}model: small\ndevice: cpu\nno_speech_threshold: 0.6\n", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"faltan claves.*abbreviations"):
         load_capture_settings(sin_abbrevs)
 
     no_lista = tmp_path / "no_lista.yaml"
     no_lista.write_text(
-        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: dr.\n",
+        f"{prefijo}model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: dr.\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'abbreviations' debe ser una lista de cadenas"):
@@ -372,7 +469,7 @@ def test_load_capture_settings_sin_o_invalido_abbreviations_levanta_value_error(
 
     lista_no_str = tmp_path / "lista_no_str.yaml"
     lista_no_str.write_text(
-        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations:\n  - 123\n",
+        f"{prefijo}model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations:\n  - 123\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'abbreviations' debe ser una lista de cadenas"):
@@ -394,6 +491,11 @@ def test_build_local_capture_pasa_abreviaturas_a_stt(monkeypatch: pytest.MonkeyP
         device="cpu",
         no_speech_threshold=0.75,
         abbreviations=("dr.", "mg.", "ml."),
+        provider="cloud",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=120.0,
     )
     stt, _ocr = build_local_capture(settings)
     assert stt._abbreviations == frozenset({"dr.", "mg.", "ml."})
