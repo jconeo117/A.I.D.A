@@ -1,3 +1,20 @@
+# Qué catálogo se coteja. En datos porque cambia con el país: el código que se
+# reporta en Colombia (I10X) no es el que se reporta en otro sitio (I10), y eso
+# es una decisión de despliegue, no de código.
+#
+# `kind: reference` = una sola fuente ya autorizada, un archivo.
+# `kind: dual`      = dos agregadores que se validan cruzados, un .json y un
+#                     .csv, en ese orden. Es el camino del catálogo de
+#                     `data/health/cie10/`.
+#
+# El tipo se declara y no se deduce del número de archivos: deducirlo
+# convertiría «borré un archivo» en «degradé de fuente validada a fuente única
+# sin que nadie avise».
+catalog:
+  kind: reference
+  files:
+    - "data/health/cie10/co/cie10-co.csv"
+
 # Cotejo contra el catálogo de códigos. En datos porque es calibración: el
 # umbral depende de qué palabras se descartan, y ambas cosas se ajustan juntas
 # midiendo, no adivinando.

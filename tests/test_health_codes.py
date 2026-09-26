@@ -22,7 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from aida.arms.health.codes import CatalogConflictError, DiagnosticCode, load_catalog
+from aida.arms.health.codes import (
+    CatalogConflictError,
+    DiagnosticCode,
+    load_catalog,
+    load_reference_catalog,
+)
 
 CIE10_JSON_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "codes.json"
 CIE10_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "cie-10.csv"
@@ -210,3 +215,61 @@ def test_load_catalog_disjoint_sources_unioned_successfully(tmp_path: Path) -> N
     assert "B00" in by_code
     assert by_code["B00"].source == "deis.cl"
     assert by_code["B00"].description == "Infecciones por virus del herpes"
+
+
+# ---------------------------------------------------------------------------
+# Plan 69: Catálogo de referencia de Colombia (§B.1)
+# ---------------------------------------------------------------------------
+
+CIE10_CO_CSV_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "health" / "cie10" / "co" / "cie10-co.csv"
+)
+
+
+def test_load_reference_catalog_real_counts_and_sorting(tmp_path: Path) -> None:
+    """Caso 1 (§B.1): load_reference_catalog carga el CSV real y devuelve 12634
+    entradas, ordenadas por código ascendente, la primera A000 y la última Z999.
+    Garantiza orden ascendente incluso si el CSV en disco no viene ordenado."""
+    assert CIE10_CO_CSV_PATH.exists(), f"Falta el archivo real {CIE10_CO_CSV_PATH}"
+    catalog = load_reference_catalog(CIE10_CO_CSV_PATH)
+    assert len(catalog) == 12634
+    assert catalog[0].code == "A000"
+    assert catalog[-1].code == "Z999"
+    codes = [entry.code for entry in catalog]
+    assert codes == sorted(codes)
+
+    desordenado = tmp_path / "desordenado.csv"
+    desordenado.write_text(
+        "code,description,level,source\n"
+        "Z999,ultimo,3,minsalud\n"
+        "A000,primero,3,minsalud\n"
+        "B100,medio,3,minsalud\n",
+        encoding="utf-8",
+    )
+    cat_des = load_reference_catalog(desordenado)
+    assert [e.code for e in cat_des] == ["A000", "B100", "Z999"]
+
+
+def test_load_reference_catalog_fields_and_format() -> None:
+    """Caso 2 (§B.1): Todas traen source == 'minsalud', level == 3 y código
+    de exactamente cuatro caracteres."""
+    catalog = load_reference_catalog(CIE10_CO_CSV_PATH)
+    assert all(entry.source == "minsalud" for entry in catalog)
+    assert all(entry.level == 3 for entry in catalog)
+    assert all(len(entry.code) == 4 for entry in catalog)
+
+
+def test_load_catalog_unchanged_chilean_pair() -> None:
+    """Caso 3 (§B.1): load_catalog no cambió: el par chileno sigue cargando
+    14498 entradas y sigue levantando CatalogConflictError ante discrepancias."""
+    catalog = load_catalog(CIE10_JSON_PATH, CIE10_CSV_PATH)
+    assert len(catalog) == 14498
+
+
+def test_load_reference_catalog_missing_column_raises(tmp_path: Path) -> None:
+    """Caso 4 (§B.1): Un CSV con una columna que falta levanta KeyError / error
+    del lector, no devuelve un catálogo a medias."""
+    csv_invalido = tmp_path / "invalido.csv"
+    csv_invalido.write_text("code,description,level\nA000,COLERA,3\n", encoding="utf-8")
+    with pytest.raises(KeyError):
+        load_reference_catalog(csv_invalido)

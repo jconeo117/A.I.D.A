@@ -2947,6 +2947,90 @@ def test_build_consultation_inyecta_catalogo_negacion_real(
     assert ("pero",) in consultation._negation.stoppers
 
 
+# ---------------------------------------------------------------------------
+# Plan 69: Catálogo declarado en el pack (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_build_consultation_carga_catalogo_referencia(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 13 (§B.3): Con --consultation, la CLI carga el catálogo que declara el pack
+    (por defecto reference) llamando a load_reference_catalog y NO a load_catalog."""
+    import argparse
+    from unittest.mock import MagicMock
+
+    import aida.arms.health.codes as codes_mod
+    from aida.run import _build_consultation
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    mock_load_ref = MagicMock(return_value=())
+    mock_load_dual = MagicMock(return_value=())
+    monkeypatch.setattr(codes_mod, "load_reference_catalog", mock_load_ref)
+    monkeypatch.setattr(codes_mod, "load_catalog", mock_load_dual)
+
+    args = argparse.Namespace(llm=None)
+    consultation = _build_consultation(args, stt=MagicMock(), ocr=MagicMock(), key=key)
+    assert consultation is not None
+    assert mock_load_ref.called
+    assert not mock_load_dual.called
+
+
+def test_build_consultation_camino_dual_sigue_vivo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 14 (§B.3): Con matching.yaml declarando kind: dual y dos archivos,
+    _build_consultation llama a load_catalog con las dos rutas en orden (.json primero)."""
+    import argparse
+    from unittest.mock import MagicMock
+
+    import aida.arms.health.codes as codes_mod
+    import aida.arms.health.match as match_mod
+    from aida.arms.health.match import CatalogSpec, MatchingSettings
+    from aida.run import _build_consultation
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    f_json = tmp_path / "test_codes.json"
+    f_csv = tmp_path / "test_cie10.csv"
+    f_json.touch()
+    f_csv.touch()
+
+    fake_settings = MatchingSettings(
+        threshold=0.5,
+        top_n=5,
+        stopwords=frozenset(),
+        catalog=CatalogSpec(kind="dual", paths=(f_json, f_csv)),
+    )
+    monkeypatch.setattr(match_mod, "load_matching_settings", lambda *a, **kw: fake_settings)
+
+    mock_load_dual = MagicMock(return_value=())
+    mock_load_ref = MagicMock(return_value=())
+    monkeypatch.setattr(codes_mod, "load_catalog", mock_load_dual)
+    monkeypatch.setattr(codes_mod, "load_reference_catalog", mock_load_ref)
+
+    args = argparse.Namespace(llm=None)
+    consultation = _build_consultation(args, stt=MagicMock(), ocr=MagicMock(), key=key)
+    assert consultation is not None
+    assert mock_load_dual.called
+    assert not mock_load_ref.called
+    assert mock_load_dual.call_args[0] == (f_json, f_csv)
+
+
+def test_run_py_no_tiene_rutas_catalogo_hardcodeadas() -> None:
+    """Caso 15 (§B.3): Ninguna ruta de catálogo queda escrita en run.py:
+    comprobar que no aparecen 'codes.json' ni 'cie-10.csv' en src/aida/run.py."""
+    run_path = Path(__file__).resolve().parents[1] / "src" / "aida" / "run.py"
+    contenido = run_path.read_text(encoding="utf-8")
+    assert "codes.json" not in contenido
+    assert "cie-10.csv" not in contenido
+
+
 
 
 

@@ -321,23 +321,25 @@ def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None
     with pytest.raises(ValueError, match=r"debe ser un mapeo YAML"):
         load_matching_settings(no_map)
 
+    cat_yaml = "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n"
+
     # Clave faltante
     sin_thresh = tmp_path / "sin_thresh.yaml"
-    sin_thresh.write_text("top_n: 5\nstopwords: ['de']\n", encoding="utf-8")
+    sin_thresh.write_text(f"top_n: 5\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8")
     with pytest.raises(ValueError, match=r"faltan claves.*threshold"):
         load_matching_settings(sin_thresh)
 
     # threshold no numérico o bool
     thresh_str = tmp_path / "thresh_str.yaml"
     thresh_str.write_text(
-        "threshold: medio\ntop_n: 5\nstopwords: ['de']\n", encoding="utf-8"
+        f"threshold: medio\ntop_n: 5\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'threshold' debe ser numérico"):
         load_matching_settings(thresh_str)
 
     thresh_bool = tmp_path / "thresh_bool.yaml"
     thresh_bool.write_text(
-        "threshold: true\ntop_n: 5\nstopwords: ['de']\n", encoding="utf-8"
+        f"threshold: true\ntop_n: 5\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'threshold' debe ser numérico"):
         load_matching_settings(thresh_bool)
@@ -345,21 +347,21 @@ def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None
     # top_n no int, bool o <= 0
     top_cero = tmp_path / "top_cero.yaml"
     top_cero.write_text(
-        "threshold: 0.5\ntop_n: 0\nstopwords: ['de']\n", encoding="utf-8"
+        f"threshold: 0.5\ntop_n: 0\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
         load_matching_settings(top_cero)
 
     top_bool = tmp_path / "top_bool.yaml"
     top_bool.write_text(
-        "threshold: 0.5\ntop_n: true\nstopwords: ['de']\n", encoding="utf-8"
+        f"threshold: 0.5\ntop_n: true\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
         load_matching_settings(top_bool)
 
     top_str = tmp_path / "top_str.yaml"
     top_str.write_text(
-        "threshold: 0.5\ntop_n: '5'\nstopwords: ['de']\n", encoding="utf-8"
+        f"threshold: 0.5\ntop_n: '5'\nstopwords: ['de']\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'top_n' debe ser un entero positivo"):
         load_matching_settings(top_str)
@@ -367,14 +369,14 @@ def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None
     # stopwords no lista o elementos no str
     stop_str = tmp_path / "stop_str.yaml"
     stop_str.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: de\n", encoding="utf-8"
+        f"threshold: 0.5\ntop_n: 5\nstopwords: de\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'stopwords' debe ser una lista de cadenas"):
         load_matching_settings(stop_str)
 
     stop_num = tmp_path / "stop_num.yaml"
     stop_num.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: [123]\n", encoding="utf-8"
+        f"threshold: 0.5\ntop_n: 5\nstopwords: [123]\n{cat_yaml}", encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"'stopwords' debe ser una lista de cadenas"):
         load_matching_settings(stop_num)
@@ -584,6 +586,148 @@ def test_match_by_origin_propaga_evidencia_en_todos_los_origenes() -> None:
     assert por_codigo["C03"].evidence == "antecedente de asma"
     assert por_codigo["B02"].origin == CodeOrigin.BOTH
     assert por_codigo["B02"].evidence == "antecedente de hipertensión"
+
+
+# ---------------------------------------------------------------------------
+# Plan 69: Catálogo CIE-10 de Colombia y Plegado (§B.2)
+# ---------------------------------------------------------------------------
+
+
+def test_match_codes_plegado_resuelve_mayusculas_sin_tildes() -> None:
+    """Caso 5 (§B.2): Con descripciones en mayúsculas y sin tildes (MIGRANA, COLERA),
+    cotejar 'migraña' y 'cólera' devuelve el código con puntuación 1.00.
+    Y con mayúsculas con tildes (HIPERTENSIÓN), cotejar sin tildes devuelve 1.00."""
+    catalog = (
+        DiagnosticCode(code="G439", description="MIGRANA", level=3, source="test"),
+        DiagnosticCode(code="A009", description="COLERA", level=3, source="test"),
+        DiagnosticCode(code="I10X", description="HIPERTENSIÓN", level=3, source="test"),
+    )
+    index = build_index(catalog)
+    r_mig = match_codes("migraña", index, threshold=0.5, top_n=5)
+    assert len(r_mig) >= 1
+    assert r_mig[0].diagnostic.code == "G439"
+    assert math.isclose(r_mig[0].score, 1.0, rel_tol=1e-3)
+
+    r_col = match_codes("cólera", index, threshold=0.5, top_n=5)
+    assert len(r_col) >= 1
+    assert r_col[0].diagnostic.code == "A009"
+    assert math.isclose(r_col[0].score, 1.0, rel_tol=1e-3)
+
+    r_hip = match_codes("hipertension", index, threshold=0.5, top_n=5)
+    assert len(r_hip) >= 1
+    assert r_hip[0].diagnostic.code == "I10X"
+    assert math.isclose(r_hip[0].score, 1.0, rel_tol=1e-3)
+
+
+def test_match_codes_plegado_es_simetrico() -> None:
+    """Caso 6 (§B.2): Plegar es simétrico: catálogo con tildes y consulta sin ellas
+    emparejan igual que al revés."""
+    catalog_tildes = (
+        DiagnosticCode(code="G439", description="migraña severa", level=3, source="test"),
+    )
+    idx_tildes = build_index(catalog_tildes)
+    r1 = match_codes("migrana severa", idx_tildes, threshold=0.5, top_n=5)
+    assert len(r1) == 1
+    assert math.isclose(r1[0].score, 1.0, rel_tol=1e-3)
+
+    catalog_sin = (
+        DiagnosticCode(code="G439", description="migrana severa", level=3, source="test"),
+    )
+    idx_sin = build_index(catalog_sin)
+    r2 = match_codes("migraña severa", idx_sin, threshold=0.5, top_n=5)
+    assert len(r2) == 1
+    assert math.isclose(r2[0].score, 1.0, rel_tol=1e-3)
+
+
+def test_load_matching_settings_stopwords_plegadas(tmp_path: Path) -> None:
+    """Caso 7 (§B.2): Las palabras vacías se pliegan al cargarse: si se declara 'más',
+    descarta el token 'mas'."""
+    yaml_file = tmp_path / "matching_stop.yaml"
+    yaml_file.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: ['más']\n"
+        "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n",
+        encoding="utf-8",
+    )
+    settings = load_matching_settings(yaml_file)
+    assert "mas" in settings.stopwords
+
+
+def test_load_matching_settings_catalog_obligatorio(tmp_path: Path) -> None:
+    """Caso 8 (§B.2): catalog es obligatorio en matching.yaml; si falta, levanta ValueError."""
+    yaml_file = tmp_path / "sin_catalog.yaml"
+    yaml_file.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: ['de']\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"catalog"):
+        load_matching_settings(yaml_file)
+
+
+def test_load_matching_settings_kind_y_archivos_concordancia(tmp_path: Path) -> None:
+    """Caso 9 (§B.2): kind y número de archivos deben concordar.
+    reference con 2 archivos o dual con 1 levantan ValueError indicando cuántos esperaba."""
+    # reference con 2
+    ref_dos = tmp_path / "ref_dos.yaml"
+    ref_dos.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "catalog:\n  kind: reference\n  files: ['f1.csv', 'f2.csv']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"reference.*exige 1.*trae 2"):
+        load_matching_settings(ref_dos)
+
+    # dual con 1
+    dual_uno = tmp_path / "dual_uno.yaml"
+    dual_uno.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "catalog:\n  kind: dual\n  files: ['f1.csv']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"dual.*exige 2.*trae 1"):
+        load_matching_settings(dual_uno)
+
+    # kind desconocido
+    desconocido = tmp_path / "desconocido.yaml"
+    desconocido.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "catalog:\n  kind: desconocido\n  files: ['f1.csv']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"debe ser 'reference' o 'dual'"):
+        load_matching_settings(desconocido)
+
+
+def test_load_matching_settings_catalogo_ausente_falla_con_ruta(tmp_path: Path) -> None:
+    """Caso 10 (§B.2): Un catálogo declarado y ausente falla al cargar los ajustes,
+    con la ruta en el mensaje de error."""
+    yaml_file = tmp_path / "ausente.yaml"
+    yaml_file.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "catalog:\n  kind: reference\n  files: ['archivo_inexistente_123.csv']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"archivo_inexistente_123.csv"):
+        load_matching_settings(yaml_file)
+
+
+def test_load_matching_settings_rutas_resueltas_contra_raiz(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 11 (§B.2): Las rutas se resuelven contra la raíz del repositorio,
+    no contra el cwd actual (I-094)."""
+    monkeypatch.chdir(tmp_path)
+    settings = load_matching_settings()
+    assert settings.catalog.paths[0].is_file()
+    assert settings.catalog.paths[0].name == "cie10-co.csv"
+
+
+def test_pack_consultorio_declara_reference_con_archivo_existente() -> None:
+    """Caso 12 (§B.2): El pack real de consultorio declara reference con un archivo
+    y ese archivo existe en el sistema de archivos."""
+    settings = load_matching_settings()
+    assert settings.catalog.kind == "reference"
+    assert len(settings.catalog.paths) == 1
+    assert settings.catalog.paths[0].is_file()
+    assert settings.catalog.paths[0].name == "cie10-co.csv"
 
 
 

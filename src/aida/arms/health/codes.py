@@ -10,6 +10,12 @@ declara `deis.cl` — la fuente más autorizada de las dos. Si algún día uno
 de los dos archivos cambia y empiezan a discrepar, `load_catalog` revienta
 con la lista completa de discrepancias: un catálogo médico no puede elegir
 en silencio cuál de dos versiones contradictorias es la buena.
+
+Ese es uno de dos caminos. El otro, `load_reference_catalog`, carga una **sola**
+fuente ya autorizada —el catálogo que publica la autoridad sanitaria del país
+donde se despliega— y no valida cruzado porque no hay con qué cruzar. Cuál de
+los dos se usa, y con qué archivos, lo declara el pack (`matching.yaml`), no el
+código: el mismo diagnóstico se reporta con un código distinto según el país.
 """
 
 from __future__ import annotations
@@ -86,3 +92,21 @@ def load_catalog(json_path: Path, csv_path: Path) -> tuple[DiagnosticCode, ...]:
             )
 
     return tuple(merged[code] for code in sorted(merged))
+
+
+def load_reference_catalog(path: Path) -> tuple[DiagnosticCode, ...]:
+    """Una sola fuente, ya autorizada: el catálogo que publica la autoridad
+    sanitaria del país donde se despliega. No hay validación cruzada porque no
+    hay con qué cruzar, y tampoco hace falta: `load_catalog` la necesita porque
+    une dos agregadores que pueden discrepar, y aquí no se une nada.
+
+    Devuelto ordenado por código, igual que `load_catalog`: es lo que hace
+    determinista el desempate del cotejo.
+    """
+    rows = _load_csv(path)
+    return tuple(
+        DiagnosticCode(
+            code=code, description=rows[code][0], level=rows[code][1], source=rows[code][2]
+        )
+        for code in sorted(rows)
+    )

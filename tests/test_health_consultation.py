@@ -3075,6 +3075,43 @@ def test_default_summary_wording_pack_real_las_trae() -> None:
     assert w.negated_suffix == "negado"
 
 
+# ---------------------------------------------------------------------------
+# Plan 69: Catálogo de referencia en consulta (§B.4)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_catalogo_referencia_propone_codigos_cuatro_caracteres(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 16 (§B.4): Una consulta con el catálogo de referencia propone códigos
+    de exactamente cuatro caracteres, sin códigos de 3 caracteres ni rangos con guion."""
+    catalog = build_index(
+        (
+            DiagnosticCode("I10X", "HIPERTENSION ESENCIAL", 3, "minsalud"),
+            DiagnosticCode("E140", "DIABETES MELLITUS CON COMA", 3, "minsalud"),
+            DiagnosticCode("R51X", "CEFALEA", 3, "minsalud"),
+        )
+    )
+    stt = _SpyWhisperSTT(full_text="Refiere cefalea e hipertensión esencial")
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+    )
+    prep = c.prepare(owner=AgentId("doc_ref_test"), audio_path=Path("/tmp/a.wav"), history_text="")
+    assert len(prep.matches) > 0
+    for match in prep.matches:
+        code = match.diagnostic.code
+        assert len(code) == 4, f"Código {code} no tiene 4 caracteres"
+        assert "-" not in code, f"Código {code} contiene guion de rango"
+
+
 
 
 

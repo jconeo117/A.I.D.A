@@ -260,7 +260,7 @@ def _build_consultation(
 
     from aida.arms.health.cache import ConsultationCache
     from aida.arms.health.capture import LocalTesseractOCR
-    from aida.arms.health.codes import load_catalog
+    from aida.arms.health.codes import load_catalog, load_reference_catalog
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.history import load_history_layout
     from aida.arms.health.lexicon import load_lexicon
@@ -271,10 +271,10 @@ def _build_consultation(
     from aida.engine.events import EventLog
 
     cotejo = load_matching_settings()
-    catalog = load_catalog(
-        _RAIZ / "data" / "health" / "cie10" / "codes.json",
-        _RAIZ / "data" / "health" / "cie10" / "cie-10.csv",
-    )
+    if cotejo.catalog.kind == "reference":
+        catalog = load_reference_catalog(cotejo.catalog.paths[0])
+    else:
+        catalog = load_catalog(cotejo.catalog.paths[0], cotejo.catalog.paths[1])
     return Consultation(
         wording=default_summary_wording(),
         stt=cast(Any, _cached_stt(stt, key)),

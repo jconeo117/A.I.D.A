@@ -16,10 +16,20 @@ from pathlib import Path
 import yaml
 
 from aida.arms.health.codes import DiagnosticCode
-from aida.textmatch import cosine, vectorize
+from aida.textmatch import cosine, fold, vectorize
 
 _RAIZ = Path(__file__).resolve().parents[4]
 _COTEJO_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "matching.yaml"
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogSpec:
+    """Qué catálogo cargar, tal como lo declara el pack. Las rutas son
+    relativas a la raíz del repositorio y se resuelven aquí, en un solo sitio:
+    quien las use no vuelve a componerlas."""
+
+    kind: str
+    paths: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,18 +37,20 @@ class MatchingSettings:
     threshold: float
     top_n: int
     stopwords: frozenset[str]
+    catalog: CatalogSpec
 
 
 def load_matching_settings(path: Path | None = None) -> MatchingSettings:
-    """Umbral, cuántos códigos y qué palabras se descartan. Los tres juntos
-    porque se calibran juntos: cambiar las palabras vacías mueve la escala de
-    las puntuaciones, y un umbral heredado de la escala anterior deja de
-    significar lo que decía."""
+    """Qué catálogo, con qué umbral, cuántos códigos y qué palabras se
+    descartan. Los cuatro juntos porque se calibran juntos: cambiar las palabras
+    vacías mueve la escala de las puntuaciones, y un umbral heredado de la
+    escala anterior deja de significar lo que decía. Y el catálogo manda sobre
+    los tres: 0.50 contra un catálogo no es 0.50 contra otro."""
     ruta = path if path is not None else _COTEJO_POR_DEFECTO
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{ruta} debe ser un mapeo YAML")
-    faltan = [k for k in ("threshold", "top_n", "stopwords") if k not in raw]
+    faltan = [k for k in ("threshold", "top_n", "stopwords", "catalog") if k not in raw]
     if faltan:
         raise ValueError(f"faltan claves en {ruta}: {faltan}")
     umbral, cuantos, vacias = raw["threshold"], raw["top_n"], raw["stopwords"]
@@ -49,8 +61,34 @@ def load_matching_settings(path: Path | None = None) -> MatchingSettings:
     if not isinstance(vacias, list) or not all(isinstance(v, str) for v in vacias):
         raise ValueError(f"'stopwords' debe ser una lista de cadenas en {ruta}")
     return MatchingSettings(
-        threshold=float(umbral), top_n=cuantos, stopwords=frozenset(v.lower() for v in vacias)
+        threshold=float(umbral),
+        top_n=cuantos,
+        # Plegadas, no solo en minúsculas: el índice y la consulta se comparan
+        # plegados (`build_index`), así que una palabra vacía con tilde no
+        # coincidiría nunca con el token que pretende descartar.
+        stopwords=frozenset(fold(v) for v in vacias),
+        catalog=_catalog_spec(raw["catalog"], ruta),
     )
+
+
+def _catalog_spec(raw: object, ruta: Path) -> CatalogSpec:
+    if not isinstance(raw, dict):
+        raise ValueError(f"'catalog' debe ser un mapeo en {ruta}")
+    kind, files = raw.get("kind"), raw.get("files")
+    if kind not in ("reference", "dual"):
+        raise ValueError(f"'catalog.kind' debe ser 'reference' o 'dual' en {ruta}")
+    if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+        raise ValueError(f"'catalog.files' debe ser una lista de cadenas en {ruta}")
+    esperados = 1 if kind == "reference" else 2
+    if len(files) != esperados:
+        raise ValueError(
+            f"'catalog.kind: {kind}' exige {esperados} archivo(s) y trae {len(files)}, en {ruta}"
+        )
+    rutas = tuple(_RAIZ / f for f in files)
+    faltan = [str(r) for r in rutas if not r.is_file()]
+    if faltan:
+        raise ValueError(f"el catálogo declarado en {ruta} no existe: {faltan}")
+    return CatalogSpec(kind=kind, paths=rutas)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,12 +105,20 @@ class CatalogIndex:
 def build_index(
     catalog: tuple[DiagnosticCode, ...], *, stopwords: frozenset[str] = frozenset()
 ) -> CatalogIndex:
-    """Catálogo ya recibido ordenado por código (`load_catalog` lo
-    garantiza) — el índice conserva ese orden, es lo que hace determinista
-    el desempate en `match_codes`."""
+    """Catálogo ya recibido ordenado por código (los dos cargadores lo
+    garantizan) — el índice conserva ese orden, es lo que hace determinista el
+    desempate en `match_codes`.
+
+    Las descripciones se **pliegan** (minúsculas y sin tildes) antes de
+    vectorizar, y la consulta se pliega igual en `match_codes`. Sin eso, el
+    catálogo de una autoridad que publica en mayúsculas sin tildes no empareja
+    ni una palabra acentuada: medido, «migraña» y «cólera» daban 0.00 y
+    «hipertensión esencial» proponía un código sin relación.
+    """
     return CatalogIndex(
         entries=tuple(
-            (entry, vectorize(entry.description, stopwords=stopwords)) for entry in catalog
+            (entry, vectorize(fold(entry.description), stopwords=stopwords))
+            for entry in catalog
         ),
         stopwords=stopwords,
     )
@@ -156,7 +202,7 @@ def match_codes(
     ordenados de mayor a menor puntuación y, en empate, por código
     ascendente (desempate por identificador, nunca solo por el float de la
     puntuación)."""
-    query = vectorize(text, stopwords=index.stopwords)
+    query = vectorize(fold(text), stopwords=index.stopwords)
     if not query:
         return ()
     scored = [
