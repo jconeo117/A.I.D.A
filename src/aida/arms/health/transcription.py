@@ -92,22 +92,43 @@ class CloudWhisperSTT:
         respaldo no es suya, es de `FallbackTranscription`.
     """
 
-    def __init__(self, client: object, *, model: str, language: str) -> None:
+    def __init__(
+        self,
+        client: object,
+        *,
+        model: str,
+        language: str,
+        prompt: str = "",
+        formats: frozenset[str] = frozenset(),
+    ) -> None:
         self._client = client
         self._model = model
         self._language = language
+        self._prompt = prompt
+        self._formats = formats
 
     def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+        # Antes de abrir el archivo: subir diez megabytes para que el proveedor
+        # los rechace cuesta minutos, y la extensión ya lo dice. `formats` vacío
+        # significa «no se declaró ninguna restricción», no «ninguno vale».
+        if self._formats and audio_path.suffix.lower() not in self._formats:
+            raise CloudTranscriptionError(
+                f"{audio_path.suffix or 'sin extensión'} no está entre los formatos "
+                f"que acepta el proveedor ({', '.join(sorted(self._formats))})"
+            )
+        datos: dict[str, str] = {
+            "model": self._model,
+            "language": self._language,
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "segment",
+        }
+        if self._prompt:
+            datos["prompt"] = self._prompt
         with audio_path.open("rb") as audio:
             response = self._client.post(  # type: ignore[attr-defined]
                 "/v1/audio/transcriptions",
                 files={"file": (audio_path.name, audio, "audio/wav")},
-                data={
-                    "model": self._model,
-                    "language": self._language,
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "segment",
-                },
+                data=datos,
             )
         response.raise_for_status()
         crudo = response.json()

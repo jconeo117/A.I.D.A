@@ -211,7 +211,7 @@ def test_transcribe_no_envia_vad_filter(tmp_path: Path) -> None:
 
 def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     """Caso 10: load_capture_settings sobre un YAML completo devuelve tipos;
-    el del pack real carga con provider == 'cloud' y los cinco campos nuevos."""
+    el del pack real carga con provider == 'cloud' y los campos nuevos."""
     yaml_path = tmp_path / "capture.yaml"
     yaml_path.write_text(
         "provider: cloud\n"
@@ -222,6 +222,12 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
         "model: medium\n"
         "device: cpu\n"
         "no_speech_threshold: 0.55\n"
+        "compute_type: int8\n"
+        "connect_timeout_seconds: 3.0\n"
+        "cloud_formats:\n"
+        "  - .wav\n"
+        "  - .mp3\n"
+        "transcription_prompt: Consulta médica de prueba.\n"
         "abbreviations:\n"
         "  - dr.\n"
         "  - mg.\n",
@@ -238,6 +244,10 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     assert settings.cloud_language == "es"
     assert settings.cloud_base_url == "https://api.openai.com"
     assert settings.timeout_seconds == 120.0
+    assert settings.compute_type == "int8"
+    assert settings.connect_timeout_seconds == 3.0
+    assert settings.cloud_formats == (".wav", ".mp3")
+    assert settings.transcription_prompt == "Consulta médica de prueba."
 
     real = load_capture_settings()
     assert real.model == "small"
@@ -249,22 +259,32 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     assert real.cloud_language == "es"
     assert real.cloud_base_url == "https://api.openai.com"
     assert real.timeout_seconds == 120.0
+    assert real.compute_type == "int8"
+    assert real.connect_timeout_seconds == 3.0
+    assert ".wav" in real.cloud_formats
+    assert len(real.transcription_prompt) > 0
 
 
 def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
     """Caso 11 (base): sin device, o con no_speech_threshold: 'alto', levanta ValueError
     nombrando la clave."""
-    sin_device = tmp_path / "sin_device.yaml"
-    sin_device.write_text(
+    prefijo = (
         "provider: cloud\n"
         "cloud_model: whisper-1\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
+        "compute_type: int8\n"
+        "connect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\n"
+        "transcription_prompt: Consulta médica.\n"
         "model: small\n"
-        "no_speech_threshold: 0.6\n"
         "abbreviations:\n"
-        "  - dr.\n",
+        "  - dr.\n"
+    )
+    sin_device = tmp_path / "sin_device.yaml"
+    sin_device.write_text(
+        f"{prefijo}no_speech_threshold: 0.6\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"faltan claves.*device"):
@@ -272,16 +292,7 @@ def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
 
     umbral_str = tmp_path / "umbral_str.yaml"
     umbral_str.write_text(
-        "provider: cloud\n"
-        "cloud_model: whisper-1\n"
-        "cloud_language: es\n"
-        "cloud_base_url: https://api.openai.com\n"
-        "timeout_seconds: 120.0\n"
-        "model: small\n"
-        "device: cpu\n"
-        "no_speech_threshold: alto\n"
-        "abbreviations:\n"
-        "  - dr.\n",
+        f"{prefijo}device: cpu\nno_speech_threshold: alto\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"no_speech_threshold.*numérico"):
@@ -298,6 +309,10 @@ def test_load_capture_settings_provider_y_timeout_invalidos_nombran_clave(tmp_pa
         "model: small\n"
         "device: cpu\n"
         "no_speech_threshold: 0.6\n"
+        "compute_type: int8\n"
+        "connect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\n"
+        "transcription_prompt: Consulta médica.\n"
         "abbreviations:\n  - dr.\n"
     )
 
@@ -353,6 +368,10 @@ def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
         cloud_language="es",
         cloud_base_url="https://api.openai.com",
         timeout_seconds=120.0,
+        compute_type="int8",
+        connect_timeout_seconds=3.0,
+        cloud_formats=(".wav",),
+        transcription_prompt="Consulta médica.",
     )
     stt, _ocr = build_local_capture(settings)
     assert recibidos["model"] == "base"
@@ -427,6 +446,10 @@ def test_load_capture_settings_abreviaturas_minusculas_y_pack_real(tmp_path: Pat
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
+        "compute_type: int8\n"
+        "connect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\n"
+        "transcription_prompt: Consulta médica.\n"
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\n"
         "abbreviations:\n  - Dr.\n  - MG.\n  - ETC.\n",
         encoding="utf-8",
@@ -451,6 +474,10 @@ def test_load_capture_settings_sin_o_invalido_abbreviations_levanta_value_error(
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
+        "compute_type: int8\n"
+        "connect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\n"
+        "transcription_prompt: Consulta médica.\n"
     )
     sin_abbrevs = tmp_path / "sin_abbrevs.yaml"
     sin_abbrevs.write_text(
@@ -496,9 +523,121 @@ def test_build_local_capture_pasa_abreviaturas_a_stt(monkeypatch: pytest.MonkeyP
         cloud_language="es",
         cloud_base_url="https://api.openai.com",
         timeout_seconds=120.0,
+        compute_type="int8",
+        connect_timeout_seconds=3.0,
+        cloud_formats=(".wav",),
+        transcription_prompt="Consulta médica.",
     )
     stt, _ocr = build_local_capture(settings)
     assert stt._abbreviations == frozenset({"dr.", "mg.", "ml."})
+
+
+# ---------------------------------------------------------------------------
+# Plan 70: Puntuación con initial_prompt y compute_type (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_speech_segments_pasa_prompt_declarado_al_modelo(tmp_path: Path) -> None:
+    """Caso 1 (§B.1): El prompt llega al modelo con initial_prompt."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"dummy")
+    model = _DummyWhisperModel([_DummySegment(0.0, 1.0, "Texto clínico", 0.1)])
+    stt = LocalWhisperSTT(model, prompt="Prompt clínico de prueba.")
+    stt.transcribe_segments(audio)
+    assert model.kwargs_received.get("initial_prompt") == "Prompt clínico de prueba."
+
+
+def test_speech_segments_prompt_vacio_pasa_none(tmp_path: Path) -> None:
+    """Caso 2 (§B.1): Prompt vacío pasa None, no ''."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"dummy")
+    model = _DummyWhisperModel([_DummySegment(0.0, 1.0, "Texto clínico", 0.1)])
+    stt = LocalWhisperSTT(model, prompt="")
+    stt.transcribe_segments(audio)
+    assert model.kwargs_received.get("initial_prompt") is None
+
+
+def test_load_capture_settings_sin_transcription_prompt_levanta_value_error(tmp_path: Path) -> None:
+    """Caso 3 (§B.1): transcription_prompt es obligatorio en capture.yaml."""
+    p = tmp_path / "capture.yaml"
+    p.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
+        "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
+        "timeout_seconds: 10\ncompute_type: int8\nconnect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="transcription_prompt"):
+        load_capture_settings(p)
+
+
+def test_build_local_capture_pack_real_propaga_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 4 (§B.1): El pack real trae prompt y build_local_capture la propaga."""
+    class MockWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    modulo_fw = _modulo_doble("faster_whisper", WhisperModel=MockWhisperModel)
+    monkeypatch.setitem(sys.modules, "faster_whisper", modulo_fw)
+    monkeypatch.setitem(sys.modules, "pytesseract", _modulo_doble("pytesseract"))
+    stt, _ = build_local_capture()
+    assert isinstance(stt, LocalWhisperSTT)
+    assert stt._prompt == load_capture_settings().transcription_prompt
+    assert len(stt._prompt) > 0
+
+
+def test_speech_segments_conserva_language_es_con_prompt(tmp_path: Path) -> None:
+    """Caso 5 (§B.1): language='es' sigue pasándose junto con el prompt."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"dummy")
+    model = _DummyWhisperModel([_DummySegment(0.0, 1.0, "Texto clínico", 0.1)])
+    stt = LocalWhisperSTT(model, prompt="Prompt")
+    stt.transcribe_segments(audio)
+    assert model.kwargs_received.get("language") == "es"
+    assert model.kwargs_received.get("initial_prompt") == "Prompt"
+
+
+def test_build_local_capture_pasa_compute_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 5b (§B.1): compute_type llega a WhisperModel."""
+    kwargs_capturados: dict[str, Any] = {}
+
+    class MockWhisperModel:
+        def __init__(self, model_size_or_path: str, **kwargs: Any) -> None:
+            kwargs_capturados.update(kwargs)
+
+    modulo_fw = _modulo_doble("faster_whisper", WhisperModel=MockWhisperModel)
+    monkeypatch.setitem(sys.modules, "faster_whisper", modulo_fw)
+    monkeypatch.setitem(sys.modules, "pytesseract", _modulo_doble("pytesseract"))
+    build_local_capture()
+    assert kwargs_capturados.get("compute_type") == load_capture_settings().compute_type
+
+
+def test_load_capture_settings_sin_compute_type_levanta_value_error(tmp_path: Path) -> None:
+    """Caso 5c (§B.1): compute_type es obligatorio en capture.yaml."""
+    p = tmp_path / "capture.yaml"
+    p.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
+        "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
+        "timeout_seconds: 10\nconnect_timeout_seconds: 3.0\n"
+        "cloud_formats: ['.wav']\ntranscription_prompt: 'p'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="compute_type"):
+        load_capture_settings(p)
+
+
+def test_load_capture_settings_sin_cloud_formats_levanta_value_error(tmp_path: Path) -> None:
+    """Caso 29 (§B.4b/M29): cloud_formats es obligatorio en capture.yaml."""
+    p = tmp_path / "capture.yaml"
+    p.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
+        "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
+        "timeout_seconds: 10\nconnect_timeout_seconds: 3.0\ncompute_type: int8\n"
+        "transcription_prompt: 'p'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="cloud_formats"):
+        load_capture_settings(p)
 
 
 def test_build_local_capture_falla_levanta_model_unavailable_error(

@@ -31,7 +31,7 @@ from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, CodableText, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
-from aida.arms.health.negation import load_negation
+from aida.arms.health.negation import load_negation, load_retraction
 from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -3110,6 +3110,202 @@ def test_consultation_catalogo_referencia_propone_codigos_cuatro_caracteres(
         code = match.diagnostic.code
         assert len(code) == 4, f"Código {code} no tiene 4 caracteres"
         assert "-" not in code, f"Código {code} contiene guion de rango"
+
+
+# ---------------------------------------------------------------------------
+# Plan 70: Retractación de negaciones en la consulta (§B.4)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 17 (§B.4): Transcripción de dos líneas y un catálogo de prueba con ese
+    diagnóstico: sin regla sale el código; con regla, no."""
+    catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
+    stt = _SpyWhisperSTT(
+        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
+    )
+    # Sin regla sale el código
+    c_sin = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        negation=load_negation(),
+        retraction=None,
+    )
+    prep_sin = c_sin.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert any(m.diagnostic.code == "R002" for m in prep_sin.matches)
+
+    # Con regla no sale
+    c_con = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        negation=load_negation(),
+        retraction=load_retraction(),
+    )
+    prep_con = c_con.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert not any(m.diagnostic.code == "R002" for m in prep_con.matches)
+
+
+def test_consultation_retractacion_opera_a_traves_de_secciones_distintas(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 18 (§B.4): La retractación se calcula sobre el orden del transcript,
+    no sobre las secciones. Si caen en secciones distintas, la regla sigue funcionando."""
+    catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
+    texto = "Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
+    segs = (
+        TranscriptSegment(0.0, 1.0, "Drolar en el pecho, falta de aire, palpitaciones."),
+        TranscriptSegment(1.0, 2.0, "No, eso no."),
+    )
+    stt = _SpyWhisperSTT(segments=segs, full_text=texto)
+
+    class DummySegmenter:
+        def segment(
+            self, transcript_text: str
+        ) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
+            s1 = SectionSpec("motivo", "Motivo", (), codable=True)
+            s2 = SectionSpec("examen", "Examen", (), codable=True)
+            return (
+                (s1, ("Drolar en el pecho, falta de aire, palpitaciones.",)),
+                (s2, ("No, eso no.",)),
+            )
+
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        segmenter=DummySegmenter(),  # type: ignore[arg-type]
+        negation=load_negation(),
+        retraction=load_retraction(),
+    )
+    prep = c.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert not any(m.diagnostic.code == "R002" for m in prep.matches)
+
+
+def test_consultation_historia_no_se_retracta(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 19 (§B.4): La historia clínica no se retracta; las líneas con la misma
+    forma se cotejan enteras."""
+    catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
+    stt = _SpyWhisperSTT(
+        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
+    )
+    historia = "Drolar en el pecho, falta de aire, palpitaciones."
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        negation=load_negation(),
+        retraction=load_retraction(),
+    )
+    prep = c.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=historia
+    )
+    assert any(m.diagnostic.code == "R002" for m in prep.matches)
+
+
+def test_consultation_sin_retraction_inyectada_nada_cambia(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 20 (§B.4): Sin retraction inyectada (None), nada cambia y salen los mismos códigos."""
+    catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
+    stt = _SpyWhisperSTT(
+        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
+    )
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        negation=load_negation(),
+        retraction=None,
+    )
+    prep = c.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert any(m.diagnostic.code == "R002" for m in prep.matches)
+
+
+def test_consultation_hallazgo_retractado_permanece_en_modelo_clinico(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 21 (§B.4): El hallazgo retractado permanece en encounter.findings."""
+    catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
+    texto = "Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
+    segs = (
+        TranscriptSegment(0.0, 1.0, "Drolar en el pecho, falta de aire, palpitaciones."),
+        TranscriptSegment(1.0, 2.0, "No, eso no."),
+    )
+    stt = _SpyWhisperSTT(segments=segs, full_text=texto)
+
+    class DummySegmenter:
+        def segment(
+            self, transcript_text: str
+        ) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
+            s1 = SectionSpec("motivo", "Motivo", (), codable=True)
+            return (
+                (
+                    s1,
+                    (
+                        "Drolar en el pecho, falta de aire, palpitaciones.",
+                        "No, eso no.",
+                    ),
+                ),
+            )
+
+    c = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(),
+        match_threshold=0.3,
+        segmenter=DummySegmenter(),  # type: ignore[arg-type]
+        negation=load_negation(),
+        retraction=load_retraction(),
+    )
+    prep = c.prepare(
+        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
+    )
+    assert prep.encounter is not None
+    frases_modelo = [f.text for items in prep.encounter.findings.values() for f in items]
+    assert "Drolar en el pecho, falta de aire, palpitaciones." in frases_modelo
 
 
 

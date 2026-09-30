@@ -11,6 +11,7 @@ del test.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from collections.abc import Sequence
@@ -176,36 +177,79 @@ def _review_metrics_path() -> Path:
     return Path.home() / ".local" / "share" / "aida" / "revisiones.jsonl"
 
 
-def _transcription(stt: object, ajustes: object) -> object:
+def _transcription(stt: object, key: str) -> object:
     """El transcriptor que verá la consulta: la nube si el pack la declara, con
-    el modelo local de respaldo.
+    el modelo local de respaldo, y **una caché por camino**.
+
+    La caché va dentro de cada rama y no delante de las dos: la huella tiene que
+    decir quién transcribió, no quién estaba declarado. Con una sola caché
+    delante, una transcripción del respaldo se guardaba etiquetada como de la
+    nube y se servía después como si lo fuera —demostrado, y son calidades muy
+    distintas (`I-138`)—. Así queda correcto por construcción, sin que nadie
+    tenga que informar de nada.
+
+    Consecuencia buscada: tras una caída, la siguiente ejecución **reintenta la
+    nube** (su caché no tiene esa entrada) y, si vuelve a fallar, el respaldo
+    responde al instante desde la suya. Reanudar sin red sigue funcionando, que
+    es lo que dio el plan 65.
 
     Si falta la credencial, no se avisa a medias ni se falla: se usa el local y
-    se dice. Un consultorio sin clave tiene que poder trabajar."""
+    se dice. Un consultorio sin clave tiene que poder trabajar.
+    """
     import os
 
+    from aida.arms.health.capture import load_capture_settings
     from aida.arms.health.transcription import CloudWhisperSTT, FallbackTranscription
+    from aida.arms.health.transcripts import CachedSTT, TranscriptCache
 
-    settings: Any = ajustes
-    if settings.provider != "cloud":
-        return stt
+    ajustes = load_capture_settings()
+    cache = TranscriptCache(
+        Path.home() / ".cache" / "aida" / "transcripciones", key=key.encode()
+    )
+    cache.purge_expired()
+    prompt = hashlib.blake2b(
+        ajustes.transcription_prompt.encode("utf-8"), digest_size=8
+    ).hexdigest()
+
+    local = CachedSTT(
+        stt,
+        cache,
+        model=f"local:{ajustes.model}:{ajustes.device}:{ajustes.compute_type}:{prompt}",
+        no_speech_threshold=ajustes.no_speech_threshold,
+    )
+    if ajustes.provider != "cloud":
+        return local
     api_key = os.environ.get("AIDA_STT_API_KEY")
     if not api_key:
         print(
             "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local",
             file=sys.stderr,
         )
-        return stt
+        return local
 
     import httpx
 
     http = httpx.Client(
-        base_url=settings.cloud_base_url,
-        timeout=settings.timeout_seconds,
+        base_url=ajustes.cloud_base_url,
+        timeout=httpx.Timeout(
+            connect=ajustes.connect_timeout_seconds,
+            read=ajustes.timeout_seconds,
+            write=ajustes.timeout_seconds,
+            pool=ajustes.timeout_seconds,
+        ),
         headers={"Authorization": f"Bearer {api_key}"},
     )
-    nube = CloudWhisperSTT(
-        http, model=settings.cloud_model, language=settings.cloud_language
+    nube = CachedSTT(
+        CloudWhisperSTT(
+            http,
+            model=ajustes.cloud_model,
+            language=ajustes.cloud_language,
+            prompt=ajustes.transcription_prompt,
+            formats=frozenset(ajustes.cloud_formats),
+        ),
+        cache,
+        model=f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:{prompt}",
+        no_speech_threshold=ajustes.no_speech_threshold,
     )
 
     def aviso(notice: object) -> None:
@@ -215,28 +259,7 @@ def _transcription(stt: object, ajustes: object) -> object:
             file=sys.stderr,
         )
 
-    return FallbackTranscription(nube, cast(Any, stt), on_fallback=aviso)
-
-
-def _cached_stt(stt: object, key: str) -> object:
-    """El STT con la caché de transcripciones delante. Medido: transcribir siete
-    minutos cuesta ~105 s y el resto de la tubería 0,8, así que reanudar una
-    revisión cortada sin esto significa esperar otra vez."""
-    from aida.arms.health.capture import load_capture_settings
-    from aida.arms.health.transcripts import CachedSTT, TranscriptCache
-
-    ajustes = load_capture_settings()
-    stt = _transcription(stt, ajustes)
-    cache = TranscriptCache(
-        Path.home() / ".cache" / "aida" / "transcripciones", key=key.encode()
-    )
-    cache.purge_expired()
-    return CachedSTT(
-        stt,
-        cache,
-        model=f"{ajustes.provider}:{ajustes.cloud_model}:{ajustes.model}",
-        no_speech_threshold=ajustes.no_speech_threshold,
-    )
+    return FallbackTranscription(nube, cast(Any, local), on_fallback=aviso)
 
 
 def _build_consultation(
@@ -266,7 +289,7 @@ def _build_consultation(
     from aida.arms.health.lexicon import load_lexicon
     from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
-    from aida.arms.health.negation import load_negation
+    from aida.arms.health.negation import load_negation, load_retraction
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
@@ -277,7 +300,7 @@ def _build_consultation(
         catalog = load_catalog(cotejo.catalog.paths[0], cotejo.catalog.paths[1])
     return Consultation(
         wording=default_summary_wording(),
-        stt=cast(Any, _cached_stt(stt, key)),
+        stt=cast(Any, _transcription(stt, key)),
         ocr=ocr if isinstance(ocr, LocalTesseractOCR) else cast(Any, ocr),
         catalog_index=build_index(catalog, stopwords=cotejo.stopwords),
         match_threshold=cotejo.threshold,
@@ -292,6 +315,7 @@ def _build_consultation(
         extractor=cast(Any, extractor),
         lexicon=load_lexicon(),
         negation=load_negation(),
+        retraction=load_retraction(),
         history_layout=load_history_layout(),
         review_metrics=ReviewMetricsStore(_review_metrics_path()),
     )

@@ -130,3 +130,56 @@ def split_polarity(text: str, catalog: NegationCatalog) -> PolarityParts:
         affirmed=" ".join(text[inicio:fin].strip() for inicio, fin in afirmados).strip(),
         negated=" ".join(text[inicio:fin].strip() for inicio, fin in negados).strip(),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RetractionRule:
+    """Cuándo una frase borra lo que dijo la anterior. `max_chars` es lo que
+    separa una respuesta («No, eso no.») de una descripción que empieza negando
+    («No, no me da vuelta, es más como que me voy a caer como flojera.»): la
+    primera contesta a lo de antes, la segunda habla por sí misma."""
+
+    max_chars: int
+
+
+def load_retraction(path: Path | None = None) -> RetractionRule:
+    ruta = path if path is not None else _EXTRACCION_POR_DEFECTO
+    raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("retraction"), dict):
+        raise ValueError(f"falta 'retraction' (mapeo) en {ruta}")
+    tope = raw["retraction"].get("max_chars")
+    if not isinstance(tope, int) or isinstance(tope, bool) or tope <= 0:
+        raise ValueError(f"'retraction.max_chars' debe ser un entero positivo en {ruta}")
+    return RetractionRule(max_chars=tope)
+
+
+def retracted_replies(
+    lines: tuple[str, ...], catalog: NegationCatalog, rule: RetractionRule
+) -> frozenset[str]:
+    """Las frases que la siguiente desmiente.
+
+    En una consulta, el profesional enumera y el paciente descarta: «¿Dolor en
+    el pecho, falta de aire, palpitaciones?» / «No, eso no». Medido sobre una
+    consulta real, esa pareja proponía dos códigos con puntuación 1.00, porque
+    la negación del plan 68 trabaja **dentro** de una frase y aquí está en la
+    siguiente.
+
+    El criterio no es «la anterior era una pregunta»: se probó y está refutado
+    —el modelo no siempre escribe el signo, y de 59 frases codificables solo 9
+    lo llevaban, ninguna la culpable—. Es la forma de la **respuesta**: entera
+    negada y corta.
+
+    Devuelve los textos, no sus posiciones: quien filtra los recibe ya agrupados
+    por sección y ha perdido el orden. Consecuencia declarada: si la misma frase
+    aparece dos veces idéntica en la consulta, se retractan las dos.
+    """
+    retractadas: list[str] = []
+    for position, line in enumerate(lines):
+        if position == 0:
+            continue
+        partes = split_polarity(line, catalog)
+        if partes.negated and not partes.affirmed and len(line.strip()) <= rule.max_chars:
+            previa = lines[position - 1].strip()
+            if previa:
+                retractadas.append(previa)
+    return frozenset(retractadas)

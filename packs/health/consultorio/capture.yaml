@@ -15,9 +15,48 @@ cloud_language: es
 cloud_base_url: https://api.openai.com
 timeout_seconds: 120.0
 
+# Cuánto se espera a **establecer** la conexión, aparte de cuánto se espera a la
+# respuesta. Son dos cosas distintas y hoy comparten número, lo que tenía una
+# consecuencia medida: en una red donde IPv6 resuelve pero no completa, la
+# primera petición del proceso tardaba 270 s —el temporizador del sistema, no el
+# nuestro— y `timeout_seconds: 120` la cortaba antes de que llegara a IPv4. Como
+# cada consulta hace UNA sola petición, la nube no se usaba nunca.
+#
+# Medido contra el proveedor declarado: con 5,0 la primera petición baja a
+# 10,40 s (prueba las dos direcciones IPv6 y cae a IPv4); con 3,0 quedan ~6 s.
+# Donde IPv6 funcione, esto no cuesta nada.
+connect_timeout_seconds: 3.0
+
+# Extensiones que el proveedor acepta. En datos porque es su contrato, no
+# nuestro, y cambia cuando él lo cambie.
+#
+# Medido: el `.m4a` de una grabadora de teléfono devuelve «400 Invalid file
+# format» con los cinco tipos de contenido probados —incluido `audio/m4a`—, así
+# que el rechazo es del contenido y no de la etiqueta. Sin esta puerta, se suben
+# diez megabytes para que los rechacen y la consulta acaba en el respaldo como si
+# hubiera fallado la nube.
+cloud_formats:
+  - ".flac"
+  - ".mp3"
+  - ".mp4"
+  - ".mpeg"
+  - ".mpga"
+  - ".oga"
+  - ".ogg"
+  - ".wav"
+  - ".webm"
+
 model: small
 device: cpu
 no_speech_threshold: 0.6
+
+# Cómo se ejecuta el modelo. Sin declararlo, ctranslate2 infiere float16 del
+# archivo, la CPU no lo soporta y acaba en float32, que es el modo más lento:
+# medido, 227 s frente a 144 s con int8 sobre la misma grabación, y con int8 la
+# transcripción salió además mejor puntuada.
+#
+# En datos y no en código por lo mismo que `device`: depende de la máquina.
+compute_type: int8
 
 # Abreviaturas cuyo punto NO cierra una frase. En datos porque dependen del
 # dominio: un brazo de contabilidad tendría otras. En minúsculas y con el punto.
@@ -33,3 +72,20 @@ abbreviations:
   - "cc."
   - "aprox."
   - "etc."
+
+# Con qué contexto arranca la transcripción. Whisper puntúa y escribe imitando
+# el estilo de este texto: sin él, medido sobre una consulta real de cinco
+# minutos, la transcripción trae UN punto y 143 comas, y la partición por
+# frases del plan 58 no tiene nada que partir. Con él, 89 puntos.
+#
+# Va en datos y no en código por dos razones: nombra vocabulario de dominio
+# —que el guardián de agnosticismo prohíbe dentro de src/— y cambia con la
+# especialidad del consultorio.
+#
+# Que las frases terminen en punto en este texto no es adorno: es lo que el
+# modelo imita.
+transcription_prompt: >-
+  Consulta médica en español. El paciente refiere cefalea occipital de dos
+  semanas de evolución. Toma losartán, metformina, atorvastatina,
+  levotiroxina, omeprazol e ibuprofeno. Antecedentes: hipertensión esencial,
+  diabetes mellitus tipo 2, dislipidemia, hipotiroidismo, gonartrosis.

@@ -15,10 +15,13 @@ Cubre los casos 1 a 9 de .claude/workflow/67-plan-puerto-stt.md:
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from aida.arms.health.transcription import (
+    CloudTranscriptionError,
     CloudWhisperSTT,
     FallbackNotice,
     FallbackTranscription,
@@ -298,3 +301,130 @@ def test_adaptador_envia_modelo_idioma_y_pide_segmentos_con_tiempos(tmp_path: Pa
     assert b'name="timestamp_granularities[]"\r\n\r\nsegment' in cuerpo
     assert b'filename="paciente_prueba.wav"' in cuerpo
     assert b"RIFF 1234 audio payload" in cuerpo
+
+
+# ---------------------------------------------------------------------------
+# Plan 70: Prompt en transcripción nube (§B.2) y puerta de formatos (§B.4b)
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_whisper_envia_prompt_en_multipart(tmp_path: Path) -> None:
+    """Caso 6 (§B.2): El prompt viaja en el cuerpo multipart cuando hay texto."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticion: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peticion
+        peticion = request
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.openai.com")
+    stt = CloudWhisperSTT(client, model="m", language="es", prompt="Prompt clínico")
+    stt.transcribe_segments(audio)
+    assert peticion is not None
+    assert b'name="prompt"\r\n\r\nPrompt cl\xc3\xadnico' in peticion.content
+
+
+def test_cloud_whisper_sin_prompt_no_incluye_campo_prompt(tmp_path: Path) -> None:
+    """Caso 7 (§B.2): Sin prompt, la clave prompt no aparece en el cuerpo multipart."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticion: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peticion
+        peticion = request
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.openai.com")
+    stt = CloudWhisperSTT(client, model="m", language="es", prompt="")
+    stt.transcribe_segments(audio)
+    assert peticion is not None
+    assert b'name="prompt"' not in peticion.content
+
+
+def test_cloud_whisper_cuerpo_multipart_completo_con_prompt(tmp_path: Path) -> None:
+    """Caso 8 (§B.2): El resto del cuerpo sigue exactamente igual al mandar prompt."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticion: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peticion
+        peticion = request
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.openai.com")
+    stt = CloudWhisperSTT(client, model="whisper-1", language="es", prompt="Prompt")
+    stt.transcribe_segments(audio)
+    assert peticion is not None
+    cuerpo = peticion.content
+    assert b'name="model"\r\n\r\nwhisper-1' in cuerpo
+    assert b'name="language"\r\n\r\nes' in cuerpo
+    assert b'name="response_format"\r\n\r\nverbose_json' in cuerpo
+    assert b'name="timestamp_granularities[]"\r\n\r\nsegment' in cuerpo
+    assert b'name="prompt"\r\n\r\nPrompt' in cuerpo
+
+
+def test_cloud_whisper_formato_no_declarado_levanta_cloud_transcription_error(
+    tmp_path: Path,
+) -> None:
+    """Caso 25 (§B.4b): Una extensión no declarada levanta CloudTranscriptionError
+    antes de tocar el cliente HTTP (llamadas a post quedan en 0)."""
+    audio = tmp_path / "archivo.m4a"
+    audio.write_bytes(b"dummy")
+    client = MagicMock()
+    stt = CloudWhisperSTT(client, model="m", language="es", formats=frozenset({".wav", ".mp3"}))
+    with pytest.raises(CloudTranscriptionError) as exc_info:
+        stt.transcribe_segments(audio)
+    assert ".m4a" in str(exc_info.value)
+    assert client.post.call_count == 0
+
+
+def test_cloud_whisper_extension_mayusculas_es_insensible(tmp_path: Path) -> None:
+    """Caso 26 (§B.4b): La comparación de extensión es insensible a mayúsculas."""
+    audio = tmp_path / "archivo.WAV"
+    audio.write_bytes(b"dummy")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.openai.com")
+    stt = CloudWhisperSTT(client, model="m", language="es", formats=frozenset({".wav"}))
+    res = stt.transcribe_segments(audio)
+    assert len(res) == 1
+
+
+def test_cloud_whisper_formats_vacio_no_bloquea_nada(tmp_path: Path) -> None:
+    """Caso 27 (§B.4b): formats vacío no bloquea nada (sin restricción)."""
+    audio = tmp_path / "archivo.custom"
+    audio.write_bytes(b"dummy")
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://api.openai.com")
+    stt = CloudWhisperSTT(client, model="m", language="es", formats=frozenset())
+    res = stt.transcribe_segments(audio)
+    assert len(res) == 1
+
+
+def test_cloud_whisper_error_formato_nombra_extension_y_admitidas(tmp_path: Path) -> None:
+    """Caso 28 (§B.4b): El mensaje de error nombra la extensión y las admitidas."""
+    audio = tmp_path / "archivo.ogg"
+    stt = CloudWhisperSTT(object(), model="m", language="es", formats=frozenset({".wav", ".mp3"}))
+    with pytest.raises(CloudTranscriptionError) as exc_info:
+        stt.transcribe_segments(audio)
+    msg = str(exc_info.value)
+    assert ".ogg" in msg
+    assert ".mp3, .wav" in msg
+
+
+def test_cloud_whisper_sin_extension_levanta_y_lo_nombra(tmp_path: Path) -> None:
+    """Caso 29 (§B.4b): Sin extensión levanta y el mensaje dice 'sin extensión'."""
+    audio = tmp_path / "audio_sin_ext"
+    stt = CloudWhisperSTT(object(), model="m", language="es", formats=frozenset({".wav"}))
+    with pytest.raises(CloudTranscriptionError) as exc_info:
+        stt.transcribe_segments(audio)
+    assert "sin extensión" in str(exc_info.value)

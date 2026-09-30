@@ -24,3 +24,14 @@ negation:
     - "pero"
     - "salvo"
     - "sin embargo"
+
+# Cuándo una frase borra lo que dijo la anterior. Una respuesta corta y
+# enteramente negada («No, eso no.») contesta a lo de antes; una frase larga que
+# empieza negando («No, no me da vuelta, es más como que me voy a caer como
+# flojera.») habla por sí misma y no retracta nada.
+#
+# 24 sale de medir una consulta real: cubre «No, eso no.» (11) y «No, borrosa
+# no.» (15), y deja fuera la de 64 caracteres. Se recalibra con el simulacro,
+# no adivinando.
+retraction:
+  max_chars: 24

@@ -7,10 +7,12 @@ son, por ahora, toda la batería de la unidad.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sys
 import tomllib
+from dataclasses import replace
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -24,6 +26,7 @@ import aida.engine.loop as loop
 from aida import __version__
 from aida.cognition.briefing import SpokenReply, fallback_free_chat_reply
 from aida.run import main
+from aida.voice.diarize import TranscriptSegment
 
 _TEMPLATE_PACK = Path(__file__).resolve().parents[1] / "packs" / "_plantilla" / "pack.yaml"
 
@@ -2767,11 +2770,13 @@ def test_consultation_cli_cached_stt_clave_distinta_vuelve_a_transcribir(
 
 def test_transcription_provider_local_no_construye_cliente_http(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Caso 12: Con provider: local, no se construye ningún cliente HTTP:
-    el transcriptor que llega a la consulta es el local tal cual.
+    el transcriptor que llega a la consulta es el local envuelto en CachedSTT.
     """
-    from aida.arms.health.capture import CaptureSettings
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcripts import CachedSTT
     from aida.run import _transcription
 
     cliente_construido = False
@@ -2783,51 +2788,47 @@ def test_transcription_provider_local_no_construye_cliente_http(
 
     monkeypatch.setattr("httpx.Client", mock_httpx_client, raising=False)
     monkeypatch.setenv("AIDA_STT_API_KEY", "clave-prueba-para-test")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    ajustes = CaptureSettings(
-        model="small",
-        device="cpu",
-        no_speech_threshold=0.6,
-        abbreviations=(),
-        provider="local",
-        cloud_model="whisper-1",
-        cloud_language="es",
-        cloud_base_url="https://api.openai.com",
-        timeout_seconds=120.0,
+    ajustes = replace(load_capture_settings(), provider="local")
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda: ajustes,
     )
+    key = Fernet.generate_key().decode()
     stt_base = MagicMock()
-    resultado = _transcription(stt_base, ajustes)
-    assert resultado is stt_base
+    resultado = _transcription(stt_base, key)
+    assert isinstance(resultado, CachedSTT)
+    assert resultado._stt is stt_base
     assert not cliente_construido
 
 
 def test_transcription_provider_cloud_sin_api_key_usa_local_y_avisa_stderr(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Caso 13: Con provider: cloud y sin AIDA_STT_API_KEY: se usa el local
     y stderr lo avisa.
     """
-    from aida.arms.health.capture import CaptureSettings
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcripts import CachedSTT
     from aida.run import _transcription
 
     monkeypatch.delenv("AIDA_STT_API_KEY", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    ajustes = CaptureSettings(
-        model="small",
-        device="cpu",
-        no_speech_threshold=0.6,
-        abbreviations=(),
-        provider="cloud",
-        cloud_model="whisper-1",
-        cloud_language="es",
-        cloud_base_url="https://api.openai.com",
-        timeout_seconds=120.0,
+    ajustes = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda: ajustes,
     )
+    key = Fernet.generate_key().decode()
     stt_base = MagicMock()
-    resultado = _transcription(stt_base, ajustes)
+    resultado = _transcription(stt_base, key)
 
-    assert resultado is stt_base
+    assert isinstance(resultado, CachedSTT)
+    assert resultado._stt is stt_base
     captured = capsys.readouterr()
     assert "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local" in captured.err
 
@@ -2839,75 +2840,52 @@ def test_identidad_cache_distingue_nube_de_local_no_reutiliza(
     """Caso 14: La identidad de la caché distingue nube de local: el mismo audio
     transcrito con provider: cloud y luego con local no reutiliza la primera transcripción.
     """
-    from aida.arms.health.capture import CaptureSettings
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import FallbackTranscription
     from aida.arms.health.transcripts import CachedSTT
-    from aida.run import _cached_stt
+    from aida.run import _transcription
 
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "clave-prueba")
 
     audio = tmp_path / "consulta.wav"
     audio.write_bytes(b"RIFF dummy audio bytes para distincion de cache")
 
     # 1. Ejecución con provider: cloud
-    ajustes_cloud = CaptureSettings(
-        model="small",
-        device="cpu",
-        no_speech_threshold=0.6,
-        abbreviations=(),
-        provider="cloud",
-        cloud_model="whisper-1",
-        cloud_language="es",
-        cloud_base_url="https://api.openai.com",
-        timeout_seconds=120.0,
-    )
+    ajustes_cloud = replace(load_capture_settings(), provider="cloud")
     monkeypatch.setattr(
         "aida.arms.health.capture.load_capture_settings",
-        lambda *args: ajustes_cloud,
+        lambda: ajustes_cloud,
     )
 
     mock_cloud_backend = MagicMock()
-    mock_seg_cloud = MagicMock()
-    mock_seg_cloud.start = 0.0
-    mock_seg_cloud.end = 2.0
-    mock_seg_cloud.text = "Texto desde nube"
+    mock_seg_cloud = TranscriptSegment(0.0, 2.0, "Texto desde nube")
     mock_cloud_backend.transcribe_segments.return_value = (mock_seg_cloud,)
 
-    stt_cloud = _cached_stt(mock_cloud_backend, key)
-    assert isinstance(stt_cloud, CachedSTT)
+    stt_cloud = cast(Any, _transcription(MagicMock(), key))
+    assert isinstance(stt_cloud, FallbackTranscription)
+    primario_cloud: Any = stt_cloud._primary
+    primario_cloud._stt = mock_cloud_backend
     res_cloud = stt_cloud.transcribe_segments(audio)
     assert res_cloud[0].text == "Texto desde nube"
     assert mock_cloud_backend.transcribe_segments.call_count == 1
 
     # 2. Ejecución con provider: local sobre el mismo audio
-    ajustes_local = CaptureSettings(
-        model="small",
-        device="cpu",
-        no_speech_threshold=0.6,
-        abbreviations=(),
-        provider="local",
-        cloud_model="whisper-1",
-        cloud_language="es",
-        cloud_base_url="https://api.openai.com",
-        timeout_seconds=120.0,
-    )
+    ajustes_local = replace(load_capture_settings(), provider="local")
     monkeypatch.setattr(
         "aida.arms.health.capture.load_capture_settings",
-        lambda *args: ajustes_local,
+        lambda: ajustes_local,
     )
 
     mock_local_backend = MagicMock()
-    mock_seg_local = MagicMock()
-    mock_seg_local.start = 0.0
-    mock_seg_local.end = 2.0
-    mock_seg_local.text = "Texto desde local"
+    mock_seg_local = TranscriptSegment(0.0, 2.0, "Texto desde local")
     mock_local_backend.transcribe_segments.return_value = (mock_seg_local,)
 
-    stt_local = _cached_stt(mock_local_backend, key)
+    stt_local = _transcription(mock_local_backend, key)
     assert isinstance(stt_local, CachedSTT)
     res_local = stt_local.transcribe_segments(audio)
     assert res_local[0].text == "Texto desde local"
-    # No debió reutilizar la caché de cloud: debió llamar al backend local
     assert mock_local_backend.transcribe_segments.call_count == 1
 
 
@@ -3029,6 +3007,307 @@ def test_run_py_no_tiene_rutas_catalogo_hardcodeadas() -> None:
     contenido = run_path.read_text(encoding="utf-8")
     assert "codes.json" not in contenido
     assert "cie-10.csv" not in contenido
+
+
+# ---------------------------------------------------------------------------
+# Plan 70: CLI y composición de transcripción (§B.5)
+# ---------------------------------------------------------------------------
+
+
+def test_build_consultation_inyecta_regla_retractacion_del_pack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 22 (§B.5): La CLI inyecta la regla de retractación real del pack."""
+    import argparse
+
+    from aida.arms.health.negation import RetractionRule
+    from aida.run import _build_consultation
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    consultation = _build_consultation(
+        argparse.Namespace(llm=None),
+        stt=MagicMock(),
+        ocr=MagicMock(),
+        key=key,
+    )
+    assert consultation is not None
+    assert isinstance(consultation._retraction, RetractionRule)
+    assert consultation._retraction.max_chars == 24
+
+
+def test_transcription_pasa_prompt_a_transcriptores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 23 (§B.5): La CLI pasa el prompt del pack a los dos transcriptores."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import FallbackTranscription
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
+
+    ajustes = replace(
+        load_capture_settings(),
+        provider="cloud",
+        transcription_prompt="Prompt único de prueba",
+    )
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    fb = cast(Any, _transcription(MagicMock(), key))
+    assert isinstance(fb, FallbackTranscription)
+    primario: Any = fb._primary
+    respaldo: Any = fb._fallback
+    assert primario._stt._prompt == "Prompt único de prueba"
+    prompt_hex = hashlib.blake2b(
+        "Prompt único de prueba".encode(), digest_size=8
+    ).hexdigest()
+    assert prompt_hex in primario._model
+    assert prompt_hex in respaldo._model
+
+
+def test_cached_stt_huella_cambia_con_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 24 (§B.5): Dos capture.yaml idénticos salvo en prompt producen identidades distintas."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    aj1 = replace(load_capture_settings(), provider="local", transcription_prompt="prompt A")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj1)
+    stt1 = cast(Any, _transcription(MagicMock(), key))
+
+    aj2 = replace(load_capture_settings(), provider="local", transcription_prompt="prompt B")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj2)
+    stt2 = cast(Any, _transcription(MagicMock(), key))
+
+    assert stt1._model != stt2._model
+
+    monkeypatch.setenv("AIDA_STT_API_KEY", "key-test")
+    aj_c1 = replace(load_capture_settings(), provider="cloud", transcription_prompt="prompt A")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj_c1)
+    fb1 = cast(Any, _transcription(MagicMock(), key))
+
+    aj_c2 = replace(load_capture_settings(), provider="cloud", transcription_prompt="prompt B")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj_c2)
+    fb2 = cast(Any, _transcription(MagicMock(), key))
+
+    assert fb1._primary._model != fb2._primary._model
+
+
+def test_transcription_timeout_separa_connect_y_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 25 (§B.5): El cliente se construye con httpx.Timeout y valores
+    separados de connect y read."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import FallbackTranscription
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
+
+    ajustes = replace(
+        load_capture_settings(),
+        provider="cloud",
+        connect_timeout_seconds=3.5,
+        timeout_seconds=95.0,
+    )
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    fb = cast(Any, _transcription(MagicMock(), key))
+    assert isinstance(fb, FallbackTranscription)
+    primario: Any = fb._primary
+    cliente = primario._stt._client
+    assert cliente.timeout.connect == 3.5
+    assert cliente.timeout.read == 95.0
+
+
+def test_load_capture_settings_connect_timeout_valida(tmp_path: Path) -> None:
+    """Caso 26 (§B.5): connect_timeout_seconds es obligatorio y valida número positivo."""
+    from aida.arms.health.capture import load_capture_settings
+
+    base_yaml = (
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
+        "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
+        "timeout_seconds: 10\ncompute_type: int8\ncloud_formats: ['.wav']\n"
+        "transcription_prompt: 'p'\n"
+    )
+
+    def _probar(contenido: str) -> None:
+        p = tmp_path / "c.yaml"
+        p.write_text(contenido, encoding="utf-8")
+        with pytest.raises(ValueError, match="connect_timeout_seconds"):
+            load_capture_settings(p)
+
+    _probar(base_yaml)  # clave ausente
+    _probar(f"{base_yaml}connect_timeout_seconds: 0\n")
+    _probar(f"{base_yaml}connect_timeout_seconds: -2.0\n")
+    _probar(f"{base_yaml}connect_timeout_seconds: true\n")
+    _probar(f"{base_yaml}connect_timeout_seconds: cinco\n")
+
+
+def test_transcription_sin_clave_devuelve_cached_stt_local_y_avisa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Caso 27 (§B.5): Sin clave devuelve CachedSTT local con identidad local:... y aviso."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcripts import CachedSTT
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("AIDA_STT_API_KEY", raising=False)
+
+    ajustes = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    res = _transcription(MagicMock(), key)
+    assert isinstance(res, CachedSTT)
+    assert res._model.startswith("local:")
+    assert "falta AIDA_STT_API_KEY" in capsys.readouterr().err
+
+
+def test_transcription_con_clave_devuelve_fallback_con_caches_distintas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 28 (§B.5): Con clave devuelve FallbackTranscription con identidades
+    distintas en primario y respaldo."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import FallbackTranscription
+    from aida.arms.health.transcripts import CachedSTT
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
+
+    ajustes = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    fb = cast(Any, _transcription(MagicMock(), key))
+    assert isinstance(fb, FallbackTranscription)
+    assert isinstance(fb._primary, CachedSTT)
+    assert isinstance(fb._fallback, CachedSTT)
+    assert fb._primary._model.startswith("cloud:")
+    assert fb._fallback._model.startswith("local:")
+    assert fb._primary._model != fb._fallback._model
+
+
+def test_transcription_caida_respaldo_y_recuperacion_genera_dos_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 29 (§B.5, I-138): Mismo audio con caída y luego recuperación
+    genera 2 entradas en caché."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import CloudTranscriptionError
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    cache_dir = tmp_path / ".cache" / "aida" / "transcripciones"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF audio data")
+
+    # 1. Nube falla -> responde respaldo
+    mock_local = MagicMock()
+    mock_local.transcribe_segments.return_value = (TranscriptSegment(0.0, 1.0, "Texto local"),)
+    ajustes = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    fb1 = cast(Any, _transcription(mock_local, key))
+    fb1._primary._stt.transcribe_segments = MagicMock(
+        side_effect=CloudTranscriptionError("nube caida")
+    )
+    res1 = fb1.transcribe_segments(audio)
+    assert res1[0].text == "Texto local"
+    assert len(list(cache_dir.glob("*.transcript"))) == 1
+
+    # 2. Nube responde -> debe llamar a la nube y generar segunda entrada
+    fb2 = cast(Any, _transcription(mock_local, key))
+    fb2._primary._stt.transcribe_segments = MagicMock(
+        return_value=(TranscriptSegment(0.0, 1.0, "Texto nube"),)
+    )
+    res2 = fb2.transcribe_segments(audio)
+    assert res2[0].text == "Texto nube"
+    assert fb2._primary._stt.transcribe_segments.call_count == 1
+    assert len(list(cache_dir.glob("*.transcript"))) == 2
+
+
+def test_transcription_reanudar_sin_red_usa_cache_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 30 (§B.5): Reanudar sin red (plan 65): con nube cayendo dos veces,
+    la segunda no retranscribe en local."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import CloudTranscriptionError
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF audio data")
+
+    mock_local = MagicMock()
+    mock_local.transcribe_segments.return_value = (TranscriptSegment(0.0, 1.0, "Texto local"),)
+    ajustes = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+
+    fb1 = cast(Any, _transcription(mock_local, key))
+    fb1._primary._stt.transcribe_segments = MagicMock(
+        side_effect=CloudTranscriptionError("nube caida")
+    )
+    fb1.transcribe_segments(audio)
+    assert mock_local.transcribe_segments.call_count == 1
+
+    # Segunda corrida sin red
+    fb2 = cast(Any, _transcription(mock_local, key))
+    fb2._primary._stt.transcribe_segments = MagicMock(
+        side_effect=CloudTranscriptionError("nube caida")
+    )
+    fb2.transcribe_segments(audio)
+    assert mock_local.transcribe_segments.call_count == 1
+
+
+def test_cached_stt_identidad_incluye_device_y_compute_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso 31 (§B.5): La identidad local incluye device y compute_type."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    aj1 = replace(load_capture_settings(), provider="local", device="cpu", compute_type="int8")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj1)
+    stt1 = cast(Any, _transcription(MagicMock(), key))
+
+    aj2 = replace(load_capture_settings(), provider="local", device="cpu", compute_type="float32")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj2)
+    stt2 = cast(Any, _transcription(MagicMock(), key))
+
+    aj3 = replace(load_capture_settings(), provider="local", device="cuda", compute_type="int8")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj3)
+    stt3 = cast(Any, _transcription(MagicMock(), key))
+
+    assert stt1._model != stt2._model
+    assert stt1._model != stt3._model
+
+
+def test_run_no_expone_cached_stt() -> None:
+    """Caso 32 (§B.5): aida.run no expone _cached_stt."""
+    import aida.run
+
+    assert not hasattr(aida.run, "_cached_stt")
 
 
 

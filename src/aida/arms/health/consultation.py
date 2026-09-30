@@ -24,7 +24,13 @@ from aida.arms.health.match import (
 )
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding, Encounter, build_encounter
-from aida.arms.health.negation import NO_NEGATION, NegationCatalog, split_polarity
+from aida.arms.health.negation import (
+    NO_NEGATION,
+    NegationCatalog,
+    RetractionRule,
+    retracted_replies,
+    split_polarity,
+)
 from aida.arms.health.review import Reviewer, review_encounter
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
@@ -107,6 +113,7 @@ class Consultation:
         extractor: ClinicalExtractor | None = None,
         lexicon: Lexicon = (),
         negation: NegationCatalog = NO_NEGATION,
+        retraction: RetractionRule | None = None,
         history_layout: HistoryLayout | None = None,
         review_metrics: ReviewMetricsStore | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -125,6 +132,7 @@ class Consultation:
         self._extractor = extractor
         self._lexicon = lexicon
         self._negation = negation
+        self._retraction = retraction
         self._history_layout = history_layout
         self._review_metrics = review_metrics
         self._clock = clock
@@ -175,6 +183,14 @@ class Consultation:
         else:
             transcript = self._stt.transcribe(audio_path)
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
+
+        retractadas: frozenset[str] = frozenset()
+        if self._retraction is not None:
+            retractadas = retracted_replies(
+                tuple(t.strip() for t in transcript.splitlines() if t.strip()),
+                self._negation,
+                self._retraction,
+            )
 
         grouped_sections = None
         encounter = None
@@ -231,7 +247,9 @@ class Consultation:
         history = history_text() if callable(history_text) else history_text
         self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
 
-        de_hoy, de_historia = self._codable_texts(transcript, history, grouped_sections)
+        de_hoy, de_historia = self._codable_texts(
+            transcript, history, grouped_sections, retractadas
+        )
         matches = match_by_origin(
             today=de_hoy,
             history=de_historia,
@@ -260,6 +278,7 @@ class Consultation:
         transcript: str,
         history: str,
         grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None,
+        retracted: frozenset[str] = frozenset(),
     ) -> tuple[tuple[CodableText, ...], tuple[CodableText, ...]]:
         """Qué se cruza contra el catálogo, como `(hoy, historia)`: los hallazgos
         de las secciones que el pack marca como portadoras de diagnóstico, y por
@@ -284,6 +303,7 @@ class Consultation:
             dichos = tuple(
                 texto for spec, textos in grouped_sections if spec.codable for texto in textos
             )
+        dichos = tuple(t for t in dichos if t.strip() not in retracted)
         return (self._affirmed(dichos), self._affirmed(lineas))
 
     def _affirmed(self, texts: tuple[str, ...]) -> tuple[CodableText, ...]:

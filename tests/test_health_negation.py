@@ -12,7 +12,10 @@ import pytest
 from aida.arms.health.negation import (
     NegationCatalog,
     PolarityParts,
+    RetractionRule,
     load_negation,
+    load_retraction,
+    retracted_replies,
     split_polarity,
 )
 
@@ -145,3 +148,84 @@ def test_split_polarity_determinismo() -> None:
     assert cat1 == cat2
     texto = "Tiene cefalea pero no náuseas ni vómitos"
     assert split_polarity(texto, cat1) == split_polarity(texto, cat2)
+
+
+# ---------------------------------------------------------------------------
+# Plan 70: Retractación de negaciones cortas (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_retracted_replies_caso_real_anamnesis() -> None:
+    """Caso 9 (§B.3): Caso real de la consulta retracta la frase anterior."""
+    lineas = ("Drolar en el pecho, falta de aire, palpitaciones.", "No, eso no.")
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert "Drolar en el pecho, falta de aire, palpitaciones." in retractadas
+
+
+def test_retracted_replies_negacion_larga_no_retracta() -> None:
+    """Caso 10 (§B.3): Una negación larga no retracta (descripción propia)."""
+    lineas = (
+        "Y el peso, ha cambiado.",
+        "No, no me da vuelta, es más como que me voy a caer como flojera.",
+    )
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert len(retractadas) == 0
+
+
+def test_retracted_replies_frase_mixta_no_retracta() -> None:
+    """Caso 11 (§B.3): Una frase mixta con tramo afirmado no retracta."""
+    lineas = ("Antecedentes de tabaquismo.", "Fumar, no, lo dejé hace 10 años.")
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert len(retractadas) == 0
+
+    # Frase mixta corta (<= 24 caracteres): sin `not partes.affirmed`, entraría por su longitud.
+    lineas_cortas = ("Antecedentes de tabaquismo.", "Fumar, no, lo dejé.")
+    assert len("Fumar, no, lo dejé.") <= 24
+    retractadas_cortas = retracted_replies(
+        lineas_cortas, load_negation(), RetractionRule(max_chars=24)
+    )
+    assert len(retractadas_cortas) == 0
+
+
+def test_retracted_replies_primera_frase_nunca_retracta() -> None:
+    """Caso 12 (§B.3): La primera frase nunca retracta nada (no hay anterior)."""
+    lineas = ("No, eso no.", "Dolor precordial.")
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert len(retractadas) == 0
+
+
+def test_retracted_replies_previa_vacia_no_entra() -> None:
+    """Caso 13 (§B.3): Una previa vacía o en blanco no entra al conjunto."""
+    lineas = ("   ", "No, eso no.")
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert len(retractadas) == 0
+
+
+def test_retracted_replies_frase_identica_repetida_anclada() -> None:
+    """Caso 14 (§B.3): Frases idénticas repetidas se retractan ambas (anclado)."""
+    lineas = ("Falta de aire.", "No, eso no.", "Falta de aire.", "Sí, eso sí.")
+    retractadas = retracted_replies(lineas, load_negation(), RetractionRule(max_chars=24))
+    assert "Falta de aire." in retractadas
+    assert len(retractadas) == 1
+
+
+def test_load_retraction_valida_campos_y_valores(tmp_path: Path) -> None:
+    """Caso 15 (§B.3): load_retraction valida presencia de 'retraction' y max_chars."""
+    def _probar(contenido: str, match: str) -> None:
+        p = tmp_path / "ext.yaml"
+        p.write_text(contenido, encoding="utf-8")
+        with pytest.raises(ValueError, match=match):
+            load_retraction(p)
+
+    _probar("negation: {}", "falta 'retraction'")
+    _probar("retraction: {}", "retraction.max_chars.*entero positivo")
+    _probar("retraction:\n  max_chars: 0", "retraction.max_chars.*entero positivo")
+    _probar("retraction:\n  max_chars: -5", "retraction.max_chars.*entero positivo")
+    _probar("retraction:\n  max_chars: true", "retraction.max_chars.*entero positivo")
+    _probar("retraction:\n  max_chars: veinte", "retraction.max_chars.*entero positivo")
+
+
+def test_load_retraction_pack_real_declara_24() -> None:
+    """Caso 16 (§B.3): El pack real declara max_chars: 24."""
+    regla = load_retraction()
+    assert regla.max_chars == 24
