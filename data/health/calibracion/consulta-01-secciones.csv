@@ -1,0 +1,123 @@
+text,assigned,expected
+"Siéntese, por favor.",motivo_consulta,otros_comentarios
+Cuénteme qué lo trae por aquí.,motivo_consulta,otros_comentarios
+¿Qué más toma?,motivo_consulta,otros_comentarios
+¿Por qué la dejó?,motivo_consulta,otros_comentarios
+"Empezó hace unas dos semanas, más o menos.",enfermedad_actual,enfermedad_actual
+"Sí, tengo la presión alta desde hace años.",enfermedad_actual,antecedentes
+"Tomaba la atorvastatina, pero la dejé hace como tres semanas.",enfermedad_actual,medicamentos
+Pues desde hace un mes o así.,enfermedad_actual,enfermedad_actual
+"Y la vesícula hace unos doce años, por laparoscopia.",enfermedad_actual,antecedentes
+"Fumar no, lo dejé hace 10 años.",enfermedad_actual,antecedentes
+"Resumiendo todo, dolor de cabeza en la nuca y mareos desde hace dos semanas.",enfermedad_actual,motivo_consulta
+Me lo mido de vez en cuando.,antecedentes,otros_comentarios
+¿Hay antecedentes en su familia de problemas del corazón o del ictus?,antecedentes,otros_comentarios
+¿Siente que todo le da vueltas o es más bien como una inestabilidad?,sintomas,otros_comentarios
+Ahí le tengo que decir una cosa.,sintomas,otros_comentarios
+"Me duele sobre todo aquí atrás, en la nuca, y a veces me mareo.",examen_fisico,sintomas
+"Sobre todo por la mañana, al levantarme.",examen_fisico,sintomas
+"Luego, a lo largo del día, se me va aliviando un poco, pero por la tarde a veces vuelve.",examen_fisico,sintomas
+¿Se ha llegado a caer o a desmayar?,examen_fisico,otros_comentarios
+¿Qué medicación ha tomado para la presión?,examen_fisico,otros_comentarios
+Pues yo me lo tomo solo en la mañana.,examen_fisico,medicamentos
+"La de la noche se me olvida, casi siempre, la verdad.",examen_fisico,medicamentos
+Esa sí me la tomo bien.,examen_fisico,medicamentos
+Un vecino me dijo que eso era por la pastilla del colesterol y la dejé.,examen_fisico,medicamentos
+"Un poco sí, la verdad.",examen_fisico,otros_comentarios
+"La de la tiroides, la levotiroxina, en ayunas.",examen_fisico,medicamentos
+Para la rodilla tomé ibuprofeno.,examen_fisico,medicamentos
+"La rodilla derecha me sigue molestando, la de la artrosis.",examen_fisico,sintomas
+¿Desde cuándo toma ibuprofeno a diario?,examen_fisico,otros_comentarios
+Desde que empezó a dolerme más la rodilla.,examen_fisico,enfermedad_actual
+Me lo compro en la farmacia.,examen_fisico,medicamentos
+¿Tiene alguna alergia a medicamentos?,examen_fisico,otros_comentarios
+"Sí, a la penicilina.",examen_fisico,antecedentes
+"En la última analítica, la de mayo, me dijeron que estaba un poco alta la hemoglobina esa.",examen_fisico,resultados
+¿La hemoglobina glucosilada?,examen_fisico,otros_comentarios
+"Bueno, me levanto una vez por la noche.",examen_fisico,sintomas
+¿Y la visión?,examen_fisico,otros_comentarios
+¿Para qué le voy a mentir?,examen_fisico,otros_comentarios
+Con la rodilla no puedo caminar mucho y como bastante pan.,examen_fisico,antecedentes
+"Presión alta en casa, toma el losartán una vez al día, dejó la atorvastatina por dolor muscular y toma el ibuprofeno a diario en la rodilla.",examen_fisico,evaluacion
+Vamos a tomarle la presión ahora y a revisar todo esto.,examen_fisico,plan
+Sobre todo cuando me levanto rápido de la silla o de la cama.,resultados,sintomas
+El losartán de 50.,resultados,medicamentos
+"Una por la mañana, con el desayuno.",resultados,medicamentos
+¿Y el resto de la medicación?,resultados,otros_comentarios
+La metmorfina para el azúcar.,resultados,medicamentos
+¿Y para el colesterol?,resultados,otros_comentarios
+"Y el omeprazol para el estómago, porque tengo reflujo.",resultados,medicamentos
+"¿Algo para el dolor, por ejemplo?",resultados,otros_comentarios
+"Eso también es relevante, porque el ibuprofeno puede subir la presión.",resultados,otros_comentarios
+De pequeño me salían ronchas por todo el cuerpo.,resultados,antecedentes
+Me quitaron el apéndice cuando era joven.,resultados,antecedentes
+¿Y cómo va el azúcar?,resultados,otros_comentarios
+"¿Dolor en el pecho, falta de aire, palpitaciones?",resultados,otros_comentarios
+¿Y el peso?,resultados,otros_comentarios
+¿Cómo va con la dieta y el ejercicio?,resultados,otros_comentarios
+"Intento no tomar azúcar, pero el pan me cuesta.",resultados,antecedentes
+Y vamos a replantearle lo del lupus venoso y el colesterol.,resultados,plan
+¿Se la ha tomado en casa?,evaluacion,otros_comentarios
+Me pesé en la farmacia y estaba en 98 kilos.,evaluacion,signos
+Antes estaba en 95.,evaluacion,signos
+"Pues mire, vengo porque llevo como dos semanas con dolor de cabeza.",diagnosticos,motivo_consulta
+con 96.,diagnosticos,signos
+"¿Ha notado la visión borrosa, con dolores de cabeza?",diagnosticos,otros_comentarios
+"Al principio pensé que era cansancio, pero no se me quita.",procedimientos,enfermedad_actual
+¿Cuántas veces al día se lo toma?,procedimientos,otros_comentarios
+¿Y se le quitó el dolor muscular al dejarla?,procedimientos,otros_comentarios
+¿Se lo controla?,procedimientos,otros_comentarios
+¿De 850?,medicamentos,otros_comentarios
+De acuerdo.,medicamentos,otros_comentarios
+"¿Algún otro medicamento, aunque sea sin receta?",medicamentos,otros_comentarios
+Me agarro de algo y se me pasa en unos segundos.,ordenes,sintomas
+¿El dolor es todo el día o en algún momento en concreto?,plan,otros_comentarios
+Eso es importante.,plan,otros_comentarios
+Una en el desayuno y otra en la cena.,plan,medicamentos
+¿Es así?,plan,otros_comentarios
+"Sí, doctor, eso es.",plan,otros_comentarios
+Buenos días.,otros_comentarios,otros_comentarios
+"Buenos días, doctor.",otros_comentarios,otros_comentarios
+¿Desde cuándo exactamente?,otros_comentarios,otros_comentarios
+¿Y los mareos cómo son?,otros_comentarios,otros_comentarios
+"No, no me da vueltas.",otros_comentarios,sintomas
+"Es más como que me voy a caer, como flojera.",otros_comentarios,sintomas
+"No, eso no.",otros_comentarios,otros_comentarios
+"Usted tiene presión alta, ¿verdad?",otros_comentarios,otros_comentarios
+Tengo un aparato en casa y me la he tomado varias veces esta semana.,otros_comentarios,signos
+"Me ha salido alta, doctor.",otros_comentarios,signos
+Una vez me salió en 160 con 100 y otra 150 y 8.90...,otros_comentarios,signos
+"Eso está elevado, sí.",otros_comentarios,otros_comentarios
+"Aquí en su historia figura que debería tomarlo cada 12 horas, dos veces al día.",otros_comentarios,medicamentos
+"Ah, sí.",otros_comentarios,otros_comentarios
+Al final ya ni me acuerdo.,otros_comentarios,otros_comentarios
+Entiendo.,otros_comentarios,otros_comentarios
+Repasemos.,otros_comentarios,otros_comentarios
+"Sí, esa.",otros_comentarios,otros_comentarios
+"Porque me dolían mucho las piernas, los músculos, como si hubiese hecho ejercicio sin haber hecho.",otros_comentarios,sintomas
+"No del todo, pero mejor.",otros_comentarios,sintomas
+¿Toma algo más?,otros_comentarios,otros_comentarios
+"Bueno, sí.",otros_comentarios,otros_comentarios
+"Me tomo uno o dos al día, depende del dolor.",otros_comentarios,medicamentos
+"Correcto, así consta.",otros_comentarios,otros_comentarios
+¿Ha tenido alguna operación?,otros_comentarios,otros_comentarios
+"Sí, dos.",otros_comentarios,antecedentes
+Tendría veintitantos años.,otros_comentarios,antecedentes
+Bien.,otros_comentarios,otros_comentarios
+En ayunas me sale entre 130 y 140.,otros_comentarios,resultados
+Sí.,otros_comentarios,otros_comentarios
+"¿Ha notado más sed, orinar más de lo normal?",otros_comentarios,otros_comentarios
+"Sed un poco más, sí.",otros_comentarios,sintomas
+"Orinar lo normal, creo.",otros_comentarios,sintomas
+"No, borrosa no.",otros_comentarios,sintomas
+"Bueno, alguna vez como lucecitas, pero muy poco.",otros_comentarios,sintomas
+"No, eso no.",otros_comentarios,otros_comentarios
+¿Ha cambiado?,otros_comentarios,otros_comentarios
+He subido un poco.,otros_comentarios,signos
+"Mal, doctor.",otros_comentarios,otros_comentarios
+¿Fuma o bebe alcohol?,otros_comentarios,otros_comentarios
+"Alcohol, una cerveza los fines de semana nada más.",otros_comentarios,antecedentes
+Mi padre murió de un infarto a los 60 y mi madre tenía diabetes.,otros_comentarios,antecedentes
+Muy bien.,otros_comentarios,otros_comentarios
+"Vale, doctor.",otros_comentarios,otros_comentarios
+Muchas gracias.,otros_comentarios,otros_comentarios

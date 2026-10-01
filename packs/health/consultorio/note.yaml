@@ -11,6 +11,9 @@ system_prompt: >-
   hechos de ese apartado. Prohibido añadir diagnósticos, cifras, fármacos,
   fechas o datos que no estén en los hechos; si un apartado no tiene hechos,
   déjalo vacío. No repitas el saludo ni la despedida. No incluyas códigos.
+  Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta
+  para averiguar algo: la nota recoge lo que se afirma, no cómo se averiguó. Si un
+  apartado solo contiene preguntas, déjalo vacío.
 
 # Quién redacta y con qué versión. En datos por lo mismo que el modelo de
 # transcripción: dos mediciones separadas por semanas solo son comparables si

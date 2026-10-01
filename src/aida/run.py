@@ -115,6 +115,17 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="resume las revisiones registradas (por defecto, el archivo de --review)",
     )
     parser.add_argument(
+        "--section-dump",
+        nargs=2,
+        metavar=("MODELO", "SALIDA"),
+        help="vuelca las frases de un modelo clínico a un CSV para etiquetar a mano",
+    )
+    parser.add_argument(
+        "--section-report",
+        metavar="REFERENCIA",
+        help="mide la clasificación por apartados contra un CSV ya etiquetado",
+    )
+    parser.add_argument(
         "--export",
         nargs="?",
         const="",
@@ -554,6 +565,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"aida: error: {exc}", file=sys.stderr)
             return 1
         print(format_stats(records))
+        return 0
+
+    if args.section_dump is not None:
+        from aida.arms.health.calibration import dump_phrases
+
+        modelo, salida = args.section_dump
+        try:
+            volcadas = dump_phrases(Path(modelo), Path(salida))
+        except (OSError, ValueError) as exc:
+            print(f"aida: error: {exc}", file=sys.stderr)
+            return 1
+        print(f"aida: {volcadas} frases volcadas en {salida}", file=sys.stderr)
+        return 0
+
+    if args.section_report is not None:
+        from aida.arms.health.calibration import section_report
+        from aida.arms.health.sections import load_sections
+
+        try:
+            catalog = load_sections()
+            print(section_report(Path(args.section_report), catalog))
+        except (OSError, ValueError) as exc:
+            print(f"aida: error: {exc}", file=sys.stderr)
+            return 1
         return 0
 
     if args.check_capture:

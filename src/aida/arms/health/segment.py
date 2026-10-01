@@ -27,6 +27,38 @@ class SegmentedLine:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class ScoredSection:
+    """La sección ganadora y con qué puntuación — la puntuación no la usa
+    `segment_lines`, pero sí el informe de calibración (`calibration.py`) para
+    decir si un fallo se arregla con el umbral o con los gatillos."""
+
+    section: SectionSpec
+    score: float
+
+
+def classify_line(
+    line: str, index: SectionIndex, *, threshold: float, fallback: SectionSpec
+) -> ScoredSection:
+    """La sección de mayor coseno sobre el umbral, o la reserva si ninguna lo
+    alcanza. Puerta única de la clasificación: la usan `segment_lines` y el
+    informe de calibración, para que los dos vean siempre el mismo criterio y
+    no haya dos clasificadores que puedan divergir.
+
+    Con reserva, la puntuación que se devuelve es la mejor que hubo —aunque no
+    alcanzara el umbral—, no un `0.0`: es lo que le dice a quien calibra si la
+    frase casi entra o si no se parecía a nada."""
+    query = vectorize(line)
+    if not query:
+        return ScoredSection(section=fallback, score=0.0)
+    scored = [(round(cosine(query, vector), 4), spec) for spec, vector in index]
+    scored.sort(key=lambda pair: (-pair[0], pair[1].section_id))
+    best_score, best_spec = scored[0]
+    if best_score >= threshold:
+        return ScoredSection(section=best_spec, score=best_score)
+    return ScoredSection(section=fallback, score=best_score)
+
+
 def segment_lines(
     lines: tuple[str, ...], index: SectionIndex, *, threshold: float, fallback: SectionSpec
 ) -> tuple[SegmentedLine, ...]:
@@ -34,16 +66,8 @@ def segment_lines(
     for line in lines:
         if not line.strip():
             continue
-        query = vectorize(line)
-        scored = (
-            [(round(cosine(query, vector), 4), spec) for spec, vector in index] if query else []
-        )
-        scored = [(score, spec) for score, spec in scored if score >= threshold]
-        if not scored:
-            result.append(SegmentedLine(section=fallback, text=line))
-            continue
-        scored.sort(key=lambda pair: (-pair[0], pair[1].section_id))
-        result.append(SegmentedLine(section=scored[0][1], text=line))
+        winner = classify_line(line, index, threshold=threshold, fallback=fallback)
+        result.append(SegmentedLine(section=winner.section, text=line))
     return tuple(result)
 
 
