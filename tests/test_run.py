@@ -7,6 +7,7 @@ son, por ahora, toda la batería de la unidad.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
 import json
@@ -1039,9 +1040,7 @@ def test_consultation_cli_extract_sin_segment_error(
         "aida.arms.health.extract.build_health_extractor", _fail_build, raising=False
     )
 
-    codigo = main(
-        ["--consultation", "--extract", "--audio", "dummy.wav", "--history", "dummy.png"]
-    )
+    codigo = main(["--consultation", "--extract", "--audio", "dummy.wav", "--history", "dummy.png"])
     captured = capsys.readouterr()
     assert codigo == 1
     assert "aida: error: --extract requiere --segment" in captured.err
@@ -1522,9 +1521,7 @@ def test_converse_mic_history_inexistente_falla_antes_de_cargar_whisper(
     monkeypatch.setattr("faster_whisper.WhisperModel", crashing_whisper)
 
     inexistente = tmp_path / "historia_inexistente.pdf"
-    codigo = main(
-        ["--pack", str(pack_file), "--converse", "--mic", "--history", str(inexistente)]
-    )
+    codigo = main(["--pack", str(pack_file), "--converse", "--mic", "--history", str(inexistente)])
 
     captured = capsys.readouterr()
     assert codigo == 1
@@ -1681,8 +1678,7 @@ def test_converse_mic_sin_extra_capture_devuelve_uno_con_mensaje_stderr(
     captured = capsys.readouterr()
     assert codigo == 1
     assert (
-        "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)"
-        in captured.err
+        "aida: error: --mic requiere el extra 'capture' (uv sync --extra capture)" in captured.err
     )
 
 
@@ -2131,9 +2127,7 @@ def test_converse_mic_modo_consulta_audio_sin_voz_imprime_error_y_sigue_en_bucle
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def transcribe(
-            self, audio_path: str, *args: Any, **kwargs: Any
-        ) -> tuple[list[Any], None]:
+        def transcribe(self, audio_path: str, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
             if "consultado.wav" in audio_path:
                 return [], None
             return [_MockSegment(next(script))], None
@@ -3061,9 +3055,7 @@ def test_transcription_pasa_prompt_a_transcriptores(
     primario: Any = fb._primary
     respaldo: Any = fb._fallback
     assert primario._stt._prompt == "Prompt único de prueba"
-    prompt_hex = hashlib.blake2b(
-        "Prompt único de prueba".encode(), digest_size=8
-    ).hexdigest()
+    prompt_hex = hashlib.blake2b("Prompt único de prueba".encode(), digest_size=8).hexdigest()
     assert prompt_hex in primario._model
     assert prompt_hex in respaldo._model
 
@@ -3356,9 +3348,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
 
     class _DummySTT:
         def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
-            return (
-                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
-            )
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),)
 
     class _DummyOCR:
         def read(self, path: Path) -> str:
@@ -3371,9 +3361,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
 
     captured_items: list[ReviewItem] = []
 
-    def mock_collect(
-        items: tuple[ReviewItem, ...], *, settings: Any
-    ) -> ReviewSubmission:
+    def mock_collect(items: tuple[ReviewItem, ...], *, settings: Any) -> ReviewSubmission:
         captured_items.extend(items)
         answers = {item.ref: Answer(Verdict.CONFIRMED) for item in items}
         return ReviewSubmission(answers=answers, elapsed_seconds=42.5)
@@ -3391,9 +3379,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
         elapsed_seconds: float | None = None,
     ) -> Any:
         recorded_elapsed.append(elapsed_seconds)
-        return original_review(
-            self, prepared, reviewer=reviewer, elapsed_seconds=elapsed_seconds
-        )
+        return original_review(self, prepared, reviewer=reviewer, elapsed_seconds=elapsed_seconds)
 
     monkeypatch.setattr(Consultation, "review", spy_review)
 
@@ -3447,9 +3433,7 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
 
     class _DummySTT:
         def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
-            return (
-                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
-            )
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),)
 
     class _DummyOCR:
         def read(self, path: Path) -> str:
@@ -3513,9 +3497,7 @@ def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
 
     class _DummySTT:
         def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
-            return (
-                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
-            )
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),)
 
     class _DummyOCR:
         def read(self, path: Path) -> str:
@@ -3563,16 +3545,218 @@ def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
     assert cache_path.exists()
 
 
+def test_cognition_llm_flag_desactiva_composicion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 19 (§B.4, M12): --llm desactiva la composición y devuelve un solo proveedor,
+    no un FallbackCognition."""
+    from aida.arms.health.note import NoteSettings
+    from aida.cognition.fallback import FallbackCognition
+    from aida.cognition.providers import OpenAIProvider
+    from aida.run import _cognition
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-openai")
+    settings = NoteSettings(
+        system_prompt="prompt",
+        provider="openai",
+        provider_model="gpt-4.1-mini",
+        field_heading="### {}",
+        provenance_template="{}",
+        fallback_notice="fb",
+    )
+    args = argparse.Namespace(llm="openai")
+    res = _cognition(args, settings)
+
+    assert not isinstance(res, FallbackCognition)
+    assert isinstance(res, OpenAIProvider)
 
 
+def test_cognition_sin_llm_compone_nube_y_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 20 (§B.4): Sin --llm, se compone nube + local; si solo hay uno disponible,
+    se usa ese sin envolver."""
+    from aida.arms.health.note import NoteSettings
+    from aida.cognition.fallback import FallbackCognition
+    from aida.cognition.providers import OllamaProvider, OpenAIProvider
+    from aida.run import _cognition
+
+    settings = NoteSettings(
+        system_prompt="prompt",
+        provider="openai",
+        provider_model="gpt-4.1-mini",
+        field_heading="### {}",
+        provenance_template="{}",
+        fallback_notice="fb",
+    )
+    args = argparse.Namespace(llm=None)
+
+    # 1. Ambos disponibles: se compone en FallbackCognition
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-openai")
+    res_ambos = _cognition(args, settings)
+    assert isinstance(res_ambos, FallbackCognition)
+    assert isinstance(res_ambos._primary, OpenAIProvider)
+    assert isinstance(res_ambos._fallback, OllamaProvider)
+
+    # 2. Solo local disponible (nube sin credenciales)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AIDA_STT_API_KEY", raising=False)
+    monkeypatch.delenv("AIDA_LLM_PROVIDER", raising=False)
+    res_solo_local = _cognition(args, settings)
+    assert not isinstance(res_solo_local, FallbackCognition)
+    assert isinstance(res_solo_local, OllamaProvider)
+
+    # 3. Solo nube disponible (local no disponible)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-openai")
+    monkeypatch.setattr(
+        "aida.cognition.providers._DEFAULT_BASE_URLS",
+        {"openai": "https://api.openai.com"},
+    )
+    res_solo_nube = _cognition(args, settings)
+    assert not isinstance(res_solo_nube, FallbackCognition)
+    assert isinstance(res_solo_nube, OpenAIProvider)
 
 
+def _preparar_entorno_consulta_sin_capture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[Path, Path]:
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _DummySTT:
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor agudo de cabeza"),)
+
+    class _DummyOCR:
+        def read(self, path: Path) -> str:
+            return "Historia clínica previa."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica previa.")
+    return audio_path, hist_path
 
 
+def test_consultation_cli_note_sin_segment_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 21 (§B.4): --note sin --segment produce error y aviso en stderr."""
+    audio_path, hist_path = _preparar_entorno_consulta_sin_capture(monkeypatch, tmp_path)
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--note",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: --note requiere --segment" in captured.err
 
 
+def test_consultation_cli_segment_note_imprime_nota(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 21 (§B.4): --consultation --segment --note imprime la nota clínica en stdout."""
+    audio_path, hist_path = _preparar_entorno_consulta_sin_capture(monkeypatch, tmp_path)
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "sujeto_note_print",
+            "--note",
+            "--llm",
+            "ninguno",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert "### Motivo de consulta" in captured.out
+    assert "consulta hoy por dolor agudo de cabeza" in captured.out
+    assert "(sin redacción: lo que sigue son las frases tal como se dijeron)" in captured.out
 
 
+def test_consultation_cli_export_incluye_nota_antes_del_resumen(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 22 (§B.4): La nota viaja en el resultado y el export la escribe antes del resumen,
+    con el encabezado del pack."""
+    audio_path, hist_path = _preparar_entorno_consulta_sin_capture(monkeypatch, tmp_path)
+    dest_file = tmp_path / "export_con_nota.md"
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "sujeto_export_nota",
+            "--note",
+            "--llm",
+            "ninguno",
+            "--export",
+            str(dest_file),
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+    assert dest_file.exists()
+    contenido = dest_file.read_text(encoding="utf-8")
+
+    pos_nota = contenido.find("### Motivo de consulta")
+    pos_resumen = contenido.find("- Códigos de referencia cotejados")
+    assert pos_nota != -1
+    assert pos_resumen != -1
+    assert pos_nota < pos_resumen
 
 
+def test_consultation_cli_export_respaldo_literal_lleva_fallback_notice(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 23 (§B.4, M13): Con respaldo literal, el export lleva fallback_notice."""
+    audio_path, hist_path = _preparar_entorno_consulta_sin_capture(monkeypatch, tmp_path)
+    dest_file = tmp_path / "export_respaldo.md"
 
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "sujeto_fallback_notice",
+            "--note",
+            "--llm",
+            "ninguno",
+            "--export",
+            str(dest_file),
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+    assert dest_file.exists()
+    contenido = dest_file.read_text(encoding="utf-8")
+    assert "(sin redacción: lo que sigue son las frases tal como se dijeron)" in contenido

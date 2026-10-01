@@ -61,13 +61,21 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
                 "label": "Sección A",
                 "trigger_phrases": ["frase a1", "frase a2"],
                 "codable": True,
+                "in_note": True,
             },
-            {"id": "sec_b", "label": "Sección B", "trigger_phrases": [], "codable": False},
+            {
+                "id": "sec_b",
+                "label": "Sección B",
+                "trigger_phrases": [],
+                "codable": False,
+                "in_note": False,
+            },
             {
                 "id": "sec_c",
                 "label": "Sección C",
                 "trigger_phrases": ["frase c1"],
                 "codable": True,
+                "in_note": True,
             },
         ],
     }
@@ -81,8 +89,10 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
     assert catalog.sections[0].label == "Sección A"
     assert catalog.sections[0].trigger_phrases == ("frase a1", "frase a2")
     assert catalog.sections[0].codable is True
+    assert catalog.sections[0].in_note is True
     assert catalog.sections[1].trigger_phrases == ()
     assert catalog.sections[1].codable is False
+    assert catalog.sections[1].in_note is False
 
 
 def test_load_sections_no_es_mapeo_dict_lanza_value_error(tmp_path: Path) -> None:
@@ -110,11 +120,13 @@ def test_load_sections_falta_threshold_o_invalido_lanza_value_error(tmp_path: Pa
 
     thresh_str = tmp_path / "thresh_str.yaml"
     thresh_str.write_text(
-        yaml.safe_dump({
-            "threshold": "0.2",
-            "fallback": "f",
-            "sections": [{"id": "f", "label": "F"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": "0.2",
+                "fallback": "f",
+                "sections": [{"id": "f", "label": "F"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'threshold' numérico"):
@@ -122,11 +134,13 @@ def test_load_sections_falta_threshold_o_invalido_lanza_value_error(tmp_path: Pa
 
     thresh_bool = tmp_path / "thresh_bool.yaml"
     thresh_bool.write_text(
-        yaml.safe_dump({
-            "threshold": True,
-            "fallback": "f",
-            "sections": [{"id": "f", "label": "F"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": True,
+                "fallback": "f",
+                "sections": [{"id": "f", "label": "F"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'threshold' numérico"):
@@ -145,11 +159,13 @@ def test_load_sections_falta_fallback_o_invalido_lanza_value_error(tmp_path: Pat
 
     fallback_num = tmp_path / "fallback_num.yaml"
     fallback_num.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": 123,
-            "sections": [{"id": "f", "label": "F"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": 123,
+                "sections": [{"id": "f", "label": "F"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'fallback' \(id de sección\)"):
@@ -160,18 +176,21 @@ def test_load_sections_fallback_no_esta_en_sections_lanza_value_error(tmp_path: 
     """'fallback' no corresponde a ningún id declarado -> lanza ValueError."""
     archivo = tmp_path / "fallback_inexistente.yaml"
     archivo.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "inexistente",
-            "sections": [
-                {
-                    "id": "motivo",
-                    "label": "Motivo",
-                    "trigger_phrases": ["consulta"],
-                    "codable": True,
-                },
-            ],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "inexistente",
+                "sections": [
+                    {
+                        "id": "motivo",
+                        "label": "Motivo",
+                        "trigger_phrases": ["consulta"],
+                        "codable": True,
+                        "in_note": True,
+                    },
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(
@@ -222,11 +241,13 @@ def test_load_sections_id_o_label_mal_tipado_lanza_value_error(tmp_path: Path) -
     """'id' o 'label' faltante o no string -> lanza ValueError."""
     sin_id = tmp_path / "sin_id.yaml"
     sin_id.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "f",
-            "sections": [{"label": "Solo Label"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "sections": [{"label": "Solo Label"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'id' y 'label' deben ser cadenas"):
@@ -234,11 +255,13 @@ def test_load_sections_id_o_label_mal_tipado_lanza_value_error(tmp_path: Path) -
 
     id_no_str = tmp_path / "id_no_str.yaml"
     id_no_str.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "f",
-            "sections": [{"id": 42, "label": "Label"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "sections": [{"id": 42, "label": "Label"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'id' y 'label' deben ser cadenas"):
@@ -257,11 +280,13 @@ def test_load_sections_trigger_phrases_mal_tipado_lanza_value_error(tmp_path: Pa
     """'trigger_phrases' no es lista o contiene elementos no string -> lanza ValueError."""
     triggers_no_lista = tmp_path / "triggers_no_lista.yaml"
     triggers_no_lista.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "f",
-            "sections": [{"id": "f", "label": "F", "trigger_phrases": "frase suelta"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "sections": [{"id": "f", "label": "F", "trigger_phrases": "frase suelta"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'trigger_phrases' debe ser una lista de cadenas"):
@@ -269,11 +294,13 @@ def test_load_sections_trigger_phrases_mal_tipado_lanza_value_error(tmp_path: Pa
 
     triggers_elementos_no_str = tmp_path / "triggers_elementos_no_str.yaml"
     triggers_elementos_no_str.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "f",
-            "sections": [{"id": "f", "label": "F", "trigger_phrases": ["buena", 123]}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "sections": [{"id": "f", "label": "F", "trigger_phrases": ["buena", 123]}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'trigger_phrases' debe ser una lista de cadenas"):
@@ -284,14 +311,16 @@ def test_load_sections_id_repetido_lanza_value_error(tmp_path: Path) -> None:
     """IDs de sección duplicados -> lanza ValueError."""
     archivo = tmp_path / "id_repetido.yaml"
     archivo.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "duplicado",
-            "sections": [
-                {"id": "duplicado", "label": "Primera vez", "codable": True},
-                {"id": "duplicado", "label": "Segunda vez", "codable": True},
-            ],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "duplicado",
+                "sections": [
+                    {"id": "duplicado", "label": "Primera vez", "codable": True, "in_note": True},
+                    {"id": "duplicado", "label": "Segunda vez", "codable": True, "in_note": True},
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"id de sección repetido: 'duplicado'"):
@@ -302,11 +331,13 @@ def test_load_sections_sin_codable_o_no_bool_lanza_value_error(tmp_path: Path) -
     """Caso 11 (§B.3): falta 'codable' o no es booleano -> ValueError nombrando la sección."""
     sin_codable = tmp_path / "sin_codable.yaml"
     sin_codable.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "sec_a",
-            "sections": [{"id": "sec_a", "label": "A"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "sections": [{"id": "sec_a", "label": "A"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'codable' \(sí o no\) en la sección 'sec_a'"):
@@ -314,13 +345,59 @@ def test_load_sections_sin_codable_o_no_bool_lanza_value_error(tmp_path: Path) -
 
     codable_str = tmp_path / "codable_str.yaml"
     codable_str.write_text(
-        yaml.safe_dump({
-            "threshold": 0.2,
-            "fallback": "sec_a",
-            "sections": [{"id": "sec_a", "label": "A", "codable": "si"}],
-        }),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "sections": [{"id": "sec_a", "label": "A", "codable": "si"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'codable' \(sí o no\) en la sección 'sec_a'"):
         load_sections(codable_str)
 
+
+def test_load_sections_sin_in_note_o_no_bool_lanza_value_error(tmp_path: Path) -> None:
+    """Caso 12 (§B.2): falta 'in_note' o no es booleano -> ValueError nombrando la sección."""
+    sin_in_note = tmp_path / "sin_in_note.yaml"
+    sin_in_note.write_text(
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "sections": [{"id": "sec_a", "label": "A", "codable": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'in_note' \(sí o no\) en la sección 'sec_a'"):
+        load_sections(sin_in_note)
+
+    in_note_str = tmp_path / "in_note_str.yaml"
+    in_note_str.write_text(
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "sections": [{"id": "sec_a", "label": "A", "codable": True, "in_note": "si"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'in_note' \(sí o no\) en la sección 'sec_a'"):
+        load_sections(in_note_str)
+
+
+def test_load_sections_pack_real_declara_in_note_y_otros_comentarios_es_unica_falsa() -> None:
+    """Caso 13 (§B.2): El pack real declara in_note en las 15 secciones,
+    y 'otros_comentarios' es la única con in_note: false.
+    """
+    catalog = load_sections()
+    assert len(catalog.sections) == 15
+    falsas = [s.section_id for s in catalog.sections if not s.in_note]
+    assert falsas == ["otros_comentarios"]
+    verdaderas = [s.section_id for s in catalog.sections if s.in_note]
+    assert len(verdaderas) == 14
+    assert catalog.fallback.section_id == "otros_comentarios"
+    assert catalog.fallback.in_note is False

@@ -53,10 +53,18 @@ def _crear_fixture_base() -> tuple[
 ]:
     owner = AgentId("dra_martinez")
     spec1 = SectionSpec(
-        section_id="motivo", label="Motivo de consulta", trigger_phrases=(), codable=True
+        section_id="motivo",
+        label="Motivo de consulta",
+        trigger_phrases=(),
+        codable=True,
+        in_note=True,
     )
     spec2 = SectionSpec(
-        section_id="examen", label="Examen físico", trigger_phrases=(), codable=True
+        section_id="examen",
+        label="Examen físico",
+        trigger_phrases=(),
+        codable=True,
+        in_note=True,
     )
     f1 = ClinicalFinding(
         text="Cefalea frontal pulsátil",
@@ -222,7 +230,8 @@ def test_review_edicion_emite_input_observed_llama_refine_y_actualiza_texto() ->
     # Verificar que el INPUT_OBSERVED va exactamente antes del ITEM_REVIEWED de ese hallazgo
     eventos = list(log)
     idx_reviewed = next(
-        i for i, e in enumerate(eventos)
+        i
+        for i, e in enumerate(eventos)
         if e.kind == EventKind.ITEM_REVIEWED and e.data.get("ref") == "motivo:0"
     )
     evento_previo = eventos[idx_reviewed - 1]
@@ -407,8 +416,7 @@ def test_review_codigo_rechazado_queda_fuera() -> None:
 
     assert resultado.confirmed_codes == (m1,)
     eventos_codes = [
-        e.data for e in log
-        if e.kind == EventKind.ITEM_REVIEWED and e.data.get("item") == "code"
+        e.data for e in log if e.kind == EventKind.ITEM_REVIEWED and e.data.get("item") == "code"
     ]
     assert eventos_codes == [
         {"item": "code", "ref": "G43.9", "verdict": "confirmed", "origin": "today"},
@@ -566,9 +574,7 @@ def test_review_encounter_sin_textos_nuevos_comportamiento_identico() -> None:
 def test_review_items_y_review_encounter_mismas_refs_y_orden() -> None:
     """Caso 1 (§B.1): review_items y review_encounter producen las mismas ref
     en el mismo orden."""
-    owner, _spec1, _spec2, f1, f2, _enc, grouped_sections, _m1, _m2, matches = (
-        _crear_fixture_base()
-    )
+    owner, _spec1, _spec2, f1, f2, _enc, grouped_sections, _m1, _m2, matches = _crear_fixture_base()
     # findings en orden inverso al catálogo agrupado
     encounter = Encounter(owner=owner, findings={"examen": (f2,), "motivo": (f1,)})
     items_puros = review_items(
@@ -677,14 +683,10 @@ def test_review_items_allowed_por_clase() -> None:
 def test_finding_item_marca_negado_entero_no_mixto() -> None:
     """Caso 4 (§B.1): finding_item marca el sufijo solo si el hallazgo está
     enteramente negado (negated == text.strip()), no en mixto ni afirmado."""
-    spec = SectionSpec("s", "Sección", (), True)
+    spec = SectionSpec("s", "Sección", (), True, True)
     f_afirmado = ClinicalFinding(text="Dolor de espalda", section_id="s", negated=None)
-    f_mixto = ClinicalFinding(
-        text="Fumar, no, lo dejé", section_id="s", negated="no, lo dejé"
-    )
-    f_entero = ClinicalFinding(
-        text="  Sin fiebre  ", section_id="s", negated="Sin fiebre"
-    )
+    f_mixto = ClinicalFinding(text="Fumar, no, lo dejé", section_id="s", negated="no, lo dejé")
+    f_entero = ClinicalFinding(text="  Sin fiebre  ", section_id="s", negated="Sin fiebre")
 
     it_afirmado = finding_item(spec, 0, f_afirmado, negated_suffix="negado")
     it_mixto = finding_item(spec, 1, f_mixto, negated_suffix="negado")
@@ -722,5 +724,3 @@ def test_code_item_compone_descripcion_sufijo_historia_y_evidencia_en_orden() ->
         evidence_template="{0} (motivo: {1})",
     )
     assert it_hist_ev.text == "Hipertensión · de la historia (motivo: tensión 150/90)"
-
-

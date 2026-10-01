@@ -561,8 +561,7 @@ def test_consultation_monologo_un_hablante_emite_speakers_diarized_uno(
     )
 
     expected_transcript = (
-        "MÉDICO: Dictado de informe clínico matutino.\n"
-        "MÉDICO: Paciente sin hallazgos patológicos."
+        "MÉDICO: Dictado de informe clínico matutino.\nMÉDICO: Paciente sin hallazgos patológicos."
     )
     assert result.transcript == expected_transcript
 
@@ -1052,9 +1051,7 @@ def test_consultation_sin_segmentador_no_arma_encounter_ni_emite_model_built(
     - result.encounter is None
     - no se emite MODEL_BUILT
     """
-    segments = (
-        TranscriptSegment(start=0.0, end=2.0, text="consulta hoy por cefalea"),
-    )
+    segments = (TranscriptSegment(start=0.0, end=2.0, text="consulta hoy por cefalea"),)
     stt = _SpyWhisperSTT(segments=segments)
     ocr = _DummyOCR()
     log = EventLog(window=100)
@@ -1208,9 +1205,7 @@ def test_consultation_extractor_sin_segmentador_lanza_value_error_sin_tocar_audi
     )
 
     owner = AgentId("medico_test")
-    with pytest.raises(
-        ValueError, match=r"extracción activa pero no hay segmentador configurado"
-    ):
+    with pytest.raises(ValueError, match=r"extracción activa pero no hay segmentador configurado"):
         consultation.run_with_history(
             owner=owner,
             audio_path=Path("/tmp/audio.wav"),
@@ -1852,11 +1847,7 @@ def test_consultation_review_completa_registra_metricas_con_reloj_inyectado(
     metrics_path = tmp_path / "revisiones.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(
             start=0.0,
@@ -1925,11 +1916,7 @@ def test_consultation_review_cortada_con_eof_error_registra_incompleta_y_no_cach
     metrics_path = tmp_path / "revisiones_eof.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(start=0.0, end=1.0, text="consulta hoy por dolor de cabeza"),
         TranscriptSegment(start=1.0, end=2.0, text="examen fisico con dolor a la palpacion"),
@@ -1997,11 +1984,7 @@ def test_consultation_review_cortada_con_keyboard_interrupt_registra_incompleta_
     metrics_path = tmp_path / "revisiones_sigint.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(start=0.0, end=1.0, text="consulta hoy por dolor de cabeza"),
         TranscriptSegment(start=1.0, end=2.0, text="examen fisico con dolor a la palpacion"),
@@ -2111,14 +2094,8 @@ def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado
     metrics_path = tmp_path / "dos_revisiones.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
-    segments = (
-        TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
+    segments = (TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),)
     stt = _SpyWhisperSTT(segments=segments)
     ocr = _DummyOCR()
     segmenter = ClinicalSegmenter(load_sections())
@@ -2184,14 +2161,8 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
     """Caso 12 (§B.2): Con review_metrics=None no se crea ningún archivo;
     y con los mismos dobles, list(log.to_jsonl()) tras review() es idéntico con store y sin store.
     """
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
-    segments = (
-        TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
+    segments = (TranscriptSegment(start=0.0, end=1.0, text="consulta por dolor de cabeza"),)
 
     owner = AgentId("same_owner_for_journal")
 
@@ -2270,10 +2241,10 @@ def test_consultation_codable_texts_con_y_sin_segmentacion(
     )
 
     sec_motivo = SectionSpec(
-        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True
+        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True, in_note=True
     )
     sec_plan = SectionSpec(
-        section_id="plan", label="Plan", trigger_phrases=(), codable=False
+        section_id="plan", label="Plan", trigger_phrases=(), codable=False, in_note=True
     )
     grouped = (
         (sec_motivo, ("dolor agudo", "cefalea")),
@@ -2317,11 +2288,9 @@ def test_consultation_codable_texts_con_lexico_amplia_hoy_e_historia(
     )
 
     sec_motivo = SectionSpec(
-        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True
+        section_id="motivo", label="Motivo", trigger_phrases=(), codable=True, in_note=True
     )
-    grouped = (
-        (sec_motivo, ("sufro de tension alta",)),
-    )
+    grouped = ((sec_motivo, ("sufro de tension alta",)),)
 
     hoy, historia = consultation._codable_texts(
         "transcripcion", "antecedente de azucar en sangre", grouped
@@ -2366,7 +2335,7 @@ def test_consultation_sin_lexico_mantiene_comportamiento_plan_62(
         lexicon=(),
     )
 
-    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True, in_note=True)
     grouped = ((sec, ("tengo azucar y tension alta",)),)
     historia_txt = "azucar descompensada"
 
@@ -2400,7 +2369,7 @@ def test_consultation_codable_texts_no_repite_terminos_clinicos(
         lexicon=lexicon,
     )
 
-    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True, in_note=True)
     grouped = ((sec, ("tengo problemas con el azucar", "control de diabetes")),)
     historia_txt = "azucar alta\ndiabetes previa"
 
@@ -2437,9 +2406,7 @@ def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
     # H01 solo en historia ("hipertensión esencial") -> HISTORY
     # B01 en ambos ("diabetes mellitus") -> BOTH
     transcript_text = "motivo de consulta: asma bronquial y diabetes mellitus"
-    segments = (
-        TranscriptSegment(start=0.0, end=2.0, text=transcript_text),
-    )
+    segments = (TranscriptSegment(start=0.0, end=2.0, text=transcript_text),)
     full_text = transcript_text
     stt = _SpyWhisperSTT(segments=segments, full_text=full_text)
     ocr = _DummyOCR()
@@ -2590,7 +2557,7 @@ def test_consultation_codable_texts_con_history_layout_filtra_solo_lineas_codifi
         log=EventLog(),
         history_layout=layout,
     )
-    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True, in_note=True)
     grouped = ((sec, ("dolor agudo de cabeza",)),)
     historia = """FECHA: 2026-09-24
 ANTECEDENTES PERSONALES
@@ -2633,7 +2600,7 @@ Sexo: Femenino
 ANTECEDENTES PERSONALES
 Diabetes tipo 2
 """
-    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True)
+    sec = SectionSpec(section_id="m", label="M", trigger_phrases=(), codable=True, in_note=True)
     grouped = ((sec, ("habla de hoy",)),)
 
     hoy1, hist1 = c_defecto._codable_texts("t", historia, grouped)
@@ -2662,9 +2629,7 @@ def test_consultation_review_resumen_conserva_historia_entera(
         ),
         ignore=("PAGINA",),
     )
-    segments = (
-        TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza"),
-    )
+    segments = (TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza"),)
     stt = _SpyWhisperSTT(segments=segments)
     ocr = _DummyOCR()
     segmenter = ClinicalSegmenter(load_sections())
@@ -2713,9 +2678,7 @@ def test_consultation_frase_negada_no_propone_codigo(
     sample_cache: ConsultationCache,
 ) -> None:
     """Caso 25 (§B.5): Una frase negada no propone su código; con frase afirmada sí."""
-    catalog = build_index(
-        (DiagnosticCode("R07", "dolor toracico", 3, "test"),)
-    )
+    catalog = build_index((DiagnosticCode("R07", "dolor toracico", 3, "test"),))
     neg_cat = load_negation()
 
     # Frase negada: no propone
@@ -2790,9 +2753,7 @@ def test_consultation_negacion_se_aplica_a_historia(
     sample_cache: ConsultationCache,
 ) -> None:
     """Caso 27 (§B.5): La negación se aplica también a las líneas de historia clínica."""
-    catalog = build_index(
-        (DiagnosticCode("E11", "diabetes mellitus", 3, "test"),)
-    )
+    catalog = build_index((DiagnosticCode("E11", "diabetes mellitus", 3, "test"),))
     stt = _SpyWhisperSTT(full_text="")
     c = Consultation(
         wording=sample_wording_review,
@@ -2818,9 +2779,7 @@ def test_consultation_lexico_no_cuela_lo_negado(
     sample_cache: ConsultationCache,
 ) -> None:
     """Caso 28 (§B.5): El léxico no reintroduce términos negados."""
-    catalog = build_index(
-        (DiagnosticCode("E11", "diabetes mellitus", 3, "test"),)
-    )
+    catalog = build_index((DiagnosticCode("E11", "diabetes mellitus", 3, "test"),))
     lexicon: Lexicon = (("azucar", "diabetes mellitus"),)
     stt = _SpyWhisperSTT(full_text="No sufro del azucar")
     c = Consultation(
@@ -2844,9 +2803,7 @@ def test_consultation_evidencia_en_review_item(
 ) -> None:
     """Caso 29 (§B.5): La evidencia llega al ReviewItem si hay plantilla;
     si no, solo descripción."""
-    catalog = build_index(
-        (DiagnosticCode("R07", "dolor toracico", 3, "test"),)
-    )
+    catalog = build_index((DiagnosticCode("R07", "dolor toracico", 3, "test"),))
     segments = (TranscriptSegment(0.0, 1.0, "consulta hoy por dolor toracico pero no fiebre"),)
     stt = _SpyWhisperSTT(segments=segments)
 
@@ -2988,9 +2945,7 @@ def test_consultation_sin_negation_inyectado_default_no_cambia_nada(
 ) -> None:
     """Caso 32 (§B.5): Sin negation inyectado (default) produce mismos códigos
     para consulta sin negaciones."""
-    catalog = build_index(
-        (DiagnosticCode("R51", "cefalea aguda", 3, "test"),)
-    )
+    catalog = build_index((DiagnosticCode("R51", "cefalea aguda", 3, "test"),))
     stt = _SpyWhisperSTT(full_text="cefalea aguda intensa")
     c_default = Consultation(
         wording=sample_wording_review,
@@ -3123,9 +3078,7 @@ def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
     """Caso 17 (§B.4): Transcripción de dos líneas y un catálogo de prueba con ese
     diagnóstico: sin regla sale el código; con regla, no."""
     catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
-    stt = _SpyWhisperSTT(
-        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
-    )
+    stt = _SpyWhisperSTT(full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no.")
     # Sin regla sale el código
     c_sin = Consultation(
         wording=sample_wording_review,
@@ -3139,9 +3092,7 @@ def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
         negation=load_negation(),
         retraction=None,
     )
-    prep_sin = c_sin.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
-    )
+    prep_sin = c_sin.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
     assert any(m.diagnostic.code == "R002" for m in prep_sin.matches)
 
     # Con regla no sale
@@ -3157,9 +3108,7 @@ def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep_con = c_con.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
-    )
+    prep_con = c_con.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
     assert not any(m.diagnostic.code == "R002" for m in prep_con.matches)
 
 
@@ -3177,11 +3126,9 @@ def test_consultation_retractacion_opera_a_traves_de_secciones_distintas(
     stt = _SpyWhisperSTT(segments=segs, full_text=texto)
 
     class DummySegmenter:
-        def segment(
-            self, transcript_text: str
-        ) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
-            s1 = SectionSpec("motivo", "Motivo", (), codable=True)
-            s2 = SectionSpec("examen", "Examen", (), codable=True)
+        def segment(self, transcript_text: str) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
+            s1 = SectionSpec("motivo", "Motivo", (), codable=True, in_note=True)
+            s2 = SectionSpec("examen", "Examen", (), codable=True, in_note=True)
             return (
                 (s1, ("Drolar en el pecho, falta de aire, palpitaciones.",)),
                 (s2, ("No, eso no.",)),
@@ -3200,9 +3147,7 @@ def test_consultation_retractacion_opera_a_traves_de_secciones_distintas(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
-    )
+    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
     assert not any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3212,9 +3157,7 @@ def test_consultation_historia_no_se_retracta(
     """Caso 19 (§B.4): La historia clínica no se retracta; las líneas con la misma
     forma se cotejan enteras."""
     catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
-    stt = _SpyWhisperSTT(
-        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
-    )
+    stt = _SpyWhisperSTT(full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no.")
     historia = "Drolar en el pecho, falta de aire, palpitaciones."
     c = Consultation(
         wording=sample_wording_review,
@@ -3228,9 +3171,7 @@ def test_consultation_historia_no_se_retracta(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=historia
-    )
+    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=historia)
     assert any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3239,9 +3180,7 @@ def test_consultation_sin_retraction_inyectada_nada_cambia(
 ) -> None:
     """Caso 20 (§B.4): Sin retraction inyectada (None), nada cambia y salen los mismos códigos."""
     catalog = build_index((DiagnosticCode("R002", "PALPITACIONES", 3, "minsalud"),))
-    stt = _SpyWhisperSTT(
-        full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no."
-    )
+    stt = _SpyWhisperSTT(full_text="Drolar en el pecho, falta de aire, palpitaciones.\nNo, eso no.")
     c = Consultation(
         wording=sample_wording_review,
         stt=stt,
@@ -3254,9 +3193,7 @@ def test_consultation_sin_retraction_inyectada_nada_cambia(
         negation=load_negation(),
         retraction=None,
     )
-    prep = c.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
-    )
+    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
     assert any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3273,10 +3210,8 @@ def test_consultation_hallazgo_retractado_permanece_en_modelo_clinico(
     stt = _SpyWhisperSTT(segments=segs, full_text=texto)
 
     class DummySegmenter:
-        def segment(
-            self, transcript_text: str
-        ) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
-            s1 = SectionSpec("motivo", "Motivo", (), codable=True)
+        def segment(self, transcript_text: str) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
+            s1 = SectionSpec("motivo", "Motivo", (), codable=True, in_note=True)
             return (
                 (
                     s1,
@@ -3300,9 +3235,7 @@ def test_consultation_hallazgo_retractado_permanece_en_modelo_clinico(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(
-        owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=""
-    )
+    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
     assert prep.encounter is not None
     frases_modelo = [f.text for items in prep.encounter.findings.values() for f in items]
     assert "Drolar en el pecho, falta de aire, palpitaciones." in frases_modelo
@@ -3320,11 +3253,7 @@ def test_consultation_review_elapsed_seconds_externo_registra_tiempo_pasado(
     metrics_path = tmp_path / "revisiones_elapsed.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(
             start=0.0,
@@ -3381,11 +3310,7 @@ def test_consultation_review_sin_elapsed_seconds_mide_con_reloj_del_bucle(
     metrics_path = tmp_path / "revisiones_clock.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(
             start=0.0,
@@ -3441,11 +3366,7 @@ def test_consultation_review_cortada_registra_elapsed_seconds(
     metrics_path = tmp_path / "revisiones_aborted_elapsed.jsonl"
     store = ReviewMetricsStore(metrics_path)
 
-    catalog = build_index(
-        (
-            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
-        )
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),))
     segments = (
         TranscriptSegment(
             start=0.0,
@@ -3489,14 +3410,3 @@ def test_consultation_review_cortada_registra_elapsed_seconds(
     assert len(records) == 1
     assert records[0].completed is False
     assert records[0].seconds == 77.5
-
-
-
-
-
-
-
-
-
-
-

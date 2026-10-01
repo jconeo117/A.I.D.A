@@ -15,12 +15,14 @@ def test_build_encounter_dos_secciones_varias_lineas() -> None:
         label="Motivo de Consulta",
         trigger_phrases=("consulta por",),
         codable=True,
+        in_note=True,
     )
     spec_plan = SectionSpec(
         section_id="plan",
         label="Plan y Tratamiento",
         trigger_phrases=("se indica",),
         codable=False,
+        in_note=True,
     )
     grouped_sections = (
         (spec_motivo, ("consulta por cefalea", "refiere mareos")),
@@ -81,12 +83,14 @@ def test_to_dict_conserva_orden_no_alfabetico() -> None:
         label="Motivo de consulta",
         trigger_phrases=(),
         codable=True,
+        in_note=True,
     )
     spec_enfermedad = SectionSpec(
         section_id="enfermedad_actual",
         label="Enfermedad actual",
         trigger_phrases=(),
         codable=True,
+        in_note=True,
     )
     # Alfabéticamente 'enfermedad_actual' va antes que 'motivo_consulta',
     # pero grouped_sections inserta 'motivo_consulta' primero.
@@ -108,7 +112,11 @@ def test_to_dict_solo_devuelve_text_sin_section_id() -> None:
     """
     owner = AgentId("doc")
     spec = SectionSpec(
-        section_id="motivo_consulta", label="Motivo", trigger_phrases=(), codable=True
+        section_id="motivo_consulta",
+        label="Motivo",
+        trigger_phrases=(),
+        codable=True,
+        in_note=True,
     )
     encounter = build_encounter(
         owner=owner,
@@ -188,4 +196,3 @@ def test_to_dict_trae_negated_como_ultima_clave() -> None:
     assert keys == ["text", "duration", "laterality", "reported_by", "negated"]
     assert keys[-1] == "negated"
     assert item["negated"] == "No refiere fiebre"
-

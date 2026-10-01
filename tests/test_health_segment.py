@@ -91,13 +91,25 @@ def test_segment_empate_exacto_coseno_gana_section_id_menor_alfabeticamente() ->
     """
     # Caso 1: 'alfa' vs 'beta', misma frase gatillo -> 'alfa' < 'beta', gana 'alfa'
     spec_alfa = SectionSpec(
-        section_id="alfa", label="Alfa", trigger_phrases=("palabra compartida",), codable=True
+        section_id="alfa",
+        label="Alfa",
+        trigger_phrases=("palabra compartida",),
+        codable=True,
+        in_note=True,
     )
     spec_beta = SectionSpec(
-        section_id="beta", label="Beta", trigger_phrases=("palabra compartida",), codable=True
+        section_id="beta",
+        label="Beta",
+        trigger_phrases=("palabra compartida",),
+        codable=True,
+        in_note=True,
     )
     spec_fallback = SectionSpec(
-        section_id="fallback", label="Fallback", trigger_phrases=(), codable=False
+        section_id="fallback",
+        label="Fallback",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
     )
 
     index_1 = build_section_index((spec_beta, spec_alfa, spec_fallback))
@@ -114,7 +126,11 @@ def test_segment_empate_exacto_coseno_gana_section_id_menor_alfabeticamente() ->
 
     # Caso 2: 'zeta' vs 'beta' -> 'beta' < 'zeta', gana 'beta' sin importar orden del catálogo
     spec_zeta = SectionSpec(
-        section_id="zeta", label="Zeta", trigger_phrases=("palabra compartida",), codable=True
+        section_id="zeta",
+        label="Zeta",
+        trigger_phrases=("palabra compartida",),
+        codable=True,
+        in_note=True,
     )
     index_2 = build_section_index((spec_zeta, spec_beta, spec_fallback))
 
@@ -141,9 +157,14 @@ def test_segment_score_exactamente_igual_a_threshold_se_reconoce() -> None:
         label="Sección Exacta",
         trigger_phrases=("cefalea constante intensa matutina",),
         codable=True,
+        in_note=True,
     )
     spec_fallback = SectionSpec(
-        section_id="fallback", label="Fallback", trigger_phrases=(), codable=False
+        section_id="fallback",
+        label="Fallback",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
     )
     index = build_section_index((spec_sec, spec_fallback))
 
@@ -175,16 +196,32 @@ def test_group_by_section_conserva_orden_catalogo_y_omite_secciones_vacias() -> 
     2. Omite por completo las secciones del catálogo que no tienen líneas asignadas.
     """
     sec_1 = SectionSpec(
-        section_id="primera", label="Primera", trigger_phrases=("uno",), codable=True
+        section_id="primera",
+        label="Primera",
+        trigger_phrases=("uno",),
+        codable=True,
+        in_note=True,
     )
     sec_2 = SectionSpec(
-        section_id="segunda", label="Segunda", trigger_phrases=("dos",), codable=True
+        section_id="segunda",
+        label="Segunda",
+        trigger_phrases=("dos",),
+        codable=True,
+        in_note=True,
     )
     sec_3 = SectionSpec(
-        section_id="tercera", label="Tercera", trigger_phrases=("tres",), codable=True
+        section_id="tercera",
+        label="Tercera",
+        trigger_phrases=("tres",),
+        codable=True,
+        in_note=True,
     )
     sec_4 = SectionSpec(
-        section_id="cuarta", label="Cuarta", trigger_phrases=("cuatro",), codable=True
+        section_id="cuarta",
+        label="Cuarta",
+        trigger_phrases=("cuatro",),
+        codable=True,
+        in_note=True,
     )
 
     catalogo_orden = (sec_1, sec_2, sec_3, sec_4)
@@ -301,7 +338,8 @@ def test_build_health_segmenter_por_defecto_y_con_ruta(tmp_path: Path) -> None:
         "  - id: s1\n"
         "    label: S1\n"
         "    trigger_phrases: ['hola']\n"
-        "    codable: true\n",
+        "    codable: true\n"
+        "    in_note: true\n",
         encoding="utf-8",
     )
     seg_custom = build_health_segmenter(custom_yaml)
