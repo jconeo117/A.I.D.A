@@ -96,6 +96,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         "(requiere --segment)",
     )
     parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="revisa en el navegador en vez de por teclado (requiere --review)",
+    )
+    parser.add_argument(
         "--review-stats",
         nargs="?",
         const="",
@@ -526,6 +531,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.review and not args.segment:
             print("aida: error: --review requiere --segment", file=sys.stderr)
             return 1
+        if args.ui and not args.review:
+            print("aida: error: --ui requiere --review", file=sys.stderr)
+            return 2
         if args.diarize:
             if not os.environ.get("AIDA_HF_TOKEN"):
                 print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
@@ -579,14 +587,49 @@ def main(argv: Sequence[str] | None = None) -> int:
                     audio_path=Path(args.audio),
                     history_text=lambda: ocr.read(Path(args.history)),
                 )
-                try:
-                    result = consultation.review(prepared, reviewer=_review_from_stdin)
-                except (EOFError, KeyboardInterrupt):
-                    print(
-                        "aida: revisión incompleta: nada se registra como revisado",
-                        file=sys.stderr,
+                if args.ui:
+                    from aida.arms.health.review import review_items
+                    from aida.arms.health.review_ui import (
+                        ReviewAbandoned,
+                        collect_review,
+                        load_ui_settings,
+                        reviewer_from,
                     )
-                    return 1
+                    from aida.arms.health.wording import default_summary_wording
+
+                    wording = default_summary_wording()
+                    assert prepared.grouped_sections is not None
+                    assert prepared.encounter is not None
+                    items = review_items(
+                        grouped_sections=prepared.grouped_sections,
+                        encounter=prepared.encounter,
+                        matches=prepared.matches,
+                        known_code_suffix=wording.known_code_suffix,
+                        evidence_template=wording.evidence_template,
+                        negated_suffix=wording.negated_suffix,
+                    )
+                    ajustes_ui = load_ui_settings()
+                    try:
+                        envio = collect_review(items, settings=ajustes_ui)
+                    except ReviewAbandoned:
+                        print(
+                            f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
+                        )
+                        return 1
+                    result = consultation.review(
+                        prepared,
+                        reviewer=reviewer_from(envio),
+                        elapsed_seconds=envio.elapsed_seconds,
+                    )
+                else:
+                    try:
+                        result = consultation.review(prepared, reviewer=_review_from_stdin)
+                    except (EOFError, KeyboardInterrupt):
+                        print(
+                            "aida: revisión incompleta: nada se registra como revisado",
+                            file=sys.stderr,
+                        )
+                        return 1
             else:
                 result = consultation.run(
                     owner=AgentId(args.owner),

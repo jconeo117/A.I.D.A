@@ -66,6 +66,82 @@ class ReviewedConsultation:
     confirmed_codes: tuple[MatchedCode, ...]
 
 
+def finding_item(
+    spec: SectionSpec,
+    position: int,
+    finding: ClinicalFinding,
+    *,
+    negated_suffix: str | None = None,
+) -> ReviewItem:
+    """La forma de un ítem de hallazgo, en un solo sitio: la usan el bucle que
+    pregunta y la pantalla que lo muestra. Con dos construcciones distintas, el
+    profesional vería un texto y el registro guardaría otro."""
+    return ReviewItem(
+        kind=ItemKind.FINDING,
+        ref=f"{spec.section_id}:{position}",
+        label=spec.label,
+        text=(
+            f"{finding.text} · {negated_suffix}"
+            if negated_suffix and finding.negated == finding.text.strip()
+            else finding.text
+        ),
+        allowed=FINDING_VERDICTS,
+    )
+
+
+def code_item(
+    match: MatchedCode,
+    *,
+    known_code_suffix: str | None = None,
+    evidence_template: str | None = None,
+) -> ReviewItem:
+    descripcion = match.diagnostic.description
+    if known_code_suffix and match.origin is not CodeOrigin.TODAY:
+        descripcion = f"{descripcion} · {known_code_suffix}"
+    if evidence_template and match.evidence:
+        descripcion = evidence_template.format(descripcion, match.evidence)
+    return ReviewItem(
+        kind=ItemKind.CODE,
+        ref=match.diagnostic.code,
+        label=match.diagnostic.code,
+        text=descripcion,
+        allowed=CODE_VERDICTS,
+    )
+
+
+def review_items(
+    *,
+    grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...],
+    encounter: Encounter,
+    matches: tuple[MatchedCode, ...],
+    known_code_suffix: str | None = None,
+    evidence_template: str | None = None,
+    negated_suffix: str | None = None,
+) -> tuple[ReviewItem, ...]:
+    """Todos los ítems que `review_encounter` va a preguntar, **en el mismo
+    orden**: primero los hallazgos recorriendo el catálogo de secciones, después
+    los códigos como los devolvió el cotejo.
+
+    Existe para que la pantalla se pueda pintar antes de revisar. Que el orden y
+    el contenido coincidan con lo que pregunta el bucle no es cortesía: si
+    divergen, la pantalla recoge respuestas para ítems que no existen y el bucle
+    pregunta por otros que nadie contestó."""
+    items = [
+        finding_item(spec, position, finding, negated_suffix=negated_suffix)
+        for spec, _texts in grouped_sections
+        for position, finding in enumerate(encounter.findings[spec.section_id])
+    ]
+    items.extend(
+        code_item(
+            match,
+            known_code_suffix=known_code_suffix,
+            evidence_template=evidence_template,
+        )
+        for match in matches
+    )
+    return tuple(items)
+
+
 def _check(item: ReviewItem, answer: Answer) -> None:
     if answer.verdict not in item.allowed:
         raise ValueError(f"veredicto {answer.verdict.value!r} no admitido para {item.ref!r}")
@@ -102,17 +178,7 @@ def review_encounter(
     for spec, _texts in grouped_sections:
         kept: list[ClinicalFinding] = []
         for position, finding in enumerate(encounter.findings[spec.section_id]):
-            item = ReviewItem(
-                kind=ItemKind.FINDING,
-                ref=f"{spec.section_id}:{position}",
-                label=spec.label,
-                text=(
-                    f"{finding.text} · {negated_suffix}"
-                    if negated_suffix and finding.negated == finding.text.strip()
-                    else finding.text
-                ),
-                allowed=FINDING_VERDICTS,
-            )
+            item = finding_item(spec, position, finding, negated_suffix=negated_suffix)
             answer = reviewer(item)
             _check(item, answer)
             if answer.verdict is Verdict.EDITED and answer.text is not None:
@@ -132,17 +198,10 @@ def review_encounter(
 
     confirmed: list[MatchedCode] = []
     for match in matches:
-        descripcion = match.diagnostic.description
-        if known_code_suffix and match.origin is not CodeOrigin.TODAY:
-            descripcion = f"{descripcion} · {known_code_suffix}"
-        if evidence_template and match.evidence:
-            descripcion = evidence_template.format(descripcion, match.evidence)
-        item = ReviewItem(
-            kind=ItemKind.CODE,
-            ref=match.diagnostic.code,
-            label=match.diagnostic.code,
-            text=descripcion,
-            allowed=CODE_VERDICTS,
+        item = code_item(
+            match,
+            known_code_suffix=known_code_suffix,
+            evidence_template=evidence_template,
         )
         answer = reviewer(item)
         _check(item, answer)

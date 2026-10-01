@@ -1,0 +1,21 @@
+# Los textos de la pantalla de revisión y cuánto se espera a que alguien la
+# conteste. En datos porque nombran el oficio de quien revisa, y el guardián de
+# vocabulario no admite eso dentro de src/.
+
+title: "Revisión de la consulta"
+intro: "Revise cada apartado. Lo que no corrija se registra como confirmado."
+confirm_label: "Correcto"
+edit_label: "Corregir"
+reject_label: "Quitar"
+section_reviewed_label: "Apartado revisado"
+codes_heading: "Códigos propuestos"
+save_label: "Guardar y cerrar"
+saved_text: "Revisión guardada. Puede cerrar esta pestaña."
+missing_sections_text: "Falta marcar como revisado algún apartado."
+abandoned_text: "La revisión se cerró sin guardar: nada se registró como revisado."
+
+# Cuánto espera el programa a que se guarde la pantalla. Si expira, la revisión
+# cuenta como incompleta —igual que un corte por teclado— y no se guarda nada.
+# Veinte minutos: una revisión larga con interrupciones tiene que caber, y un
+# proceso olvidado no puede quedarse vivo indefinidamente.
+timeout_seconds: 1200.0

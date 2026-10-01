@@ -419,7 +419,13 @@ class Consultation:
                 return result.text
         return "\n".join(f"- {f}" for f in facts)
 
-    def review(self, prepared: PreparedConsultation, *, reviewer: Reviewer) -> ConsultationResult:
+    def review(
+        self,
+        prepared: PreparedConsultation,
+        *,
+        reviewer: Reviewer,
+        elapsed_seconds: float | None = None,
+    ) -> ConsultationResult:
         """Solo tras contestar a todo se redacta y se guarda. El resumen sale de
         lo revisado sin modelo: si el modelo lo reescribiera, el texto final
         ya no sería lo que el profesional aprobó. Si `reviewer` levanta, se
@@ -452,9 +458,11 @@ class Consultation:
                 negated_suffix=self._wording.negated_suffix,
             )
         except BaseException:
-            self._record_review(start_seq, started, completed=False)
+            self._record_review(
+                start_seq, started, completed=False, elapsed_seconds=elapsed_seconds
+            )
             raise
-        self._record_review(start_seq, started, completed=True)
+        self._record_review(start_seq, started, completed=True, elapsed_seconds=elapsed_seconds)
 
         facts = [
             section_template.format(spec.label, "\n".join(texts))
@@ -482,16 +490,32 @@ class Consultation:
         self._cache.store(owner=prepared.owner, summary_markdown=summary)
         return result
 
-    def _record_review(self, start_seq: int, started: float, *, completed: bool) -> None:
+    def _record_review(
+        self,
+        start_seq: int,
+        started: float,
+        *,
+        completed: bool,
+        elapsed_seconds: float | None = None,
+    ) -> None:
         """Solo los eventos de esta revisión: el registro puede traer los de
         consultas anteriores del mismo proceso. Arriba se captura
-        `BaseException`, y no `Exception`, porque Ctrl-C también es un corte
-        que hay que contar."""
+        `BaseException`, y no `Exception`, porque Ctrl-C también es un corte que
+        hay que contar.
+
+        `elapsed_seconds` llega cuando quien revisó lo hizo **fuera de este
+        proceso** —una pantalla aparte—: entonces el tramo que rodea a
+        `review_encounter` dura milisegundos y medirlo sería registrar la
+        velocidad del bucle en vez del tiempo de la persona, que es justo la
+        métrica que el producto promete reducir."""
         if self._review_metrics is None:
             return
         events = [event for event in self._log if event.seq >= start_seq]
+        segundos = (
+            elapsed_seconds if elapsed_seconds is not None else self._clock() - started
+        )
         self._review_metrics.append(
-            review_record(events, completed=completed, seconds=self._clock() - started)
+            review_record(events, completed=completed, seconds=segundos)
         )
 
     def _refine_edited(self, finding: ClinicalFinding, text: str) -> ClinicalFinding:
