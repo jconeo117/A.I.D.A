@@ -3308,6 +3308,190 @@ def test_consultation_hallazgo_retractado_permanece_en_modelo_clinico(
     assert "Drolar en el pecho, falta de aire, palpitaciones." in frases_modelo
 
 
+def test_consultation_review_elapsed_seconds_externo_registra_tiempo_pasado(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 21 (§B.3): review(..., elapsed_seconds=42.5) registra 42.5 en el store
+    independientemente del reloj del bucle.
+    """
+    times = iter([10.0, 11.0, 12.0])
+    metrics_path = tmp_path / "revisiones_elapsed.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor de cabeza",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(times),
+    )
+    owner = AgentId("doc_external_elapsed")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+
+    def sample_reviewer(item: ReviewItem) -> Answer:
+        return Answer(Verdict.CONFIRMED)
+
+    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=42.5)
+
+    records = store.read()
+    assert len(records) == 1
+    assert records[0].completed is True
+    assert records[0].seconds == 42.5
+
+
+def test_consultation_review_sin_elapsed_seconds_mide_con_reloj_del_bucle(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 22 (§B.3): Sin elapsed_seconds (o None), se mide con el reloj del bucle
+    (comportamiento anterior intacto).
+    """
+    times = iter([100.0, 125.0])
+    metrics_path = tmp_path / "revisiones_clock.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor de cabeza",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: next(times),
+    )
+    owner = AgentId("doc_clock_elapsed")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión esencial.",
+    )
+
+    def sample_reviewer(item: ReviewItem) -> Answer:
+        return Answer(Verdict.CONFIRMED)
+
+    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=None)
+
+    records = store.read()
+    assert len(records) == 1
+    assert records[0].completed is True
+    assert records[0].seconds == 25.0
+
+
+def test_consultation_review_cortada_registra_elapsed_seconds(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 23 (§B.3): Si el reviewer levanta (revisión cortada), el registro
+    incompleto lleva el elapsed_seconds pasado.
+    """
+    metrics_path = tmp_path / "revisiones_aborted_elapsed.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+
+    catalog = build_index(
+        (
+            DiagnosticCode("I10", "Hipertensión esencial (primaria)", 3, "ambas"),
+        )
+    )
+    segments = (
+        TranscriptSegment(
+            start=0.0,
+            end=2.0,
+            text="consulta por dolor de cabeza",
+        ),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    segmenter = ClinicalSegmenter(load_sections())
+    extractor = build_health_extractor()
+    log = EventLog(window=100)
+
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        extractor=extractor,
+        review_metrics=store,
+        clock=lambda: 10.0,
+    )
+    owner = AgentId("doc_aborted_elapsed")
+    prepared = consultation.prepare(
+        owner=owner,
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Paciente con hipertensión.",
+    )
+
+    def failing_reviewer(item: ReviewItem) -> Answer:
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        consultation.review(prepared, reviewer=failing_reviewer, elapsed_seconds=77.5)
+
+    records = store.read()
+    assert len(records) == 1
+    assert records[0].completed is False
+    assert records[0].seconds == 77.5
+
+
+
 
 
 

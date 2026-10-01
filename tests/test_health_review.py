@@ -29,7 +29,10 @@ from aida.arms.health.review import (
     ItemKind,
     ReviewItem,
     Verdict,
+    code_item,
+    finding_item,
     review_encounter,
+    review_items,
 )
 from aida.arms.health.sections import SectionSpec
 from aida.engine.events import EventKind, EventLog
@@ -553,4 +556,171 @@ def test_review_encounter_sin_textos_nuevos_comportamiento_identico() -> None:
     assert len(items) == 2
     assert items[0].text == f1.text  # Sin sufijo negado
     assert items[1].text == m1.diagnostic.description  # Sin plantilla de evidencia
+
+
+# ---------------------------------------------------------------------------
+# Pruebas §B.1: Interfaz de revisión — ítems, una sola puerta (Plan 71)
+# ---------------------------------------------------------------------------
+
+
+def test_review_items_y_review_encounter_mismas_refs_y_orden() -> None:
+    """Caso 1 (§B.1): review_items y review_encounter producen las mismas ref
+    en el mismo orden."""
+    owner, _spec1, _spec2, f1, f2, _enc, grouped_sections, _m1, _m2, matches = (
+        _crear_fixture_base()
+    )
+    # findings en orden inverso al catálogo agrupado
+    encounter = Encounter(owner=owner, findings={"examen": (f2,), "motivo": (f1,)})
+    items_puros = review_items(
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+    )
+    refs_puros = [item.ref for item in items_puros]
+
+    log = EventLog()
+    review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        reviewer=lambda it: Answer(Verdict.CONFIRMED),
+        log=log,
+        refine=lambda f, t: f,
+    )
+    refs_eventos = [e.data["ref"] for e in log if e.kind == EventKind.ITEM_REVIEWED]
+
+    assert refs_puros == refs_eventos
+    assert refs_puros == ["motivo:0", "examen:0", "G43.9", "R51"]
+
+
+def test_review_items_y_review_encounter_mismo_texto_con_sufijos() -> None:
+    """Caso 2 (§B.1): El texto de cada ítem es idéntico entre review_items y
+    review_encounter con sufijos de negado, historia y plantilla de evidencia."""
+    owner, spec1, spec2, f1, f2, _enc, _gs, m1, m2, _m = _crear_fixture_base()
+    f1_neg = replace(f1, text="No dolor de pecho", negated="No dolor de pecho")
+    encounter = Encounter(owner=owner, findings={"motivo": (f1_neg,), "examen": (f2,)})
+    grouped_sections = (
+        (spec1, (f1_neg.text,)),
+        (spec2, (f2.text,)),
+    )
+    m1_hist = replace(m1, origin=CodeOrigin.HISTORY, evidence="registro anterior de migraña")
+    m2_today = replace(m2, origin=CodeOrigin.TODAY, evidence="cefalea en nuca")
+    matches = (m1_hist, m2_today)
+
+    known_suffix = "de la historia"
+    evidence_tmpl = "{0} (según «{1}»)"
+    negated_sfx = "descartado"
+
+    items_puros = review_items(
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        known_code_suffix=known_suffix,
+        evidence_template=evidence_tmpl,
+        negated_suffix=negated_sfx,
+    )
+
+    items_encounter: list[ReviewItem] = []
+
+    def _reviewer(it: ReviewItem) -> Answer:
+        items_encounter.append(it)
+        return Answer(Verdict.CONFIRMED)
+
+    review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        reviewer=_reviewer,
+        log=EventLog(),
+        refine=lambda f, t: f,
+        known_code_suffix=known_suffix,
+        evidence_template=evidence_tmpl,
+        negated_suffix=negated_sfx,
+    )
+
+    textos_puros = [i.text for i in items_puros]
+    textos_encounter = [i.text for i in items_encounter]
+    assert textos_puros == textos_encounter
+    assert textos_puros == [
+        "No dolor de pecho · descartado",
+        "Tensión arterial 120/80",
+        "Migraña · de la historia (según «registro anterior de migraña»)",
+        "Cefalea (según «cefalea en nuca»)",
+    ]
+
+
+def test_review_items_allowed_por_clase() -> None:
+    """Caso 3 (§B.1): allowed por clase — hallazgos traen 3 veredictos y códigos 2."""
+    _owner, _spec1, _spec2, _f1, _f2, encounter, grouped_sections, _m1, _m2, matches = (
+        _crear_fixture_base()
+    )
+    items = review_items(
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+    )
+    hallazgos = [i for i in items if i.kind is ItemKind.FINDING]
+    codigos = [i for i in items if i.kind is ItemKind.CODE]
+
+    assert len(hallazgos) == 2
+    assert len(codigos) == 2
+    for h in hallazgos:
+        assert h.allowed == FINDING_VERDICTS
+        assert set(h.allowed) == {Verdict.CONFIRMED, Verdict.EDITED, Verdict.REJECTED}
+    for c in codigos:
+        assert c.allowed == CODE_VERDICTS
+        assert set(c.allowed) == {Verdict.CONFIRMED, Verdict.REJECTED}
+
+
+def test_finding_item_marca_negado_entero_no_mixto() -> None:
+    """Caso 4 (§B.1): finding_item marca el sufijo solo si el hallazgo está
+    enteramente negado (negated == text.strip()), no en mixto ni afirmado."""
+    spec = SectionSpec("s", "Sección", (), True)
+    f_afirmado = ClinicalFinding(text="Dolor de espalda", section_id="s", negated=None)
+    f_mixto = ClinicalFinding(
+        text="Fumar, no, lo dejé", section_id="s", negated="no, lo dejé"
+    )
+    f_entero = ClinicalFinding(
+        text="  Sin fiebre  ", section_id="s", negated="Sin fiebre"
+    )
+
+    it_afirmado = finding_item(spec, 0, f_afirmado, negated_suffix="negado")
+    it_mixto = finding_item(spec, 1, f_mixto, negated_suffix="negado")
+    it_entero = finding_item(spec, 2, f_entero, negated_suffix="negado")
+
+    assert it_afirmado.text == "Dolor de espalda"
+    assert it_mixto.text == "Fumar, no, lo dejé"
+    assert it_entero.text == "  Sin fiebre   · negado"
+
+
+def test_code_item_compone_descripcion_sufijo_historia_y_evidencia_en_orden() -> None:
+    """Caso 5 (§B.1): code_item compone descripción, sufijo de historia y
+    evidencia en ese orden, y omite cada parte cuando no se declara."""
+    diag = DiagnosticCode("I10", "Hipertensión", 3, "minsalud")
+
+    # 1. Sin sufijos
+    m_base = MatchedCode(diag, 0.9, origin=CodeOrigin.TODAY)
+    it_base = code_item(m_base)
+    assert it_base.text == "Hipertensión"
+
+    # 2. Con sufijo historia pero origen TODAY -> se omite
+    it_today_sfx = code_item(m_base, known_code_suffix="de la historia")
+    assert it_today_sfx.text == "Hipertensión"
+
+    # 3. Con sufijo historia y origen HISTORY -> se añade
+    m_hist = replace(m_base, origin=CodeOrigin.HISTORY)
+    it_hist = code_item(m_hist, known_code_suffix="de la historia")
+    assert it_hist.text == "Hipertensión · de la historia"
+
+    # 4. Con sufijo historia y evidencia -> en ese orden
+    m_hist_ev = replace(m_hist, evidence="tensión 150/90")
+    it_hist_ev = code_item(
+        m_hist_ev,
+        known_code_suffix="de la historia",
+        evidence_template="{0} (motivo: {1})",
+    )
+    assert it_hist_ev.text == "Hipertensión · de la historia (motivo: tensión 150/90)"
+
 

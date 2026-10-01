@@ -3310,6 +3310,260 @@ def test_run_no_expone_cached_stt() -> None:
     assert not hasattr(aida.run, "_cached_stt")
 
 
+def test_consultation_cli_ui_sin_review_devuelve_error_dos(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 24 (§B.4): --ui sin --review imprime error y devuelve 2."""
+    audio_path = tmp_path / "dummy.wav"
+    audio_path.write_bytes(b"RIFF dummy")
+    hist_path = tmp_path / "dummy.txt"
+    hist_path.write_text("historia")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--ui",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "doc_test_ui_no_review",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 2
+    assert "aida: error: --ui requiere --review" in captured.err
+
+
+def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 25 (§B.4): Con --ui, la CLI llama a collect_review y pasa
+    elapsed_seconds a Consultation.review.
+    """
+    from aida.arms.health.consultation import Consultation
+    from aida.arms.health.review import Answer, ReviewItem, Verdict
+    from aida.arms.health.review_ui import ReviewSubmission
+
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _DummySTT:
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (
+                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
+            )
+
+    class _DummyOCR:
+        def read(self, path: Path) -> str:
+            return "Historia clínica previa: sin antecedentes."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    captured_items: list[ReviewItem] = []
+
+    def mock_collect(
+        items: tuple[ReviewItem, ...], *, settings: Any
+    ) -> ReviewSubmission:
+        captured_items.extend(items)
+        answers = {item.ref: Answer(Verdict.CONFIRMED) for item in items}
+        return ReviewSubmission(answers=answers, elapsed_seconds=42.5)
+
+    monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_collect)
+
+    original_review = Consultation.review
+    recorded_elapsed: list[float | None] = []
+
+    def spy_review(
+        self: Any,
+        prepared: Any,
+        *,
+        reviewer: Any,
+        elapsed_seconds: float | None = None,
+    ) -> Any:
+        recorded_elapsed.append(elapsed_seconds)
+        return original_review(
+            self, prepared, reviewer=reviewer, elapsed_seconds=elapsed_seconds
+        )
+
+    monkeypatch.setattr(Consultation, "review", spy_review)
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica previa.")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--ui",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "doc_cli_ui_success",
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+    assert len(captured_items) > 0
+    assert recorded_elapsed == [42.5]
+
+    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    assert metrics_path.exists()
+    lines = metrics_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert data["seconds"] == 42.5
+    assert data["completed"] is True
+
+
+def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 26 (§B.4): ReviewAbandoned imprime aviso en stderr, sale con 1,
+    y no escribe caché ni archivos de export.
+    """
+    from aida.arms.health.review_ui import ReviewAbandoned, load_ui_settings
+
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _DummySTT:
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (
+                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
+            )
+
+    class _DummyOCR:
+        def read(self, path: Path) -> str:
+            return "Historia clínica previa."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    def mock_abandoned(items: Any, *, settings: Any) -> Any:
+        raise ReviewAbandoned("sesión cerrada por el usuario")
+
+    monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_abandoned)
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica previa.")
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+
+    owner = "doc_cli_ui_abandoned"
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--ui",
+            "--export",
+            str(export_dir),
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            owner,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+
+    ui_settings = load_ui_settings()
+    assert ui_settings.wording.abandoned_text in captured.err
+
+    cache_path = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    assert not cache_path.exists()
+    assert list(export_dir.iterdir()) == []
+
+
+def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 27 (§B.4): Sin --ui, se usa _review_from_stdin y nunca se llama collect_review."""
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _DummySTT:
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (
+                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla derecha"),
+            )
+
+    class _DummyOCR:
+        def read(self, path: Path) -> str:
+            return "Historia clínica previa."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    collect_called = False
+
+    def mock_collect(items: Any, *, settings: Any) -> Any:
+        nonlocal collect_called
+        collect_called = True
+        raise AssertionError("collect_review no debió llamarse sin --ui")
+
+    monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_collect)
+    monkeypatch.setattr("builtins.input", lambda prompt: "c")
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica previa.")
+
+    owner = "doc_cli_stdin_review"
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            owner,
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+    assert not collect_called
+
+    cache_path = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    assert cache_path.exists()
+
+
+
 
 
 
