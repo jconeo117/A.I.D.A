@@ -31,6 +31,7 @@ from aida.arms.health.negation import (
     retracted_replies,
     split_polarity,
 )
+from aida.arms.health.note import NoteSettings, RenderedNote, build_note
 from aida.arms.health.review import Reviewer, review_encounter
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
@@ -78,6 +79,10 @@ class ConsultationResult:
     matched_codes: tuple[str, ...]
     summary_markdown: str
     encounter: Encounter | None = None
+    note: RenderedNote | None = None
+    """La nota redactada por campos, cuando se pidió (`--note`). `None` cuando
+    no se pidió: construirla cuesta una llamada al proveedor de lenguaje, y no
+    tiene sentido pagarla cuando nadie va a leerla."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +121,7 @@ class Consultation:
         retraction: RetractionRule | None = None,
         history_layout: HistoryLayout | None = None,
         review_metrics: ReviewMetricsStore | None = None,
+        note_settings: NoteSettings | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._wording = wording
@@ -135,6 +141,7 @@ class Consultation:
         self._retraction = retraction
         self._history_layout = history_layout
         self._review_metrics = review_metrics
+        self._note_settings = note_settings
         self._clock = clock
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
@@ -151,21 +158,42 @@ class Consultation:
         sigue (Ruta B). Es `prepare` más el borrador: los eventos salen
         igual que antes de existir `prepare`."""
         prepared = self.prepare(owner=owner, audio_path=audio_path, history_text=history_text)
+        return self.finish(prepared)
+
+    def finish(self, prepared: PreparedConsultation) -> ConsultationResult:
+        """El borrador a partir de lo ya preparado: separado de
+        `run_with_history` para que quien necesite la nota (`render_note`)
+        pueda partir del mismo `PreparedConsultation` sin volver a
+        transcribir ni a segmentar."""
         facts = self._build_facts(
             prepared.transcript, prepared.history, prepared.matches, prepared.grouped_sections
         )
         summary = self._redact(facts)
 
         result = ConsultationResult(
-            owner=owner,
+            owner=prepared.owner,
             transcript=prepared.transcript,
             history_excerpt=prepared.history,
             matched_codes=tuple(m.diagnostic.code for m in prepared.matches),
             summary_markdown=summary,
             encounter=prepared.encounter,
         )
-        self._cache.store(owner=owner, summary_markdown=summary)
+        self._cache.store(owner=prepared.owner, summary_markdown=summary)
         return result
+
+    def render_note(self, prepared: PreparedConsultation) -> RenderedNote:
+        """La nota clínica a partir de lo ya preparado. No depende de la
+        revisión ni de qué códigos se confirmen: por eso puede llamarse antes,
+        después o en vez de `review`/`finish`, sin volver a segmentar."""
+        if prepared.grouped_sections is None:
+            raise ValueError("--note requiere --segment")
+        if self._note_settings is None:
+            raise ValueError("no hay ajustes de nota configurados (note.yaml)")
+        return build_note(
+            grouped_sections=prepared.grouped_sections,
+            settings=self._note_settings,
+            provider=self._provider,
+        )
 
     def prepare(
         self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
@@ -426,10 +454,13 @@ class Consultation:
         reviewer: Reviewer,
         elapsed_seconds: float | None = None,
     ) -> ConsultationResult:
-        """Solo tras contestar a todo se redacta y se guarda. El resumen sale de
-        lo revisado sin modelo: si el modelo lo reescribiera, el texto final
-        ya no sería lo que el profesional aprobó. Si `reviewer` levanta, se
-        propaga y no se guarda nada: callar no es confirmar."""
+        """Solo tras contestar a todo se guarda. El resumen —la lista de
+        hechos y códigos confirmados— sale sin modelo: eso es lo que el
+        profesional aprueba, campo por hallazgo y código por código. La nota
+        en prosa (`render_note`) es una redacción de esos mismos hechos, no
+        otra cosa que aprobar: copiarla a la historia clínica es el acto de
+        aprobación final de esa redacción. Si `reviewer` levanta, se propaga y
+        no se guarda nada: callar no es confirmar."""
         if prepared.encounter is None or prepared.grouped_sections is None:
             raise ValueError("revisión activa pero no hay segmentador configurado")
         section_template = self._wording.section_template

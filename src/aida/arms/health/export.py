@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from aida.arms.health.consultation import ConsultationResult
+from aida.arms.health.note import RenderedNote, load_note_settings
 from aida.engine.ontology import AgentId
 
 
@@ -34,6 +35,25 @@ def export_name(owner: AgentId, moment: datetime) -> str:
     agrupa las consultas de un mismo sujeto sin nombrarlo."""
     huella = hashlib.blake2b(str(owner).encode("utf-8"), digest_size=3).hexdigest()
     return f"{moment:%Y-%m-%d-%H%M}-{huella}"
+
+
+def _render_note_markdown(note: RenderedNote) -> str:
+    """La nota, con el encabezado por campo y —si hay respaldo o procedencia—
+    el aviso correspondiente. Antes del resumen de siempre: es lo que el
+    profesional va a copiar primero."""
+    ajustes = load_note_settings()
+    lineas: list[str] = []
+    if not note.redacted:
+        lineas.append(ajustes.fallback_notice)
+        lineas.append("")
+    for spec, texto in note.fields:
+        lineas.append(ajustes.field_heading.format(spec.label))
+        lineas.append(texto)
+        lineas.append("")
+    if note.provider is not None:
+        proveedor, _separador, modelo = note.provider.partition("/")
+        lineas.append(ajustes.provenance_template.format(proveedor, modelo))
+    return "\n".join(lineas).rstrip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +81,11 @@ def export_consultation(
     else:
         summary_path = destination / f"{export_name(result.owner, moment)}.md"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(result.summary_markdown + "\n", encoding="utf-8")
+
+    contenido = result.summary_markdown
+    if result.note is not None:
+        contenido = _render_note_markdown(result.note) + "\n\n" + contenido
+    summary_path.write_text(contenido + "\n", encoding="utf-8")
 
     model_path = None
     if include_model and result.encounter is not None:

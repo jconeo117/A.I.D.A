@@ -23,6 +23,10 @@ class SectionSpec:
     """Si lo que cae aquí puede llevar un código de diagnóstico. Una frase de
     medicación o de plan no lo es, y cotejarla solo produce ruido: de ahí salía
     la mitad de los códigos sin relación de `I-125`."""
+    in_note: bool
+    """Si lo que cae aquí tiene sitio en la nota clínica redactada. La sección
+    de reserva —lo que no se pudo clasificar— no lo tiene: un apartado que
+    nadie declaró no es un apartado que un médico vaya a leer."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +66,15 @@ def load_sections(path: Path | None = None) -> SectionCatalog:
         label = entry.get("label")
         triggers = entry.get("trigger_phrases", [])
         codable = entry.get("codable")
+        in_note = entry.get("in_note")
         if not isinstance(section_id, str) or not isinstance(label, str):
             raise ValueError(f"'id' y 'label' deben ser cadenas, en {ruta}")
         if not isinstance(triggers, list) or not all(isinstance(t, str) for t in triggers):
             raise ValueError(f"'trigger_phrases' debe ser una lista de cadenas, en {ruta}")
         if not isinstance(codable, bool):
             raise ValueError(f"falta 'codable' (sí o no) en la sección {section_id!r}, en {ruta}")
+        if not isinstance(in_note, bool):
+            raise ValueError(f"falta 'in_note' (sí o no) en la sección {section_id!r}, en {ruta}")
         if section_id in seen:
             raise ValueError(f"id de sección repetido: {section_id!r}, en {ruta}")
         seen.add(section_id)
@@ -77,6 +84,7 @@ def load_sections(path: Path | None = None) -> SectionCatalog:
                 label=label,
                 trigger_phrases=tuple(triggers),
                 codable=codable,
+                in_note=in_note,
             )
         )
 

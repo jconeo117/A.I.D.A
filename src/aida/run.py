@@ -15,6 +15,7 @@ import hashlib
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -28,6 +29,7 @@ from aida.engine.state import AgentState, ExecutionState
 
 if TYPE_CHECKING:
     from aida.arms.health.consultation import Consultation
+    from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
@@ -99,6 +101,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         "--ui",
         action="store_true",
         help="revisa en el navegador en vez de por teclado (requiere --review)",
+    )
+    parser.add_argument(
+        "--note",
+        action="store_true",
+        help="imprime la nota clínica redactada, lista para copiar (requiere --segment)",
     )
     parser.add_argument(
         "--review-stats",
@@ -267,6 +274,38 @@ def _transcription(stt: object, key: str) -> object:
     return FallbackTranscription(nube, cast(Any, local), on_fallback=aviso)
 
 
+def _cognition(args: argparse.Namespace, note_settings: NoteSettings) -> object | None:
+    """El proveedor de lenguaje: el declarado primero, y el local como
+    contención. `--llm` fuerza uno solo y desactiva la composición: cuando
+    alguien pide un proveedor concreto es porque quiere medirlo, no quiere que
+    otro le responda por detrás.
+
+    `note_settings` llega ya cargado —no se vuelve a leer el pack aquí— para
+    que esta función se pueda probar con un ajuste de prueba sin tocar disco.
+    """
+    from aida.cognition.fallback import FallbackCognition
+
+    if args.llm:
+        return build_provider(args.llm)
+
+    nombre = os.environ.get("AIDA_LLM_PROVIDER") or note_settings.provider
+    modelo = note_settings.provider_model if nombre == note_settings.provider else None
+    nube = build_provider(nombre, model=modelo)
+    local = build_provider("ollama")
+    if nube is None:
+        return local
+    if local is None:
+        return nube
+
+    def aviso(razon: str) -> None:
+        print(
+            f"aida: aviso: el proveedor de nube no redactó, se usa el local ({razon[:120]})",
+            file=sys.stderr,
+        )
+
+    return FallbackCognition(nube, local, on_fallback=aviso)
+
+
 def _build_consultation(
     args: argparse.Namespace,
     *,
@@ -295,6 +334,7 @@ def _build_consultation(
     from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
     from aida.arms.health.negation import load_negation, load_retraction
+    from aida.arms.health.note import load_note_settings
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
@@ -303,6 +343,7 @@ def _build_consultation(
         catalog = load_reference_catalog(cotejo.catalog.paths[0])
     else:
         catalog = load_catalog(cotejo.catalog.paths[0], cotejo.catalog.paths[1])
+    ajustes_nota = load_note_settings()
     return Consultation(
         wording=default_summary_wording(),
         stt=cast(Any, _transcription(stt, key)),
@@ -310,7 +351,7 @@ def _build_consultation(
         catalog_index=build_index(catalog, stopwords=cotejo.stopwords),
         match_threshold=cotejo.threshold,
         match_top_n=cotejo.top_n,
-        provider=build_provider(args.llm or os.environ.get("AIDA_LLM_PROVIDER", "gemini")),
+        provider=cast(Any, _cognition(args, ajustes_nota)),
         cache=ConsultationCache(
             Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
         ),
@@ -323,6 +364,7 @@ def _build_consultation(
         retraction=load_retraction(),
         history_layout=load_history_layout(),
         review_metrics=ReviewMetricsStore(_review_metrics_path()),
+        note_settings=ajustes_nota,
     )
 
 
@@ -534,6 +576,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.ui and not args.review:
             print("aida: error: --ui requiere --review", file=sys.stderr)
             return 2
+        if args.note and not args.segment:
+            print("aida: error: --note requiere --segment", file=sys.stderr)
+            return 1
         if args.diarize:
             if not os.environ.get("AIDA_HF_TOKEN"):
                 print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
@@ -581,55 +626,64 @@ def main(argv: Sequence[str] | None = None) -> int:
         from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
 
         try:
-            if args.review:
+            if args.review or args.note:
+                # `--note` necesita `prepared.grouped_sections` para redactar, y
+                # `consultation.run(...)` no lo expone: se pide explícitamente en
+                # vez de volver a segmentar, que daría otro resultado.
                 prepared = consultation.prepare(
                     owner=AgentId(args.owner),
                     audio_path=Path(args.audio),
                     history_text=lambda: ocr.read(Path(args.history)),
                 )
-                if args.ui:
-                    from aida.arms.health.review import review_items
-                    from aida.arms.health.review_ui import (
-                        ReviewAbandoned,
-                        collect_review,
-                        load_ui_settings,
-                        reviewer_from,
-                    )
-                    from aida.arms.health.wording import default_summary_wording
+                if args.review:
+                    if args.ui:
+                        from aida.arms.health.review import review_items
+                        from aida.arms.health.review_ui import (
+                            ReviewAbandoned,
+                            collect_review,
+                            load_ui_settings,
+                            reviewer_from,
+                        )
+                        from aida.arms.health.wording import default_summary_wording
 
-                    wording = default_summary_wording()
-                    assert prepared.grouped_sections is not None
-                    assert prepared.encounter is not None
-                    items = review_items(
-                        grouped_sections=prepared.grouped_sections,
-                        encounter=prepared.encounter,
-                        matches=prepared.matches,
-                        known_code_suffix=wording.known_code_suffix,
-                        evidence_template=wording.evidence_template,
-                        negated_suffix=wording.negated_suffix,
-                    )
-                    ajustes_ui = load_ui_settings()
-                    try:
-                        envio = collect_review(items, settings=ajustes_ui)
-                    except ReviewAbandoned:
-                        print(
-                            f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
+                        wording = default_summary_wording()
+                        assert prepared.grouped_sections is not None
+                        assert prepared.encounter is not None
+                        items = review_items(
+                            grouped_sections=prepared.grouped_sections,
+                            encounter=prepared.encounter,
+                            matches=prepared.matches,
+                            known_code_suffix=wording.known_code_suffix,
+                            evidence_template=wording.evidence_template,
+                            negated_suffix=wording.negated_suffix,
                         )
-                        return 1
-                    result = consultation.review(
-                        prepared,
-                        reviewer=reviewer_from(envio),
-                        elapsed_seconds=envio.elapsed_seconds,
-                    )
+                        ajustes_ui = load_ui_settings()
+                        try:
+                            envio = collect_review(items, settings=ajustes_ui)
+                        except ReviewAbandoned:
+                            print(
+                                f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
+                            )
+                            return 1
+                        result = consultation.review(
+                            prepared,
+                            reviewer=reviewer_from(envio),
+                            elapsed_seconds=envio.elapsed_seconds,
+                        )
+                    else:
+                        try:
+                            result = consultation.review(prepared, reviewer=_review_from_stdin)
+                        except (EOFError, KeyboardInterrupt):
+                            print(
+                                "aida: revisión incompleta: nada se registra como revisado",
+                                file=sys.stderr,
+                            )
+                            return 1
                 else:
-                    try:
-                        result = consultation.review(prepared, reviewer=_review_from_stdin)
-                    except (EOFError, KeyboardInterrupt):
-                        print(
-                            "aida: revisión incompleta: nada se registra como revisado",
-                            file=sys.stderr,
-                        )
-                        return 1
+                    result = consultation.finish(prepared)
+                if args.note:
+                    note = consultation.render_note(prepared)
+                    result = replace(result, note=note)
             else:
                 result = consultation.run(
                     owner=AgentId(args.owner),
@@ -640,6 +694,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"aida: error: {exc}", file=sys.stderr)
             return 1
         print(result.summary_markdown)
+        if args.note:
+            assert result.note is not None
+            from aida.arms.health.note import load_note_settings
+
+            ajustes_nota = load_note_settings()
+            print()
+            if not result.note.redacted:
+                print(ajustes_nota.fallback_notice)
+            for spec, texto in result.note.fields:
+                print(ajustes_nota.field_heading.format(spec.label))
+                print(texto)
+            if result.note.provider is not None:
+                proveedor, _separador, modelo = result.note.provider.partition("/")
+                print(ajustes_nota.provenance_template.format(proveedor, modelo))
         if args.export is not None:
             from datetime import datetime
 

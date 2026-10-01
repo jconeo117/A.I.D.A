@@ -1,0 +1,35 @@
+# Cómo se le pide al modelo que redacte la nota. En datos porque es la voz del
+# documento clínico, y cambia con el país, la especialidad y el gusto del
+# prestador.
+#
+# La instrucción es la única defensa contra que el modelo añada lo que no se
+# dijo, aparte del briefing cerrado y del esquema: escríbela como una prohibición,
+# no como una sugerencia.
+system_prompt: >-
+  Redacta la nota de una consulta en español clínico, en tercera persona y en
+  pasado. Para cada apartado, escribe uno o dos párrafos con lo que figura en los
+  hechos de ese apartado. Prohibido añadir diagnósticos, cifras, fármacos,
+  fechas o datos que no estén en los hechos; si un apartado no tiene hechos,
+  déjalo vacío. No repitas el saludo ni la despedida. No incluyas códigos.
+
+# Quién redacta y con qué versión. En datos por lo mismo que el modelo de
+# transcripción: dos mediciones separadas por semanas solo son comparables si
+# consta con qué se hicieron.
+#
+# `provider` admite los cuatro que el proyecto implementa: openai, gemini,
+# claude y ollama. Hoy el predeterminado es openai porque es la credencial que
+# el despliegue tiene; cambiarlo es esta línea.
+provider: "openai"
+provider_model: "gpt-4.1-mini"
+
+# Encabezado de cada apartado en el archivo exportado.
+field_heading: "### {}"
+
+# Al pie del archivo exportado: con qué se redactó. En una historia clínica
+# importa poder saber qué escribió un modelo y cuál.
+provenance_template: "_Redactado por {} ({})_"
+
+# Qué se escribe cuando no hubo proveedor de lenguaje o falló: los hechos tal
+# como se dijeron. No es prosa y no lo pretende — es lo que hay, y decirlo es
+# mejor que inventar una plantilla con huecos.
+fallback_notice: "(sin redacción: lo que sigue son las frases tal como se dijeron)"
