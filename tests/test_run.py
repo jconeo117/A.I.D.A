@@ -689,12 +689,75 @@ def test_consultation_diarize_sin_hf_token_devuelve_uno_y_menciona_error(
     """--consultation --diarize --audio x --history y sin AIDA_HF_TOKEN devuelve
     código 1 y mensaje 'aida: error: --diarize requiere AIDA_HF_TOKEN' por stderr.
     """
+    from aida.arms.health.capture import load_capture_settings
+
+    ajustes = replace(load_capture_settings(), cloud_timestamps=True)
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
     monkeypatch.delenv("AIDA_HF_TOKEN", raising=False)
 
     codigo = main(
         ["--consultation", "--diarize", "--audio", "audio.wav", "--history", "historia.png"]
     )
 
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: --diarize requiere AIDA_HF_TOKEN" in captured.err
+
+
+def test_consultation_diarize_sin_timestamps_devuelve_dos_y_explica_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Caso 14 (§B.4, M11, M12): --diarize con modelo sin tiempos (cloud_timestamps=false)
+    imprime el error de §A.4 y devuelve 2 antes de transcribir nada."""
+    codigo = main(
+        ["--consultation", "--diarize", "--audio", "audio.wav", "--history", "historia.png"]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 2
+    assert (
+        "aida: error: --diarize necesita marcas de tiempo y "
+        "'gpt-4o-mini-transcribe' no las devuelve"
+        in captured.err
+    )
+    assert (
+        "declara cloud_timestamps: true con un modelo que las dé, o usa provider: local"
+        in captured.err
+    )
+
+
+def test_consultation_diarize_con_cloud_timestamps_true_pasa_validacion_de_tiempos(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 15 (§B.4): --diarize con cloud_timestamps: true supera la validación de tiempos."""
+    from aida.arms.health.capture import load_capture_settings
+
+    ajustes = replace(load_capture_settings(), cloud_timestamps=True)
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+    monkeypatch.delenv("AIDA_HF_TOKEN", raising=False)
+
+    codigo = main(
+        ["--consultation", "--diarize", "--audio", "audio.wav", "--history", "historia.png"]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: --diarize requiere AIDA_HF_TOKEN" in captured.err
+
+
+def test_consultation_diarize_con_provider_local_pasa_validacion_de_tiempos(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 16 (§B.4): --diarize con provider: local supera la validación de tiempos."""
+    from aida.arms.health.capture import load_capture_settings
+
+    ajustes = replace(load_capture_settings(), provider="local", cloud_timestamps=False)
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: ajustes)
+    monkeypatch.delenv("AIDA_HF_TOKEN", raising=False)
+
+    codigo = main(
+        ["--consultation", "--diarize", "--audio", "audio.wav", "--history", "historia.png"]
+    )
     captured = capsys.readouterr()
     assert codigo == 1
     assert "aida: error: --diarize requiere AIDA_HF_TOKEN" in captured.err
@@ -3129,7 +3192,7 @@ def test_load_capture_settings_connect_timeout_valida(tmp_path: Path) -> None:
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
         "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
         "timeout_seconds: 10\ncompute_type: int8\ncloud_formats: ['.wav']\n"
-        "transcription_prompt: 'p'\n"
+        "transcription_prompt: 'p'\ncloud_timestamps: false\n"
     )
 
     def _probar(contenido: str) -> None:

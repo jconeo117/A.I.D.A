@@ -68,7 +68,11 @@ class TranscriptCache:
         try:
             crudo = json.loads(self._fernet.decrypt(ruta.read_bytes()).decode("utf-8"))
             return tuple(
-                TranscriptSegment(start=float(s["start"]), end=float(s["end"]), text=str(s["text"]))
+                TranscriptSegment(
+                    start=float(s["start"]) if s["start"] is not None else None,
+                    end=float(s["end"]) if s["end"] is not None else None,
+                    text=str(s["text"]),
+                )
                 for s in crudo
             )
         except (InvalidToken, UnicodeDecodeError, ValueError, KeyError, TypeError):

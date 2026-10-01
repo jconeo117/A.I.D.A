@@ -428,3 +428,207 @@ def test_cloud_whisper_sin_extension_levanta_y_lo_nombra(tmp_path: Path) -> None
     with pytest.raises(CloudTranscriptionError) as exc_info:
         stt.transcribe_segments(audio)
     assert "sin extensión" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Plan 74: Modelo STT sin marcas de tiempo y partición unificada (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_whisper_sin_tiempos_pide_json_sin_verbose_json_ni_granularities(
+    tmp_path: Path,
+) -> None:
+    """Caso 1 (§B.1, M1): Con timestamps: false se pide json y no se mandan
+    verbose_json ni timestamp_granularities[]."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticion: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peticion
+        peticion = request
+        return httpx.Response(200, json={"text": "Texto simple."})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(
+        client, model="gpt-4o-mini-transcribe", language="es", timestamps=False
+    )
+    stt.transcribe_segments(audio)
+
+    assert peticion is not None
+    cuerpo = peticion.content
+    assert b'name="response_format"\r\n\r\njson' in cuerpo
+    assert b"verbose_json" not in cuerpo
+    assert b"timestamp_granularities[]" not in cuerpo
+
+
+def test_cloud_whisper_con_tiempos_cuerpo_intacto(tmp_path: Path) -> None:
+    """Caso 2 (§B.1): Con timestamps: true, se mandan verbose_json y timestamp_granularities[]."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticion: httpx.Request | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal peticion
+        peticion = request
+        return httpx.Response(
+            200, json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]}
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(client, model="whisper-1", language="es", timestamps=True)
+    stt.transcribe_segments(audio)
+
+    assert peticion is not None
+    cuerpo = peticion.content
+    assert b'name="response_format"\r\n\r\nverbose_json' in cuerpo
+    assert b'name="timestamp_granularities[]"\r\n\r\nsegment' in cuerpo
+
+
+def test_cloud_whisper_sin_tiempos_parte_text_en_frases_con_abreviaturas(
+    tmp_path: Path,
+) -> None:
+    """Caso 3 (§B.1, M2): Sin tiempos, el text se parte en frases con las abreviaturas del pack:
+    una respuesta con tres oraciones produce tres segmentos."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "text": (
+                    "El paciente refiere cefalea. Niega fiebre en las últimas 24 horas. "
+                    "Se indica reposo."
+                )
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(
+        client,
+        model="gpt-4o-mini-transcribe",
+        language="es",
+        timestamps=False,
+        abbreviations=frozenset({"dr.", "dña."}),
+    )
+    segmentos = stt.transcribe_segments(audio)
+
+    assert len(segmentos) == 3
+    assert segmentos[0].text == "El paciente refiere cefalea."
+    assert segmentos[1].text == "Niega fiebre en las últimas 24 horas."
+    assert segmentos[2].text == "Se indica reposo."
+
+
+def test_cloud_whisper_sin_tiempos_segmentos_tienen_start_y_end_en_none(
+    tmp_path: Path,
+) -> None:
+    """Caso 4 (§B.1, M3): Sin tiempos, los segmentos llevan start y end en None, no en 0.0."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"text": "Frase de prueba sin marcas."})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(
+        client, model="gpt-4o-mini-transcribe", language="es", timestamps=False
+    )
+    segmentos = stt.transcribe_segments(audio)
+
+    assert len(segmentos) == 1
+    seg = segmentos[0]
+    assert seg.text == "Frase de prueba sin marcas."
+    assert seg.start is None
+    assert seg.end is None
+    assert seg.start != 0.0
+    assert seg.end != 0.0
+
+
+def test_cloud_whisper_con_tiempos_sin_segmentos_levanta(tmp_path: Path) -> None:
+    """Caso 5 (§B.1, M4): Con timestamps: true, si la respuesta carece de segments
+    levanta CloudTranscriptionError."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"text": "Texto sin segmentos", "usage": {}})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(client, model="whisper-1", language="es", timestamps=True)
+
+    with pytest.raises(CloudTranscriptionError, match="la respuesta no trae segmentos"):
+        stt.transcribe_segments(audio)
+
+
+def test_cloud_whisper_sin_tiempos_sin_text_levanta(tmp_path: Path) -> None:
+    """Caso 6 (§B.1): Sin tiempos y sin text (o vacío), levanta CloudTranscriptionError."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+
+    def handler_vacio(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"text": "   ", "usage": {}})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler_vacio), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(
+        client, model="gpt-4o-mini-transcribe", language="es", timestamps=False
+    )
+
+    with pytest.raises(CloudTranscriptionError, match="la respuesta no trae texto"):
+        stt.transcribe_segments(audio)
+
+    def handler_sin_clave(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"usage": {}})
+
+    client2 = httpx.Client(
+        transport=httpx.MockTransport(handler_sin_clave), base_url="https://api.openai.com"
+    )
+    stt2 = CloudWhisperSTT(
+        client2, model="gpt-4o-mini-transcribe", language="es", timestamps=False
+    )
+
+    with pytest.raises(CloudTranscriptionError, match="la respuesta no trae texto"):
+        stt2.transcribe_segments(audio)
+
+
+def test_cloud_whisper_abreviatura_del_pack_no_parte_frase(tmp_path: Path) -> None:
+    """Caso 7 (§B.1, M5): Una abreviatura del pack no parte la frase en el camino de nube,
+    igual que en el camino local."""
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "text": "El Dr. Juan Pérez evaluó la tensión. Recomendó control semanal."
+            },
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(
+        client,
+        model="gpt-4o-mini-transcribe",
+        language="es",
+        timestamps=False,
+        abbreviations=frozenset({"dr.", "dra."}),
+    )
+    segmentos = stt.transcribe_segments(audio)
+
+    assert len(segmentos) == 2
+    assert segmentos[0].text == "El Dr. Juan Pérez evaluó la tensión."
+    assert segmentos[1].text == "Recomendó control semanal."

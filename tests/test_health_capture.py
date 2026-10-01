@@ -34,10 +34,10 @@ from aida.arms.health.capture import (
     ModelUnavailableError,
     NoSpeechError,
     TranscriptionError,
-    _split_by_sentence,
     build_local_capture,
     capture_diagnosis,
     load_capture_settings,
+    split_into_sentences,
 )
 from aida.voice.diarize import TranscriptSegment
 
@@ -216,6 +216,7 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     yaml_path.write_text(
         "provider: cloud\n"
         "cloud_model: whisper-1\n"
+        "cloud_timestamps: false\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
@@ -241,6 +242,7 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     assert settings.abbreviations == ("dr.", "mg.")
     assert settings.provider == "cloud"
     assert settings.cloud_model == "whisper-1"
+    assert settings.cloud_timestamps is False
     assert settings.cloud_language == "es"
     assert settings.cloud_base_url == "https://api.openai.com"
     assert settings.timeout_seconds == 120.0
@@ -255,7 +257,8 @@ def test_load_capture_settings_valido_y_pack_real(tmp_path: Path) -> None:
     assert real.no_speech_threshold == 0.6
     assert "dr." in real.abbreviations
     assert real.provider == "cloud"
-    assert real.cloud_model == "whisper-1"
+    assert real.cloud_model == "gpt-4o-mini-transcribe"
+    assert real.cloud_timestamps is False
     assert real.cloud_language == "es"
     assert real.cloud_base_url == "https://api.openai.com"
     assert real.timeout_seconds == 120.0
@@ -271,6 +274,7 @@ def test_load_capture_settings_invalido_nombra_clave(tmp_path: Path) -> None:
     prefijo = (
         "provider: cloud\n"
         "cloud_model: whisper-1\n"
+        "cloud_timestamps: false\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
@@ -304,6 +308,7 @@ def test_load_capture_settings_provider_y_timeout_invalidos_nombran_clave(tmp_pa
     timeout_seconds <= 0 o no numérico da ValueError nombrando la clave."""
     base_yaml = (
         "cloud_model: whisper-1\n"
+        "cloud_timestamps: false\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "model: small\n"
@@ -372,6 +377,7 @@ def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
         connect_timeout_seconds=3.0,
         cloud_formats=(".wav",),
         transcription_prompt="Consulta médica.",
+        cloud_timestamps=True,
     )
     stt, _ocr = build_local_capture(settings)
     assert recibidos["model"] == "base"
@@ -386,11 +392,11 @@ def test_build_local_capture_usa_ajustes_declarados_y_local_files_only(
 
 
 def test_split_by_sentence_reparto_proporcional_y_speech_segments(tmp_path: Path) -> None:
-    """Caso 8: segmento 0.0-10.0 con dos frases de igual longitud se parte al punto medio;
+    """Caso 8/9: segmento 0.0-10.0 con dos frases de igual longitud se parte al punto medio;
     end del último trozo coincide con el original. También se comprueba a través de
     transcribe_segments en LocalWhisperSTT."""
     seg = TranscriptSegment(0.0, 10.0, "Cinco uno. Cinco dos.")
-    trozos = _split_by_sentence(seg, frozenset())
+    trozos = split_into_sentences(seg.text, abbreviations=frozenset(), start=seg.start, end=seg.end)
     assert len(trozos) == 2
     assert trozos[0].text == "Cinco uno."
     assert trozos[0].start == 0.0
@@ -413,12 +419,11 @@ def test_split_by_sentence_reparto_proporcional_y_speech_segments(tmp_path: Path
 
 
 def test_split_by_sentence_una_sola_frase_devuelve_mismo_objeto() -> None:
-    """Caso 9: segmento con una sola frase devuelve el mismo objeto idéntico
-    sin tocar tiempos ni redondear."""
+    """Caso 9: segmento con una sola frase devuelve un segmento con los mismos datos."""
     seg = TranscriptSegment(0.12345, 9.87654, "Solo una frase sin puntuacion fuerte")
-    trozos = _split_by_sentence(seg, frozenset())
+    trozos = split_into_sentences(seg.text, abbreviations=frozenset(), start=seg.start, end=seg.end)
     assert len(trozos) == 1
-    assert trozos[0] is seg
+    assert trozos[0].text == seg.text
     assert trozos[0].start == 0.12345
     assert trozos[0].end == 9.87654
 
@@ -427,14 +432,96 @@ def test_split_by_sentence_tiempos_crecientes_y_sin_huecos() -> None:
     """Caso 10: los tiempos son crecientes y sin huecos (end de cada trozo es start
     del siguiente)."""
     seg = TranscriptSegment(1.5, 12.3, "Frase corta. Otra frase bastante más larga. Y una final.")
-    trozos = _split_by_sentence(seg, frozenset())
+    trozos = split_into_sentences(seg.text, abbreviations=frozenset(), start=seg.start, end=seg.end)
     assert len(trozos) == 3
     for i in range(len(trozos) - 1):
         assert trozos[i].end == trozos[i + 1].start
-        assert trozos[i].start < trozos[i].end
+        t_start, t_end = trozos[i].start, trozos[i].end
+        assert t_start is not None and t_end is not None
+        assert t_start < t_end
     assert trozos[0].start == 1.5
     assert trozos[-1].end == 12.3
     assert trozos[0].end != seg.end
+
+
+def test_local_whisper_stt_llama_a_split_into_sentences(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 8 (§B.2, M6): LocalWhisperSTT delega la partición de frases en split_into_sentences."""
+    import aida.arms.health.capture as cap
+
+    llamadas: list[Any] = []
+    real_fn = cap.split_into_sentences
+
+    def spy_split(
+        text: str,
+        *,
+        abbreviations: frozenset[str],
+        start: float | None = None,
+        end: float | None = None,
+    ) -> tuple[TranscriptSegment, ...]:
+        llamadas.append((text, abbreviations, start, end))
+        return real_fn(text, abbreviations=abbreviations, start=start, end=end)
+
+    monkeypatch.setattr(cap, "split_into_sentences", spy_split)
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"dummy")
+    model = _DummyWhisperModel([_DummySegment(0.0, 5.0, "Frase de prueba.", 0.1)])
+    stt = LocalWhisperSTT(model)
+    stt.transcribe_segments(audio)
+
+    assert len(llamadas) > 0, "LocalWhisperSTT no llamó a split_into_sentences"
+
+
+def test_split_into_sentences_sin_tiempos_segmentos_con_none() -> None:
+    """Caso 10 (§B.2): Sin start ni end, los segmentos salen con start=None y end=None."""
+    trozos = split_into_sentences("Primera frase. Segunda frase.", abbreviations=frozenset())
+    assert len(trozos) == 2
+    assert trozos[0].text == "Primera frase."
+    assert trozos[0].start is None
+    assert trozos[0].end is None
+    assert trozos[1].text == "Segunda frase."
+    assert trozos[1].start is None
+    assert trozos[1].end is None
+
+
+def test_load_capture_settings_cloud_timestamps_obligatorio_y_booleano(tmp_path: Path) -> None:
+    """Caso 11 (§B.2, M7, M8): cloud_timestamps es obligatorio en capture.yaml y debe ser bool."""
+    import yaml
+
+    # Pack real
+    real = load_capture_settings()
+    assert isinstance(real.cloud_timestamps, bool)
+    assert real.cloud_timestamps is False
+
+    # Falta cloud_timestamps
+    p1 = tmp_path / "sin_timestamps.yaml"
+    data: dict[str, Any] = {
+        "model": "base",
+        "device": "cpu",
+        "no_speech_threshold": 0.6,
+        "abbreviations": ["dr."],
+        "provider": "cloud",
+        "cloud_model": "gpt-4o-mini-transcribe",
+        "cloud_language": "es",
+        "cloud_base_url": "https://api.openai.com",
+        "timeout_seconds": 30.0,
+        "compute_type": "default",
+        "connect_timeout_seconds": 5.0,
+        "cloud_formats": [".wav"],
+        "transcription_prompt": "prompt",
+    }
+    p1.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match=r"cloud_timestamps"):
+        load_capture_settings(p1)
+
+    # Cadena "false" en vez de booleano
+    p2 = tmp_path / "str_timestamps.yaml"
+    data["cloud_timestamps"] = "false"
+    p2.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match=r"cloud_timestamps"):
+        load_capture_settings(p2)
 
 
 def test_load_capture_settings_abreviaturas_minusculas_y_pack_real(tmp_path: Path) -> None:
@@ -443,6 +530,7 @@ def test_load_capture_settings_abreviaturas_minusculas_y_pack_real(tmp_path: Pat
     yaml_path.write_text(
         "provider: cloud\n"
         "cloud_model: whisper-1\n"
+        "cloud_timestamps: false\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
@@ -471,6 +559,7 @@ def test_load_capture_settings_sin_o_invalido_abbreviations_levanta_value_error(
     prefijo = (
         "provider: cloud\n"
         "cloud_model: whisper-1\n"
+        "cloud_timestamps: false\n"
         "cloud_language: es\n"
         "cloud_base_url: https://api.openai.com\n"
         "timeout_seconds: 120.0\n"
@@ -527,6 +616,7 @@ def test_build_local_capture_pasa_abreviaturas_a_stt(monkeypatch: pytest.MonkeyP
         connect_timeout_seconds=3.0,
         cloud_formats=(".wav",),
         transcription_prompt="Consulta médica.",
+        cloud_timestamps=True,
     )
     stt, _ocr = build_local_capture(settings)
     assert stt._abbreviations == frozenset({"dr.", "mg.", "ml."})
@@ -564,7 +654,7 @@ def test_load_capture_settings_sin_transcription_prompt_levanta_value_error(tmp_
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
         "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
         "timeout_seconds: 10\ncompute_type: int8\nconnect_timeout_seconds: 3.0\n"
-        "cloud_formats: ['.wav']\n",
+        "cloud_formats: ['.wav']\ncloud_timestamps: false\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="transcription_prompt"):
@@ -619,7 +709,7 @@ def test_load_capture_settings_sin_compute_type_levanta_value_error(tmp_path: Pa
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
         "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
         "timeout_seconds: 10\nconnect_timeout_seconds: 3.0\n"
-        "cloud_formats: ['.wav']\ntranscription_prompt: 'p'\n",
+        "cloud_formats: ['.wav']\ntranscription_prompt: 'p'\ncloud_timestamps: false\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="compute_type"):
@@ -633,7 +723,7 @@ def test_load_capture_settings_sin_cloud_formats_levanta_value_error(tmp_path: P
         "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
         "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
         "timeout_seconds: 10\nconnect_timeout_seconds: 3.0\ncompute_type: int8\n"
-        "transcription_prompt: 'p'\n",
+        "transcription_prompt: 'p'\ncloud_timestamps: false\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="cloud_formats"):

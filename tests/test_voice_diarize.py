@@ -164,3 +164,35 @@ def test_build_local_diarizer_sin_token_lanza_diarization_error_sin_importar_pya
         DiarizationError, match="falta AIDA_HF_TOKEN para el modelo de diarización"
     ):
         build_local_diarizer()
+
+
+def test_merge_by_speaker_falla_con_segmentos_sin_tiempos() -> None:
+    """Caso 12 (§B.3, M9): merge_by_speaker levanta DiarizationError explícita si
+    algún segmento viene sin marcas de tiempo (start=None o end=None). No empareja
+    a ciegas ni asume 0.0."""
+    t1 = SpeakerTurn(start=0.0, end=5.0, speaker="SPEAKER_00")
+    turns = (t1,)
+
+    # start is None
+    seg_sin_start = TranscriptSegment(start=None, end=2.0, text="Sin inicio")
+    with pytest.raises(
+        DiarizationError,
+        match="la diarización necesita segmentos con marcas de tiempo, y llegó uno sin ellas",
+    ):
+        merge_by_speaker((seg_sin_start,), turns)
+
+    # end is None
+    seg_sin_end = TranscriptSegment(start=1.0, end=None, text="Sin fin")
+    with pytest.raises(
+        DiarizationError,
+        match="la diarización necesita segmentos con marcas de tiempo, y llegó uno sin ellas",
+    ):
+        merge_by_speaker((seg_sin_end,), turns)
+
+    # ambos None
+    seg_ambos_none = TranscriptSegment(start=None, end=None, text="Sin tiempos")
+    with pytest.raises(
+        DiarizationError,
+        match="la diarización necesita segmentos con marcas de tiempo, y llegó uno sin ellas",
+    ):
+        merge_by_speaker((seg_ambos_none,), turns)

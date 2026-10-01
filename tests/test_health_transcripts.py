@@ -265,3 +265,30 @@ def test_cached_stt_transcribe_usa_misma_cache_que_transcribe_segments(tmp_path:
     assert len(seg) == 2
     assert seg[0].text == "Hola"
     assert seg[1].text == "doctor"
+
+
+def test_transcript_cache_preserva_segmentos_sin_tiempos(tmp_path: Path) -> None:
+    """Caso 13 (§B.3, M10): La caché de transcripciones guarda y recupera segmentos sin tiempos
+    (start=None y end=None) sin corromperlos a 0.0 ni reventar; None sobrevive al viaje por JSON."""
+    key = Fernet.generate_key()
+    cache = TranscriptCache(tmp_path, key=key)
+    fp = "huella_sin_tiempos"
+    segments = (
+        TranscriptSegment(start=None, end=None, text="Primera frase sin marcas de tiempo."),
+        TranscriptSegment(start=None, end=None, text="Segunda frase sin marcas de tiempo."),
+    )
+    cache.store(fp, segments)
+
+    cargado = cache.load(fp)
+    assert cargado == segments
+    assert cargado is not None
+    assert cargado[0].start is None
+    assert cargado[0].end is None
+    assert cargado[0].start != 0.0
+    assert cargado[0].end != 0.0
+    assert cargado[0].text == "Primera frase sin marcas de tiempo."
+    assert cargado[1].start is None
+    assert cargado[1].end is None
+    assert cargado[1].start != 0.0
+    assert cargado[1].end != 0.0
+    assert cargado[1].text == "Segunda frase sin marcas de tiempo."
