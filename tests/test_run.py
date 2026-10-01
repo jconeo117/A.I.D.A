@@ -8,6 +8,7 @@ son, por ahora, toda la batería de la unidad.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import io
 import json
@@ -3823,3 +3824,69 @@ def test_consultation_cli_export_respaldo_literal_lleva_fallback_notice(
     assert dest_file.exists()
     contenido = dest_file.read_text(encoding="utf-8")
     assert "(sin redacción: lo que sigue son las frases tal como se dijeron)" in contenido
+
+
+def test_section_dump_escribe_archivo_y_termina_sin_consulta(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 14 (§B.4): --section-dump escribe el archivo CSV con las frases del
+    modelo y termina con código 0 sin ejecutar consulta alguna."""
+    modelo_file = tmp_path / "modelo.json"
+    modelo_file.write_text(
+        json.dumps({
+            "motivo_consulta": [{"text": "dolor de cabeza"}],
+            "plan": [{"text": "paracetamol"}],
+        }),
+        encoding="utf-8",
+    )
+    salida_file = tmp_path / "salida.csv"
+
+    codigo = main(["--section-dump", str(modelo_file), str(salida_file)])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert salida_file.exists()
+    assert "2 frases volcadas" in captured.err
+    contenido = salida_file.read_text(encoding="utf-8")
+    assert "text,assigned,expected" in contenido
+    assert "dolor de cabeza" in contenido
+
+
+def test_section_report_imprime_y_termina(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 15 (§B.4): --section-report imprime el informe en stdout y termina
+    con código 0, como --review-stats."""
+    ref_file = tmp_path / "referencia.csv"
+    with ref_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["text", "assigned", "expected"])
+        writer.writerow(["consulta hoy por dolor de cabeza", "motivo_consulta", "motivo_consulta"])
+
+    codigo = main(["--section-report", str(ref_file)])
+
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert (
+        "Total: 1 frases, 1 aciertos, 0 contaminadas, 0 perdidas, 0 sin etiquetar"
+        in captured.out
+    )
+    assert "Por apartado (correctas / contaminadas / perdidas):" in captured.out
+
+
+def test_section_report_archivo_inexistente_da_error_y_codigo_distinto_de_cero(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 16 (§B.4): --section-report sobre un archivo que no existe da
+    error claro por stderr y código 1."""
+    no_existe = tmp_path / "no_existe_referencia.csv"
+
+    codigo = main(["--section-report", str(no_existe)])
+
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error:" in captured.err
+    assert "no_existe_referencia" in captured.err or "No such file" in captured.err

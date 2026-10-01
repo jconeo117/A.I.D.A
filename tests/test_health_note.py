@@ -369,3 +369,27 @@ def test_clinical_note_extra_forbid() -> None:
     """M8: ClinicalNote rechaza campos extra no permitidos con ValidationError."""
     with pytest.raises(ValidationError):
         ClinicalNote.model_validate({"fields": {}, "campo_extra": "no_permitido"})
+
+
+def test_note_prohibicion_preguntas_en_system_prompt_y_briefing() -> None:
+    """Caso 13 (§B.3, M9): La prohibición de preguntas está en el system_prompt
+    del pack real y viaja en el briefing entregado al proveedor de lenguaje."""
+    settings = load_note_settings()
+    assert (
+        "Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta"
+        in settings.system_prompt
+    )
+    assert "Si un apartado solo contiene preguntas, déjalo vacío." in settings.system_prompt
+
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    grouped = ((spec_motivo, ("dolor de cabeza",)),)
+    provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Cefalea."}))
+    build_note(grouped_sections=grouped, settings=settings, provider=provider)
+
+    assert provider.captured_briefing is not None
+    assert (
+        "Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta"
+        in provider.captured_briefing
+    )

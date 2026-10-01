@@ -24,7 +24,9 @@ def test_load_sections_por_defecto_conserva_orden() -> None:
     """
     catalog = load_sections()
     assert isinstance(catalog, SectionCatalog)
-    assert catalog.threshold == 0.15
+    with Path("packs/health/consultorio/sections.yaml").open(encoding="utf-8") as f:
+        pack_threshold = yaml.safe_load(f)["threshold"]
+    assert catalog.threshold == pack_threshold
     assert catalog.fallback.section_id == "otros_comentarios"
 
     expected_ids = (
@@ -401,3 +403,37 @@ def test_load_sections_pack_real_declara_in_note_y_otros_comentarios_es_unica_fa
     assert len(verdaderas) == 14
     assert catalog.fallback.section_id == "otros_comentarios"
     assert catalog.fallback.in_note is False
+
+
+def test_sections_threshold_declarado_en_pack() -> None:
+    """Caso 10 (§B.2): El umbral nuevo es el que declara el pack, y el test lo
+    lee del archivo en vez de repetir el número para permitir recalibraciones futuras."""
+    catalog = load_sections()
+    with Path("packs/health/consultorio/sections.yaml").open(encoding="utf-8") as f:
+        pack_data = yaml.safe_load(f)
+    assert catalog.threshold == pack_data["threshold"]
+    assert isinstance(catalog.threshold, float)
+    assert 0.0 < catalog.threshold < 1.0
+
+
+def test_sections_gatillos_dictado_en_examen_fisico() -> None:
+    """Caso 11 (§B.2, M7): Los gatillos de dictado siguen declarados en examen_fisico:
+    'al examen físico', 'a la palpación', 'a la auscultación' y 'se examina' (§3.2)."""
+    catalog = load_sections()
+    examen = next(s for s in catalog.sections if s.section_id == "examen_fisico")
+    assert "al examen físico" in examen.trigger_phrases
+    assert "a la palpación" in examen.trigger_phrases
+    assert "a la auscultación" in examen.trigger_phrases
+    assert "se examina" in examen.trigger_phrases
+
+
+def test_sections_cada_seccion_tiene_al_menos_un_gatillo_y_no_vacio() -> None:
+    """Caso 12 (§B.2): Cada sección (salvo la reserva otros_comentarios) tiene al menos
+    un gatillo, y ningún gatillo de ninguna sección está vacío o en blanco."""
+    catalog = load_sections()
+    for spec in catalog.sections:
+        if spec.section_id == catalog.fallback.section_id:
+            continue
+        assert len(spec.trigger_phrases) > 0, f"Sección '{spec.section_id}' sin gatillos"
+        for phrase in spec.trigger_phrases:
+            assert phrase.strip() != "", f"Gatillo vacío en sección '{spec.section_id}'"
