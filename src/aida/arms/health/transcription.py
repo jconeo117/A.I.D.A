@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from aida.arms.health.capture import split_into_sentences
 from aida.voice.diarize import TranscriptSegment
 
 
@@ -25,8 +26,10 @@ class TranscriptionProvider(Protocol):
     """Un transcriptor, venga de donde venga.
 
     Contrato que hace posible cambiar de proveedor sin cambiar el resto: recibe
-    la ruta de un audio y devuelve segmentos con sus tiempos. Los tiempos no son
-    opcionales: la diarización y el reparto por frases se apoyan en ellos.
+    la ruta de un audio y devuelve segmentos de texto. Los tiempos son
+    opcionales desde el plan 74 —hay modelos de nube que no los devuelven—,
+    pero quien los necesite de verdad (la diarización) tiene que fallar
+    explícitamente ante su ausencia, no recibir ceros que parecen datos.
     """
 
     def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]: ...
@@ -84,8 +87,11 @@ class CloudWhisperSTT:
     API: el architect no tiene acceso a la red para confirmarlo.
 
     Lo que sí es contrato y no se negocia:
-      - pide **segmentos con tiempos**, porque la diarización y el reparto por
-        frases se apoyan en ellos;
+      - pide segmentos con tiempos cuando `timestamps=True`, porque la
+        diarización y el reparto por frases se apoyan en ellos; sin tiempos
+        —algunos modelos no los devuelven— parte el `text` en frases con el
+        mismo criterio que el camino local (`split_into_sentences`), y los
+        segmentos resultantes llevan `start`/`end` en `None`;
       - fija el idioma y la **versión del modelo** desde los datos del pack, para
         que dos mediciones separadas por semanas sigan siendo comparables;
       - cualquier fallo se levanta como excepción: la decisión de caer al
@@ -100,12 +106,16 @@ class CloudWhisperSTT:
         language: str,
         prompt: str = "",
         formats: frozenset[str] = frozenset(),
+        timestamps: bool = True,
+        abbreviations: frozenset[str] = frozenset(),
     ) -> None:
         self._client = client
         self._model = model
         self._language = language
         self._prompt = prompt
         self._formats = formats
+        self._timestamps = timestamps
+        self._abbreviations = abbreviations
 
     def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
         # Antes de abrir el archivo: subir diez megabytes para que el proveedor
@@ -119,9 +129,12 @@ class CloudWhisperSTT:
         datos: dict[str, str] = {
             "model": self._model,
             "language": self._language,
-            "response_format": "verbose_json",
-            "timestamp_granularities[]": "segment",
         }
+        if self._timestamps:
+            datos["response_format"] = "verbose_json"
+            datos["timestamp_granularities[]"] = "segment"
+        else:
+            datos["response_format"] = "json"
         if self._prompt:
             datos["prompt"] = self._prompt
         with audio_path.open("rb") as audio:
@@ -132,6 +145,11 @@ class CloudWhisperSTT:
             )
         response.raise_for_status()
         crudo = response.json()
+        if not self._timestamps:
+            texto = str(crudo.get("text", "")).strip()
+            if not texto:
+                raise CloudTranscriptionError(f"la respuesta no trae texto: {list(crudo)}")
+            return split_into_sentences(texto, abbreviations=self._abbreviations)
         segmentos = crudo.get("segments")
         if not segmentos:
             raise CloudTranscriptionError(f"la respuesta no trae segmentos: {list(crudo)}")

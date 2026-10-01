@@ -18,11 +18,18 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSegment:
-    """Un tramo de una transcripción con marca de tiempo. Genérico: no es
-    propiedad de ningún STT concreto, cualquier motor de voz lo produce."""
+    """Un tramo de una transcripción, con marca de tiempo cuando el proveedor
+    la da. Genérico: no es propiedad de ningún STT concreto, cualquier motor
+    de voz lo produce.
 
-    start: float
-    end: float
+    `start`/`end` admiten `None`: algunos modelos de nube devuelven un solo
+    bloque de texto sin tiempos. No se inventan tiempos plausibles — un `0.0`
+    se confundiría con un dato real—, así que quien necesite tiempos (la
+    diarización) tiene que fallar explícitamente al encontrarse con `None`,
+    no emparejar contra un cero."""
+
+    start: float | None
+    end: float | None
     text: str
 
 
@@ -61,16 +68,26 @@ def merge_by_speaker(
 ) -> tuple[tuple[str, str], ...]:
     """Por cada segmento de transcripción, el hablante del turno con más
     solapamiento de tiempo. Aproximado a nivel de segmento, no de palabra —
-    decisión de alcance §1.3: es lo proporcional a lo que hace falta hoy."""
+    decisión de alcance §1.3: es lo proporcional a lo que hace falta hoy.
+
+    Exige tiempos reales en **todos** los segmentos: sin ellos no hay
+    solapamiento que calcular, y tratar `None` como `0.0` emparejaría
+    cualquier cosa con el primer turno — una etiqueta de hablante inventada
+    en un registro clínico es peor que no tener ninguna (plan 42)."""
     pairs: list[tuple[str, str]] = []
     for seg in segments:
+        if seg.start is None or seg.end is None:
+            raise DiarizationError(
+                "la diarización necesita segmentos con marcas de tiempo, y llegó uno sin ellas"
+            )
+        seg_start, seg_end = seg.start, seg.end
         best = max(
             turns,
-            key=lambda t: max(0.0, min(seg.end, t.end) - max(seg.start, t.start)),
+            key=lambda t: max(0.0, min(seg_end, t.end) - max(seg_start, t.start)),
             default=None,
         )
         if best is not None:
-            overlap = max(0.0, min(seg.end, best.end) - max(seg.start, best.start))
+            overlap = max(0.0, min(seg_end, best.end) - max(seg_start, best.start))
             speaker = best.speaker if overlap > 0.0 else "DESCONOCIDO"
         else:
             speaker = "DESCONOCIDO"

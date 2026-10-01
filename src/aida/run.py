@@ -258,6 +258,8 @@ def _transcription(stt: object, key: str) -> object:
             language=ajustes.cloud_language,
             prompt=ajustes.transcription_prompt,
             formats=frozenset(ajustes.cloud_formats),
+            timestamps=ajustes.cloud_timestamps,
+            abbreviations=frozenset(ajustes.abbreviations),
         ),
         cache,
         model=f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:{prompt}",
@@ -580,6 +582,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("aida: error: --note requiere --segment", file=sys.stderr)
             return 1
         if args.diarize:
+            from aida.arms.health.capture import load_capture_settings
+
+            ajustes_captura = load_capture_settings()
+            if ajustes_captura.provider == "cloud" and not ajustes_captura.cloud_timestamps:
+                print(
+                    f"aida: error: --diarize necesita marcas de tiempo y "
+                    f"{ajustes_captura.cloud_model!r} no las devuelve; declara "
+                    f"cloud_timestamps: true con un modelo que las dé, o usa "
+                    f"provider: local",
+                    file=sys.stderr,
+                )
+                return 2
             if not os.environ.get("AIDA_HF_TOKEN"):
                 print("aida: error: --diarize requiere AIDA_HF_TOKEN", file=sys.stderr)
                 return 1

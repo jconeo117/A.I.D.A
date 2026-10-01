@@ -58,6 +58,7 @@ class CaptureSettings:
     connect_timeout_seconds: float
     cloud_formats: tuple[str, ...]
     transcription_prompt: str
+    cloud_timestamps: bool
 
 
 def load_capture_settings(path: Path | None = None) -> CaptureSettings:
@@ -83,6 +84,7 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
             "connect_timeout_seconds",
             "cloud_formats",
             "transcription_prompt",
+            "cloud_timestamps",
         )
         if k not in raw
     ]
@@ -120,6 +122,9 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
     compute_type = raw["compute_type"]
     if not isinstance(compute_type, str) or not compute_type.strip():
         raise ValueError(f"'compute_type' debe ser una cadena no vacía en {ruta}")
+    timestamps = raw["cloud_timestamps"]
+    if not isinstance(timestamps, bool):
+        raise ValueError(f"'cloud_timestamps' debe ser un booleano en {ruta}")
     return CaptureSettings(
         model=str(raw["model"]),
         device=str(raw["device"]),
@@ -134,27 +139,48 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
         connect_timeout_seconds=float(espera_conexion),
         cloud_formats=tuple(str(f).lower().strip() for f in formatos),
         transcription_prompt=str(prompt),
+        cloud_timestamps=timestamps,
     )
 
 
-def _split_by_sentence(
-    segment: TranscriptSegment, abbreviations: frozenset[str]
+def split_into_sentences(
+    text: str,
+    *,
+    abbreviations: frozenset[str],
+    start: float | None = None,
+    end: float | None = None,
 ) -> tuple[TranscriptSegment, ...]:
-    """Reparte el tramo de tiempo del segmento entre sus frases, en proporción
-    a lo que ocupa cada una. La diarización empareja por solapamiento, así que
-    necesita tiempos distintos por frase; cuál sea el reparto exacto importa
-    menos que el hecho de que sea determinista."""
-    frases = split_sentences(segment.text, abbreviations=abbreviations)
+    """Qué es una frase, para los dos caminos de transcripción.
+
+    Existía solo dentro del camino local (plan 58, `I-130`), mientras el de
+    nube confiaba en los trozos que cortaba el proveedor: dos criterios
+    distintos para la misma pregunta, y la clase de duplicación que este
+    proyecto trata como invariante.
+
+    Con `start`/`end`, el tramo de tiempo se reparte entre las frases en
+    proporción a lo que ocupa cada una — la diarización empareja por
+    solapamiento, así que necesita tiempos distintos por frase; cuál sea el
+    reparto exacto importa menos que el hecho de que sea determinista.
+
+    `start` y `end` son opcionales porque hay modelos que no devuelven
+    tiempos. Sin ellos, los segmentos salen con `start` y `end` a `None`: **no
+    se inventan tiempos plausibles**. Quien empareje por solapamiento — la
+    diarización — tiene que romper al pedirlos, no recibir ceros que parecen
+    datos y emparejar cualquier cosa.
+    """
+    frases = split_sentences(text, abbreviations=abbreviations)
+    if start is None or end is None:
+        return tuple(TranscriptSegment(start=None, end=None, text=frase) for frase in frases)
     if len(frases) <= 1:
-        return (segment,)
+        return (TranscriptSegment(start=start, end=end, text=text),)
     total = sum(len(frase) for frase in frases)
-    duracion = segment.end - segment.start
+    duracion = end - start
     trozos: list[TranscriptSegment] = []
     consumido = 0
     for frase in frases:
-        inicio = segment.start + duracion * consumido / total
+        inicio = start + duracion * consumido / total
         consumido += len(frase)
-        fin = segment.start + duracion * consumido / total
+        fin = start + duracion * consumido / total
         trozos.append(TranscriptSegment(start=round(inicio, 3), end=round(fin, 3), text=frase))
     return tuple(trozos)
 
@@ -219,7 +245,12 @@ class LocalWhisperSTT:
         return tuple(
             trozo
             for segmento in kept
-            for trozo in _split_by_sentence(segmento, self._abbreviations)
+            for trozo in split_into_sentences(
+                segmento.text,
+                abbreviations=self._abbreviations,
+                start=segmento.start,
+                end=segmento.end,
+            )
         )
 
 

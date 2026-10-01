@@ -10,7 +10,28 @@
 # `provider: local` desactiva la nube por completo, para un consultorio sin
 # internet o para una clínica que no autorice sacar los datos.
 provider: cloud
-cloud_model: whisper-1
+
+# Medido sobre una consulta real de cinco minutos con el mismo audio y el mismo
+# prompt:
+#
+#   whisper-1               4 de 5 nombres de fármacos, 13-20 s, con tiempos
+#   gpt-4o-transcribe       4 de 5,                     ~20 s,  sin tiempos
+#   gpt-4o-mini-transcribe  5 de 5,                      11 s,  sin tiempos
+#
+# Se elige el tercero: los nombres de fármacos entran en la nota que el
+# profesional pega en la historia, y «metmorfina» se lee como un fármaco y no
+# como una errata.
+cloud_model: gpt-4o-mini-transcribe
+
+# Si el modelo devuelve segmentos con marcas de tiempo. En datos y no deducido
+# del nombre: una lista de modelos escrita en el código queda desfasada en el
+# primer lanzamiento del proveedor.
+#
+# Con `false`, el proveedor devuelve un solo bloque de texto y AIDA lo parte en
+# frases con el mismo criterio que el modelo local. La diarización **exige**
+# `true`: empareja hablantes por solapamiento de tiempo y sin tiempos no puede.
+cloud_timestamps: false
+
 cloud_language: es
 cloud_base_url: https://api.openai.com
 timeout_seconds: 120.0
