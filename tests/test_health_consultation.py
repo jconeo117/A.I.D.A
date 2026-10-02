@@ -36,6 +36,7 @@ from aida.arms.health.negation import (
     load_retraction,
     load_third_party,
 )
+from aida.arms.health.note import ClinicalNote, NoteSettings
 from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -3562,4 +3563,76 @@ def test_consultation_sin_terceros_inyectado_conserva_comportamiento(
     afirmados = consultation._affirmed(("Mi padre murió de un infarto a los 60.",))
     assert len(afirmados) > 0
     assert any("Mi padre murió de un infarto" in c.query for c in afirmados)
+
+
+# ===========================================================================
+# Caso del Plan 80 (§B.3): Cableado de la conversación a la nota
+# ===========================================================================
+
+
+def test_render_note_pasa_transcripcion_incluyendo_otros_comentarios(
+    sample_wording_sections: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 11 (§B.3): render_note pasa la transcripción a build_note; el briefing
+    contiene una línea de prepared.transcript que la segmentación mandó a otros_comentarios."""
+    class _SpyNoteProvider:
+        def __init__(self) -> None:
+            self.captured_briefing: str | None = None
+
+        def think(self, briefing: str, schema: type) -> object | None:
+            self.captured_briefing = briefing
+            return ClinicalNote(fields={"motivo_consulta": "Motivo redactado."})
+
+    spy_provider = _SpyNoteProvider()
+    note_settings = NoteSettings(
+        system_prompt="Redacta la nota de una consulta.",
+        provider="test",
+        provider_model="test-model",
+        field_heading="### {}",
+        provenance_template="_{}_",
+        fallback_notice="",
+    )
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=CatalogIndex(entries=(), stopwords=frozenset()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        note_settings=note_settings,
+        note_providers=(("test_provider", spy_provider),),
+    )
+
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    spec_otros = SectionSpec(
+        "otros_comentarios", "Otros comentarios", (), codable=False, in_note=False
+    )
+    linea_otros = "Y el omeprazol para el estómago, porque tengo reflujo."
+
+    prepared = PreparedConsultation(
+        owner=AgentId("doc_render_note"),
+        transcript=f"Tengo dolor de cabeza.\n{linea_otros}",
+        history="",
+        matches=(),
+        grouped_sections=(
+            (spec_motivo, ("Tengo dolor de cabeza.",)),
+            (spec_otros, (linea_otros,)),
+        ),
+        encounter=None,
+    )
+
+    rendered = consultation.render_note(prepared)
+    assert rendered.redacted is True
+    assert spy_provider.captured_briefing is not None
+
+    briefing = spy_provider.captured_briefing
+    hechos_parte = briefing.split("Conversación completa, en orden:")[0]
+    assert linea_otros not in hechos_parte
+    assert linea_otros in briefing
+
 

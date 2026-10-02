@@ -248,9 +248,11 @@ def test_match_codes_each_codigo_repetido_conserva_mejor_puntuacion() -> None:
 
 
 def test_match_codes_each_garantiza_mejor_codigo_de_cada_texto() -> None:
-    """Caso 7 (§B.2): el mejor de cada texto está garantizado ante dos textos,
-    uno con 4 códigos con puntuación mayor y otro con 1 de puntuación menor.
-    Con top_n=3, el del segundo texto no desaparece."""
+    """Caso 7 (§B.2, adaptado Plan 80 §B.4): el mejor de cada texto está
+    garantizado ante dos textos. Con 'diabetes avanzada tipo uno dos tres',
+    D01..D03 compiten por explicar palabras nuevas (0.8165), D04 no añade
+    palabra nueva, y G01 (0.50) es el mejor de texto 2. Con top_n=3, G01 no
+    desaparece."""
     catalog = (
         DiagnosticCode(
             code="D01", description="diabetes avanzada tipo uno", level=3, source="test"
@@ -269,27 +271,35 @@ def test_match_codes_each_garantiza_mejor_codigo_de_cada_texto() -> None:
         ),
     )
     index = build_index(catalog)
-    # Texto 1 produce score ~0.7071 para D01..D04.
-    # Texto 2 produce score 0.50 para G01.
     matches = match_codes_each(
-        _codables("diabetes avanzada", "gonartrosis"), index, threshold=0.4, top_n=3
+        _codables("diabetes avanzada tipo uno dos tres", "gonartrosis"),
+        index,
+        threshold=0.4,
+        top_n=3,
     )
     assert len(matches) == 3
     codes = [m.diagnostic.code for m in matches]
     assert "G01" in codes, (
         f"G01 debe estar garantizado por ser el mejor de texto 2; obtenidos: {codes}"
     )
+    assert set(codes) == {"D01", "D02", "G01"}
 
 
 def test_match_codes_each_orden_descendente_score_y_empate_codigo_ascendente() -> None:
-    """Caso 8 (§B.2): el orden final es puntuación descendente y, en empate, código ascendente."""
+    """Caso 8 (§B.2, adaptado Plan 80 §B.4): el orden final es puntuación descendente
+    y, en empate, código ascendente."""
     catalog = (
         DiagnosticCode(code="Z01", description="cefalea aguda", level=3, source="test"),
-        DiagnosticCode(code="A01", description="cefalea aguda", level=3, source="test"),
-        DiagnosticCode(code="M01", description="cefalea intensa", level=3, source="test"),
+        DiagnosticCode(code="A01", description="migraña aguda", level=3, source="test"),
+        DiagnosticCode(code="M01", description="cefalea intensa leve", level=3, source="test"),
     )
     index = build_index(catalog)
-    matches = match_codes_each(_codables("cefalea aguda"), index, threshold=0.1, top_n=5)
+    matches = match_codes_each(
+        _codables("cefalea aguda", "migraña aguda", "cefalea intensa"),
+        index,
+        threshold=0.1,
+        top_n=5,
+    )
     codes = [m.diagnostic.code for m in matches]
     # Z01 y A01 empatan en 1.0 -> A01 antes que Z01. M01 tiene menor score -> al final.
     assert codes == ["A01", "Z01", "M01"]
@@ -456,15 +466,16 @@ def test_match_by_origin_tope_es_por_origen() -> None:
 
 
 def test_match_by_origin_orden_final_puntuacion_descendente_codigo_ascendente() -> None:
-    """Caso 3 (§B.1): Orden final: puntuación descendente, código ascendente en empate."""
+    """Caso 3 (§B.1, adaptado Plan 80 §B.4): Orden final: puntuación descendente,
+    código ascendente en empate."""
     catalog = (
         DiagnosticCode(code="Z01", description="tos severa", level=3, source="test"),
-        DiagnosticCode(code="A01", description="tos severa", level=3, source="test"),
+        DiagnosticCode(code="A01", description="disnea severa", level=3, source="test"),
         DiagnosticCode(code="M01", description="fiebre leve moderada", level=3, source="test"),
     )
     index = build_index(catalog)
     # Z01 y A01 tienen score 1.0; M01 tiene score 0.5774
-    today = ("tos severa", "fiebre")
+    today = ("tos severa", "disnea severa", "fiebre")
     history = ()
 
     matches = match_by_origin(
@@ -921,6 +932,88 @@ def test_match_catalogo_real_con_absence_markers() -> None:
     m_iam = match_codes("infarto agudo de miocardio", index, threshold=s.threshold, top_n=1)
     assert len(m_iam) == 1
     assert m_iam[0].diagnostic.code == "I219"
+
+
+# ===========================================================================
+# Casos del Plan 80 (§B.1): Regla de «palabra nueva» en el cotejo
+# ===========================================================================
+
+
+def test_match_codes_each_alternativa_del_mismo_texto_no_entra() -> None:
+    """Caso 1 (§B.1): Una alternativa no entra.
+    Catálogo (E039 HIPOTIROIDISMO, E031 HIPOTIROIDISMO CONGENITO), un texto 'hipotiroidismo':
+    match_codes_each devuelve solo E039."""
+    catalog = (
+        DiagnosticCode("E039", "HIPOTIROIDISMO", 3, "test"),
+        DiagnosticCode("E031", "HIPOTIROIDISMO CONGENITO", 3, "test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes_each(_codables("hipotiroidismo"), index, threshold=0.5, top_n=6)
+    assert tuple(m.diagnostic.code for m in matches) == ("E039",)
+
+
+def test_match_codes_each_segundo_diagnostico_entra_y_ya_cubierto_no() -> None:
+    """Caso 2 (§B.1): Un segundo diagnóstico de la misma frase sí entra, y uno ya cubierto no.
+    Catálogo (A01 DIABETES MELLITUS, A02 HIPERTENSION DIABETES, A03 HIPERTENSION),
+    un texto 'diabetes mellitus hipertension': devuelve A01 y A02, no A03.
+    (A01 cubre diabetes y mellitus; A02 añade hipertension; A03 ya no explica
+    palabra nueva.)"""
+    catalog = (
+        DiagnosticCode("A01", "DIABETES MELLITUS", 3, "test"),
+        DiagnosticCode("A02", "HIPERTENSION DIABETES", 3, "test"),
+        DiagnosticCode("A03", "HIPERTENSION", 3, "test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes_each(
+        _codables("diabetes mellitus hipertension"), index, threshold=0.5, top_n=6
+    )
+    assert tuple(m.diagnostic.code for m in matches) == ("A01", "A02")
+
+
+def test_match_codes_each_regla_es_por_texto_no_global() -> None:
+    """Caso 3 (§B.1): La regla es por texto, no global.
+    Dos textos en orden 'hipotiroidismo congenito' y 'hipotiroidismo', con el catálogo de Caso 1:
+    salen E031 y E039. En el primer texto E031 es el primero y E039 no añade palabra;
+    en el segundo, E039 es el primero y entra siempre."""
+    catalog = (
+        DiagnosticCode("E039", "HIPOTIROIDISMO", 3, "test"),
+        DiagnosticCode("E031", "HIPOTIROIDISMO CONGENITO", 3, "test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes_each(
+        _codables("hipotiroidismo congenito", "hipotiroidismo"), index, threshold=0.5, top_n=6
+    )
+    assert tuple(m.diagnostic.code for m in matches) == ("E031", "E039")
+
+
+def test_match_codes_matched_words_es_interseccion_no_descripcion() -> None:
+    """Caso 4 (§B.1): matched_words es la intersección, no la descripción.
+    match_codes('hipotiroidismo', ...) con catálogo (E039, E031):
+    E031 trae matched_words == frozenset({'hipotiroidismo'}), sin 'congenito'."""
+    catalog = (
+        DiagnosticCode("E039", "HIPOTIROIDISMO", 3, "test"),
+        DiagnosticCode("E031", "HIPOTIROIDISMO CONGENITO", 3, "test"),
+    )
+    index = build_index(catalog)
+    matches = match_codes("hipotiroidismo", index, threshold=0.5, top_n=6)
+    m_e031 = next(m for m in matches if m.diagnostic.code == "E031")
+    assert m_e031.matched_words == frozenset({"hipotiroidismo"})
+    assert "congenito" not in m_e031.matched_words
+
+
+def test_match_codes_each_catalogo_real_hipotiroidismo_solo_e039() -> None:
+    """Caso 5 (§B.1): El catálogo real: match_codes_each sobre 'hipotiroidismo'
+    con el pack da ('E039',)."""
+    from aida.arms.health.codes import load_reference_catalog
+
+    s = load_matching_settings()
+    catalog = load_reference_catalog(s.catalog.paths[0])
+    index = build_index(catalog, stopwords=s.stopwords, absence_markers=s.absence_markers)
+    matches = match_codes_each(
+        _codables("hipotiroidismo"), index, threshold=s.threshold, top_n=s.top_n
+    )
+    assert tuple(m.diagnostic.code for m in matches) == ("E039",)
+
 
 
 

@@ -573,3 +573,100 @@ def test_note_prohibicion_reescribir_nombres_en_system_prompt_y_briefing() -> No
         in provider.captured_briefing
     )
 
+
+# ===========================================================================
+# Casos del Plan 80 (§B.2): La nota ve la conversación
+# ===========================================================================
+
+
+def test_build_note_conversacion_en_briefing_despues_de_hechos(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 6 (§B.2): El bloque de conversación va en el briefing, después de los hechos."""
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    grouped = ((spec_motivo, ("hecho agrupado 1", "hecho agrupado 2")),)
+    provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Motivo redactado."}))
+
+    conversation = ("¿Tiene alguna alergia?", "Sí, a la penicilina.")
+    build_note(
+        grouped_sections=grouped,
+        conversation=conversation,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
+
+    assert provider.captured_briefing is not None
+    briefing = provider.captured_briefing
+    bloque = "Conversación completa, en orden:\n¿Tiene alguna alergia?\nSí, a la penicilina."
+    assert bloque in briefing
+
+    pos_hecho = briefing.rfind("hecho agrupado 2")
+    pos_bloque = briefing.find("Conversación completa, en orden:")
+    assert pos_bloque > pos_hecho
+
+
+def test_build_note_sin_conversacion_o_vacia_no_agrega_bloque(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 7 (§B.2): Sin conversación, no aparece 'Conversación completa'.
+    Las líneas vacías de la conversación no se copian."""
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    grouped = ((spec_motivo, ("hecho clínico",)),)
+    provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Motivo."}))
+
+    # Con conversation=()
+    build_note(
+        grouped_sections=grouped,
+        conversation=(),
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
+    assert provider.captured_briefing is not None
+    assert "Conversación completa" not in provider.captured_briefing
+
+    # Con líneas vacías o en blanco
+    build_note(
+        grouped_sections=grouped,
+        conversation=("   ", "", "\n\t"),
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
+    assert provider.captured_briefing is not None
+    assert "Conversación completa" not in provider.captured_briefing
+
+
+def test_build_note_respaldo_literal_no_usa_conversacion(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 9 (§B.2): El respaldo literal no usa la conversación: sin proveedores,
+    con conversación, fields es exactamente el de las frases agrupadas."""
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    grouped = ((spec_motivo, ("dolor agudo", "desde ayer")),)
+    conversation = ("¿Tiene alguna alergia?", "Sí, a la penicilina.")
+
+    rendered = build_note(
+        grouped_sections=grouped,
+        conversation=conversation,
+        settings=sample_note_settings,
+        providers=(),
+    )
+    assert rendered.redacted is False
+    assert rendered.fields == ((spec_motivo, "dolor agudo\ndesde ayer"),)
+    assert "penicilina" not in rendered.fields[0][1]
+
+
+def test_note_instruccion_no_omitir_en_pack_real() -> None:
+    """Caso 10 (§B.2): La instrucción está en el pack: load_note_settings().system_prompt
+    contiene 'Las preguntas del profesional no son hechos' y
+    'aunque no esté entre los hechos de ese apartado'."""
+    settings = load_note_settings()
+    assert "Las preguntas del profesional no son hechos" in settings.system_prompt
+    assert "aunque no esté entre los hechos de ese apartado" in settings.system_prompt
+
+
