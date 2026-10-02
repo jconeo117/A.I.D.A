@@ -330,14 +330,15 @@ def _cognition_candidates(
     pregunta después—, aquí se entregan los candidatos por separado:
     `build_note` necesita recorrerlos para que la procedencia de la nota diga
     quién respondió de verdad, no quién estaba declarado (`I-143`).
+
+    Y el nombre lleva el modelo **del objeto**, no el declarado: el local se
+    nombraba «ollama» a secas, y la nota firmaba «Redactado por ollama ()».
     """
     if args.llm:
         candidato = build_provider(args.llm)
         if candidato is None:
             return ()
-        modelo = note_settings.provider_model if args.llm == note_settings.provider else None
-        nombre = f"{args.llm}/{modelo}" if modelo is not None else args.llm
-        return ((nombre, candidato),)
+        return ((f"{args.llm}/{candidato.model}", candidato),)
 
     nombre_nube = os.environ.get("AIDA_LLM_PROVIDER") or note_settings.provider
     modelo_nube = note_settings.provider_model if nombre_nube == note_settings.provider else None
@@ -346,10 +347,9 @@ def _cognition_candidates(
 
     candidatos: list[tuple[str, Any]] = []
     if nube is not None:
-        nombre = f"{nombre_nube}/{modelo_nube}" if modelo_nube is not None else nombre_nube
-        candidatos.append((nombre, nube))
+        candidatos.append((f"{nombre_nube}/{nube.model}", nube))
     if local is not None:
-        candidatos.append(("ollama", local))
+        candidatos.append((f"ollama/{local.model}", local))
     return tuple(candidatos)
 
 
@@ -402,7 +402,9 @@ def _build_consultation(
         wording=default_summary_wording(),
         stt=cast(Any, _transcription(stt, key)),
         ocr=ocr if isinstance(ocr, LocalTesseractOCR) else cast(Any, ocr),
-        catalog_index=build_index(catalog, stopwords=cotejo.stopwords),
+        catalog_index=build_index(
+            catalog, stopwords=cotejo.stopwords, absence_markers=cotejo.absence_markers
+        ),
         match_threshold=cotejo.threshold,
         match_top_n=cotejo.top_n,
         provider=cast(Any, _cognition(args, ajustes_nota)),

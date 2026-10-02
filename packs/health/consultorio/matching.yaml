@@ -24,6 +24,16 @@ threshold: 0.50
 # los cinco y todavía no entra ruido; con ocho entran tres códigos sin relación.
 top_n: 6
 
+# Lo que el catálogo niega no es una palabra del diagnóstico. «SIN ESOFAGITIS» y
+# «SIN MENCION DE COMPLICACION» describen la variante sencilla, pero con «sin»
+# entre las palabras vacías el cotejo leía «esofagitis» y «complicacion» como
+# presentes: «diabetes mellitus» proponía E140 (CON COMA) y el reflujo, K210 (CON
+# ESOFAGITIS). Desde el marcador hasta la siguiente coma, el tramo no cuenta al
+# indexar el catálogo. Solo el catálogo: lo que niega quien habla lo resuelve la
+# negación (`extraction.yaml`), en otra puerta.
+absence_markers:
+  - "sin"
+
 # Palabras que no distinguen un diagnóstico de otro. Sin quitarlas, «dolor en
 # la rodilla» empataba con «cuerpo flotante en la rodilla» porque compartían
 # «en» y «la» (I-125).

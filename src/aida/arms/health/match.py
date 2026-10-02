@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 
 from aida.arms.health.codes import DiagnosticCode
-from aida.textmatch import cosine, fold, vectorize
+from aida.textmatch import cosine, fold, tokenize, vectorize
 
 _RAIZ = Path(__file__).resolve().parents[4]
 _COTEJO_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "matching.yaml"
@@ -37,6 +37,7 @@ class MatchingSettings:
     threshold: float
     top_n: int
     stopwords: frozenset[str]
+    absence_markers: frozenset[str]
     catalog: CatalogSpec
 
 
@@ -50,7 +51,8 @@ def load_matching_settings(path: Path | None = None) -> MatchingSettings:
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{ruta} debe ser un mapeo YAML")
-    faltan = [k for k in ("threshold", "top_n", "stopwords", "catalog") if k not in raw]
+    claves = ("threshold", "top_n", "stopwords", "absence_markers", "catalog")
+    faltan = [k for k in claves if k not in raw]
     if faltan:
         raise ValueError(f"faltan claves en {ruta}: {faltan}")
     umbral, cuantos, vacias = raw["threshold"], raw["top_n"], raw["stopwords"]
@@ -60,6 +62,9 @@ def load_matching_settings(path: Path | None = None) -> MatchingSettings:
         raise ValueError(f"'top_n' debe ser un entero positivo en {ruta}")
     if not isinstance(vacias, list) or not all(isinstance(v, str) for v in vacias):
         raise ValueError(f"'stopwords' debe ser una lista de cadenas en {ruta}")
+    ausencia = raw["absence_markers"]
+    if not isinstance(ausencia, list) or not all(isinstance(v, str) for v in ausencia):
+        raise ValueError(f"'absence_markers' debe ser una lista de cadenas en {ruta}")
     return MatchingSettings(
         threshold=float(umbral),
         top_n=cuantos,
@@ -67,6 +72,8 @@ def load_matching_settings(path: Path | None = None) -> MatchingSettings:
         # plegados (`build_index`), así que una palabra vacía con tilde no
         # coincidiría nunca con el token que pretende descartar.
         stopwords=frozenset(fold(v) for v in vacias),
+        # Plegados por lo mismo: se comparan contra la descripción ya plegada.
+        absence_markers=frozenset(fold(v) for v in ausencia),
         catalog=_catalog_spec(raw["catalog"], ruta),
     )
 
@@ -103,7 +110,10 @@ class CatalogIndex:
 
 
 def build_index(
-    catalog: tuple[DiagnosticCode, ...], *, stopwords: frozenset[str] = frozenset()
+    catalog: tuple[DiagnosticCode, ...],
+    *,
+    stopwords: frozenset[str] = frozenset(),
+    absence_markers: frozenset[str] = frozenset(),
 ) -> CatalogIndex:
     """Catálogo ya recibido ordenado por código (los dos cargadores lo
     garantizan) — el índice conserva ese orden, es lo que hace determinista el
@@ -114,14 +124,44 @@ def build_index(
     catálogo de una autoridad que publica en mayúsculas sin tildes no empareja
     ni una palabra acentuada: medido, «migraña» y «cólera» daban 0.00 y
     «hipertensión esencial» proponía un código sin relación.
+
+    Y lo que la descripción **niega** no entra en el vector (`_asserted`). Sin
+    eso, la variante sencilla de una categoría —«SIN MENCION DE COMPLICACION»—
+    cargaba con las palabras de la complicación que niega, y el cotejo proponía
+    la variante complicada: «diabetes mellitus» daba E140, CON COMA.
     """
     return CatalogIndex(
         entries=tuple(
-            (entry, vectorize(fold(entry.description), stopwords=stopwords))
+            (
+                entry,
+                vectorize(
+                    _asserted(fold(entry.description), absence_markers),
+                    stopwords=stopwords,
+                ),
+            )
             for entry in catalog
         ),
         stopwords=stopwords,
     )
+
+
+def _asserted(description: str, absence_markers: frozenset[str]) -> str:
+    """La parte de la descripción que afirma algo: cada tramo entre comas, hasta
+    su primer marcador de ausencia.
+
+    Hasta la coma y no hasta el final: «… TIPO B, SIN AGENTE DELTA, CON COMA
+    HEPATICO» sigue afirmando el coma hepático. Y el tramo entero, no solo la
+    palabra que sigue al marcador: dejar «complicacion» en «SIN MENCION DE
+    COMPLICACION» seguía hundiendo la variante sencilla."""
+    if not absence_markers:
+        return description
+    kept: list[str] = []
+    for clause in description.split(","):
+        for token in tokenize(clause):
+            if token in absence_markers:
+                break
+            kept.append(token)
+    return " ".join(kept)
 
 
 @dataclass(frozen=True, slots=True)

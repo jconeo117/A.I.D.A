@@ -39,6 +39,13 @@ class ClaudeProvider:
         self._client = client
         self._model = model
 
+    @property
+    def model(self) -> str:
+        """Lo lee la procedencia de la nota (`run._cognition_candidates`): el
+        nombre del modelo sale del objeto que redacta, no de lo que el pack
+        declaró — si no, puede nombrar uno que no es (`I-143`)."""
+        return self._model
+
     def think(self, briefing: str, schema: type) -> object | None:
         try:
             schema_json = cast(type[BaseModel], schema).model_json_schema()
@@ -68,6 +75,13 @@ class GeminiProvider:
     def __init__(self, client: httpx.Client, *, model: str = "gemini-2.0-flash") -> None:
         self._client = client
         self._model = model
+
+    @property
+    def model(self) -> str:
+        """Lo lee la procedencia de la nota (`run._cognition_candidates`): el
+        nombre del modelo sale del objeto que redacta, no de lo que el pack
+        declaró — si no, puede nombrar uno que no es (`I-143`)."""
+        return self._model
 
     def think(self, briefing: str, schema: type) -> object | None:
         try:
@@ -122,6 +136,13 @@ class OllamaProvider:
         self._client = client
         self._model = model
 
+    @property
+    def model(self) -> str:
+        """Lo lee la procedencia de la nota (`run._cognition_candidates`): el
+        nombre del modelo sale del objeto que redacta, no de lo que el pack
+        declaró — si no, puede nombrar uno que no es (`I-143`)."""
+        return self._model
+
     def think(self, briefing: str, schema: type) -> object | None:
         try:
             response = self._client.post(
@@ -156,6 +177,13 @@ class OpenAIProvider:
     def __init__(self, client: httpx.Client, *, model: str = "gpt-4.1-mini") -> None:
         self._client = client
         self._model = model
+
+    @property
+    def model(self) -> str:
+        """Lo lee la procedencia de la nota (`run._cognition_candidates`): el
+        nombre del modelo sale del objeto que redacta, no de lo que el pack
+        declaró — si no, puede nombrar uno que no es (`I-143`)."""
+        return self._model
 
     def think(self, briefing: str, schema: type) -> object | None:
         try:
