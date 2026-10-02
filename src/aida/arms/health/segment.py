@@ -38,16 +38,28 @@ class ScoredSection:
 
 
 def classify_line(
-    line: str, index: SectionIndex, *, threshold: float, fallback: SectionSpec
+    line: str,
+    index: SectionIndex,
+    *,
+    threshold: float,
+    fallback: SectionSpec,
+    skip_interrogative: bool = False,
 ) -> ScoredSection:
     """La sección de mayor coseno sobre el umbral, o la reserva si ninguna lo
     alcanza. Puerta única de la clasificación: la usan `segment_lines` y el
     informe de calibración, para que los dos vean siempre el mismo criterio y
     no haya dos clasificadores que puedan divergir.
 
+    Una frase interrogativa no es un hecho clínico, es cómo se averiguó: con
+    `skip_interrogative`, va a la reserva directa, antes de calcular ningún
+    coseno — nunca hace falta, porque la pregunta no compite por ningún
+    apartado.
+
     Con reserva, la puntuación que se devuelve es la mejor que hubo —aunque no
     alcanzara el umbral—, no un `0.0`: es lo que le dice a quien calibra si la
     frase casi entra o si no se parecía a nada."""
+    if skip_interrogative and line.strip().endswith("?"):
+        return ScoredSection(section=fallback, score=0.0)
     query = vectorize(line)
     if not query:
         return ScoredSection(section=fallback, score=0.0)
@@ -60,13 +72,24 @@ def classify_line(
 
 
 def segment_lines(
-    lines: tuple[str, ...], index: SectionIndex, *, threshold: float, fallback: SectionSpec
+    lines: tuple[str, ...],
+    index: SectionIndex,
+    *,
+    threshold: float,
+    fallback: SectionSpec,
+    skip_interrogative: bool = False,
 ) -> tuple[SegmentedLine, ...]:
     result: list[SegmentedLine] = []
     for line in lines:
         if not line.strip():
             continue
-        winner = classify_line(line, index, threshold=threshold, fallback=fallback)
+        winner = classify_line(
+            line,
+            index,
+            threshold=threshold,
+            fallback=fallback,
+            skip_interrogative=skip_interrogative,
+        )
         result.append(SegmentedLine(section=winner.section, text=line))
     return tuple(result)
 
@@ -92,7 +115,11 @@ class ClinicalSegmenter:
     def segment(self, transcript: str) -> tuple[tuple[SectionSpec, tuple[str, ...]], ...]:
         lines = tuple(transcript.split("\n"))
         segmented = segment_lines(
-            lines, self._index, threshold=self._catalog.threshold, fallback=self._catalog.fallback
+            lines,
+            self._index,
+            threshold=self._catalog.threshold,
+            fallback=self._catalog.fallback,
+            skip_interrogative=self._catalog.skip_interrogative,
         )
         return group_by_section(segmented, self._catalog.sections)
 

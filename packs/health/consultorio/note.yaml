@@ -14,6 +14,9 @@ system_prompt: >-
   Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta
   para averiguar algo: la nota recoge lo que se afirma, no cómo se averiguó. Si un
   apartado solo contiene preguntas, déjalo vacío.
+  Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades:
+  cópialos exactamente como aparecen en los hechos, aunque parezcan mal escritos.
+  Si una palabra es ininteligible, déjala tal cual.
 
 # Quién redacta y con qué versión. En datos por lo mismo que el modelo de
 # transcripción: dos mediciones separadas por semanas solo son comparables si

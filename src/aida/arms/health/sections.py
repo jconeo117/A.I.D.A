@@ -34,6 +34,10 @@ class SectionCatalog:
     sections: tuple[SectionSpec, ...]
     threshold: float
     fallback: SectionSpec
+    skip_interrogative: bool
+    """Si una frase interrogativa va directa a la reserva, sin calcular
+    coseno. Declarado y no fijo: un despliegue de dictado puro no tiene
+    preguntas y no debería heredar una regla pensada para habla real."""
 
 
 def load_sections(path: Path | None = None) -> SectionCatalog:
@@ -52,6 +56,10 @@ def load_sections(path: Path | None = None) -> SectionCatalog:
     fallback_id = raw.get("fallback")
     if not isinstance(fallback_id, str):
         raise ValueError(f"falta 'fallback' (id de sección) en {ruta}")
+
+    skip_interrogative = raw.get("skip_interrogative")
+    if not isinstance(skip_interrogative, bool):
+        raise ValueError(f"falta 'skip_interrogative' (sí o no) en {ruta}")
 
     raw_sections = raw.get("sections")
     if not isinstance(raw_sections, list) or not raw_sections:
@@ -98,4 +106,5 @@ def load_sections(path: Path | None = None) -> SectionCatalog:
         sections=tuple(sections),
         threshold=float(threshold),
         fallback=fallback,
+        skip_interrogative=skip_interrogative,
     )

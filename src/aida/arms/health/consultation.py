@@ -28,6 +28,8 @@ from aida.arms.health.negation import (
     NO_NEGATION,
     NegationCatalog,
     RetractionRule,
+    ThirdPartyCatalog,
+    is_third_party,
     retracted_replies,
     split_polarity,
 )
@@ -118,10 +120,13 @@ class Consultation:
         extractor: ClinicalExtractor | None = None,
         lexicon: Lexicon = (),
         negation: NegationCatalog = NO_NEGATION,
+        third_party: ThirdPartyCatalog | None = None,
         retraction: RetractionRule | None = None,
         history_layout: HistoryLayout | None = None,
         review_metrics: ReviewMetricsStore | None = None,
         note_settings: NoteSettings | None = None,
+        note_providers: tuple[tuple[str, CognitionProvider], ...] = (),
+        note_on_fallback: Callable[[str, str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._wording = wording
@@ -138,10 +143,13 @@ class Consultation:
         self._extractor = extractor
         self._lexicon = lexicon
         self._negation = negation
+        self._third_party = third_party
         self._retraction = retraction
         self._history_layout = history_layout
         self._review_metrics = review_metrics
         self._note_settings = note_settings
+        self._note_providers = note_providers
+        self._note_on_fallback = note_on_fallback
         self._clock = clock
 
     def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
@@ -192,7 +200,8 @@ class Consultation:
         return build_note(
             grouped_sections=prepared.grouped_sections,
             settings=self._note_settings,
-            provider=self._provider,
+            providers=self._note_providers,
+            on_fallback=self._note_on_fallback,
         )
 
     def prepare(
@@ -352,9 +361,18 @@ class Consultation:
         El término sale del tramo afirmado, no de la frase entera: traducir «no
         sufro del azúcar» a «diabetes mellitus» volvería a colar por el léxico
         justo lo que la polaridad acaba de excluir.
+
+        Una frase de tercero se descarta aquí, **antes** del léxico: «mi padre
+        murió de un infarto» traduciría «infarto» a su término clínico y lo
+        consultaría como hecho propio, proponiendo un código del paciente sobre
+        algo que le pasó a otra persona. Filtrar después dejaría pasar
+        exactamente ese caso, porque el término traducido ya estaría en la
+        lista de consultas.
         """
         afirmados: list[CodableText] = []
         for texto in texts:
+            if self._third_party is not None and is_third_party(texto, self._third_party):
+                continue
             tramo = split_polarity(texto, self._negation).affirmed
             if tramo:
                 afirmados.append(CodableText(query=tramo, source=texto))

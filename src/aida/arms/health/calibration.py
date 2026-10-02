@@ -126,7 +126,11 @@ def section_report(reference: Path, catalog: SectionCatalog) -> str:
                 f"(frase: {_recortada(frase.text)!r})"
             )
         ganadora = classify_line(
-            frase.text, index, threshold=catalog.threshold, fallback=catalog.fallback
+            frase.text,
+            index,
+            threshold=catalog.threshold,
+            fallback=catalog.fallback,
+            skip_interrogative=catalog.skip_interrogative,
         )
         asignada = ganadora.section.section_id
         if asignada == esperada:

@@ -35,3 +35,32 @@ negation:
 # no adivinando.
 retraction:
   max_chars: 24
+
+# Señales de que la frase habla de otra persona, no del paciente. Sin esto, «mi
+# padre murió de un infarto» produjo I214 (infarto subendocárdico agudo) como
+# código del paciente: el léxico traduce «infarto» a su término clínico y el
+# cotejo no sabe de quién se hablaba.
+#
+# Mismo problema que el plan 64 resolvió para la historia impresa declarando qué
+# encabezados son codificables —«Madre con hipertensión esencial» atribuía la
+# hipertensión al paciente—, ahora para lo que se dice en voz alta.
+#
+# Estas frases SÍ entran en la nota: un padre con infarto a los 60 cambia el riesgo
+# del paciente y tiene que constar. Lo que no hacen es producir códigos suyos.
+third_party:
+  cues:
+    - "mi padre"
+    - "mi madre"
+    - "mi hermano"
+    - "mi hermana"
+    - "mi abuelo"
+    - "mi abuela"
+    - "mi hijo"
+    - "mi hija"
+    - "mi esposa"
+    - "mi esposo"
+    - "su padre"
+    - "su madre"
+    - "en la familia"
+    - "antecedentes familiares"
+    - "un vecino"

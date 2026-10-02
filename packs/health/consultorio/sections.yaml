@@ -4,6 +4,14 @@
 # los aciertos suben de 28 a 55 frases y examen_fisico pasa de acumular anamnesis a 0 contaminadas.
 threshold: 0.20
 fallback: otros_comentarios
+# Una frase interrogativa no es un hecho clínico: es cómo se averiguó. Medido sobre
+# la consulta de referencia, 22 de las 44 frases mal clasificadas eran preguntas, y
+# las 22 debían ir a la reserva.
+#
+# El plan 70 descartó este criterio para la negación porque el transcriptor de
+# entonces traía UN punto en cinco minutos y no escribía los signos. Con el modelo
+# del plan 74 la puntuación está arreglada: la entrada cambió, no la conclusión.
+skip_interrogative: true
 sections:
   - id: motivo_consulta
     label: "Motivo de consulta"

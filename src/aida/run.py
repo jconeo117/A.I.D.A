@@ -319,6 +319,40 @@ def _cognition(args: argparse.Namespace, note_settings: NoteSettings) -> object 
     return FallbackCognition(nube, local, on_fallback=aviso)
 
 
+def _cognition_candidates(
+    args: argparse.Namespace, note_settings: NoteSettings
+) -> tuple[tuple[str, Any], ...]:
+    """Los proveedores que puede probar la nota, en el orden en que se
+    intentan: el declarado en el pack primero, el local como contención.
+
+    A diferencia de `_cognition` —que compone un solo objeto para la
+    redacción del resumen, y donde no importa quién respondió porque nadie lo
+    pregunta después—, aquí se entregan los candidatos por separado:
+    `build_note` necesita recorrerlos para que la procedencia de la nota diga
+    quién respondió de verdad, no quién estaba declarado (`I-143`).
+    """
+    if args.llm:
+        candidato = build_provider(args.llm)
+        if candidato is None:
+            return ()
+        modelo = note_settings.provider_model if args.llm == note_settings.provider else None
+        nombre = f"{args.llm}/{modelo}" if modelo is not None else args.llm
+        return ((nombre, candidato),)
+
+    nombre_nube = os.environ.get("AIDA_LLM_PROVIDER") or note_settings.provider
+    modelo_nube = note_settings.provider_model if nombre_nube == note_settings.provider else None
+    nube = build_provider(nombre_nube, model=modelo_nube)
+    local = build_provider("ollama")
+
+    candidatos: list[tuple[str, Any]] = []
+    if nube is not None:
+        nombre = f"{nombre_nube}/{modelo_nube}" if modelo_nube is not None else nombre_nube
+        candidatos.append((nombre, nube))
+    if local is not None:
+        candidatos.append(("ollama", local))
+    return tuple(candidatos)
+
+
 def _build_consultation(
     args: argparse.Namespace,
     *,
@@ -346,7 +380,7 @@ def _build_consultation(
     from aida.arms.health.lexicon import load_lexicon
     from aida.arms.health.match import build_index, load_matching_settings
     from aida.arms.health.metrics import ReviewMetricsStore
-    from aida.arms.health.negation import load_negation, load_retraction
+    from aida.arms.health.negation import load_negation, load_retraction, load_third_party
     from aida.arms.health.note import load_note_settings
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
@@ -357,6 +391,13 @@ def _build_consultation(
     else:
         catalog = load_catalog(cotejo.catalog.paths[0], cotejo.catalog.paths[1])
     ajustes_nota = load_note_settings()
+
+    def aviso_nota(fallo: str, responde: str) -> None:
+        print(
+            f"aida: aviso: {fallo} no redactó la nota, responde {responde}",
+            file=sys.stderr,
+        )
+
     return Consultation(
         wording=default_summary_wording(),
         stt=cast(Any, _transcription(stt, key)),
@@ -374,10 +415,13 @@ def _build_consultation(
         extractor=cast(Any, extractor),
         lexicon=load_lexicon(),
         negation=load_negation(),
+        third_party=load_third_party(),
         retraction=load_retraction(),
         history_layout=load_history_layout(),
         review_metrics=ReviewMetricsStore(_review_metrics_path()),
         note_settings=ajustes_nota,
+        note_providers=cast(Any, _cognition_candidates(args, ajustes_nota)),
+        note_on_fallback=aviso_nota,
     )
 
 

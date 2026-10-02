@@ -183,3 +183,33 @@ def retracted_replies(
             if previa:
                 retractadas.append(previa)
     return frozenset(retractadas)
+
+
+@dataclass(frozen=True, slots=True)
+class ThirdPartyCatalog:
+    """Señales de que la frase habla de otra persona, como secuencias de
+    palabras ya plegadas — mismo molde que `NegationCatalog.cues`, para que
+    el mismo criterio de coincidencia valga en los dos sitios."""
+
+    cues: tuple[tuple[str, ...], ...] = ()
+
+
+def load_third_party(path: Path | None = None) -> ThirdPartyCatalog:
+    ruta = path if path is not None else _EXTRACCION_POR_DEFECTO
+    raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("third_party"), dict):
+        raise ValueError(f"falta 'third_party' (mapeo) en {ruta}")
+    bloque = raw["third_party"]
+    return ThirdPartyCatalog(cues=_sequences(bloque.get("cues"), "cues", ruta))
+
+
+def is_third_party(text: str, catalog: ThirdPartyCatalog) -> bool:
+    """Si la frase habla de otra persona. Se compara con el texto plegado
+    (`fold`), como el resto del vocabulario declarado, para que «Mi Padre» y «mi
+    padre» sean lo mismo."""
+    plegados = tuple(fold(token) for token, _, _ in token_spans(text))
+    return any(
+        _matches_at(plegados, posicion, senal)
+        for senal in catalog.cues
+        for posicion in range(len(plegados))
+    )

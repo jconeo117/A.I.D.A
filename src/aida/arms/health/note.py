@@ -8,6 +8,7 @@ rechazar un código no obliga a redactarla de nuevo.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,7 +108,8 @@ def build_note(
     *,
     grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...],
     settings: NoteSettings,
-    provider: CognitionProvider | None,
+    providers: tuple[tuple[str, CognitionProvider], ...] = (),
+    on_fallback: Callable[[str, str], None] | None = None,
 ) -> RenderedNote:
     """Los hechos de cada apartado, redactados.
 
@@ -116,14 +118,26 @@ def build_note(
     transcripción entera. Lo que el modelo no recibe no lo puede colar en la
     nota, y esa es la primera de las cuatro defensas contra que invente.
 
-    Si no hay proveedor, si levanta, si no valida o si devuelve un apartado que
-    el pack no declara, se devuelve el respaldo literal con `redacted=False`. Una
-    consulta no se cae porque la prosa falle.
+    Recibe los candidatos en vez de un proveedor ya compuesto, y los recorre en
+    orden hasta que uno devuelve algo válido. Así la procedencia dice **quién
+    respondió** y no quién estaba declarado: con un `FallbackCognition` delante, la
+    nota afirmaba «redactado por openai» mientras la había escrito el modelo local
+    —medido—. Es el mismo movimiento que resolvió `I-138` en la caché: llevar la
+    composición al sitio que necesita saber.
+
+    Cada nombre es el que aparecerá en la nota exportada, así que incluye la versión
+    del modelo: `"openai/gpt-4.1-mini"`. Cuando un candidato falla y el siguiente
+    responde, `on_fallback` se invoca con el nombre del que falló y el del que
+    respondió — quien llama decide si eso se avisa y cómo.
+
+    Sin candidatos, si todos fallan, si ninguno valida o si alguno devuelve un
+    apartado que el pack no declara, se devuelve el respaldo literal con
+    `redacted=False`. Una consulta no se cae porque la prosa falle.
     """
     in_note_sections = tuple(
         (spec, texts) for spec, texts in grouped_sections if spec.in_note and texts
     )
-    if provider is None or not in_note_sections:
+    if not providers or not in_note_sections:
         return _literal_fallback(in_note_sections)
 
     identifiers = ", ".join(spec.section_id for spec, _texts in in_note_sections)
@@ -138,24 +152,26 @@ def build_note(
             for spec, texts in in_note_sections
         )
     )
-    try:
-        result: object | None = provider.think(briefing, ClinicalNote)
-    except Exception:
-        return _literal_fallback(in_note_sections)
-    if not isinstance(result, ClinicalNote):
-        return _literal_fallback(in_note_sections)
-
     valid_ids = {spec.section_id for spec, _texts in in_note_sections}
-    if any(section_id not in valid_ids for section_id in result.fields):
-        return _literal_fallback(in_note_sections)
 
-    rendered = tuple(
-        (spec, result.fields[spec.section_id])
-        for spec, _texts in in_note_sections
-        if spec.section_id in result.fields
-    )
-    return RenderedNote(
-        fields=rendered,
-        redacted=True,
-        provider=f"{settings.provider}/{settings.provider_model}",
-    )
+    for index, (name, candidate) in enumerate(providers):
+        try:
+            result: object | None = candidate.think(briefing, ClinicalNote)
+        except Exception:
+            result = None
+        if not isinstance(result, ClinicalNote):
+            continue
+        if any(section_id not in valid_ids for section_id in result.fields):
+            continue
+
+        rendered = tuple(
+            (spec, result.fields[spec.section_id])
+            for spec, _texts in in_note_sections
+            if spec.section_id in result.fields
+        )
+        if index > 0 and on_fallback is not None:
+            failed_name, _failed_candidate = providers[index - 1]
+            on_fallback(failed_name, name)
+        return RenderedNote(fields=rendered, redacted=True, provider=name)
+
+    return _literal_fallback(in_note_sections)
