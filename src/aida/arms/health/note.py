@@ -107,16 +107,19 @@ def _literal_fallback(
 def build_note(
     *,
     grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...],
+    conversation: tuple[str, ...] = (),
     settings: NoteSettings,
     providers: tuple[tuple[str, CognitionProvider], ...] = (),
     on_fallback: Callable[[str, str], None] | None = None,
 ) -> RenderedNote:
     """Los hechos de cada apartado, redactados.
 
-    El briefing lleva **solo** los hechos de las secciones con `in_note`, cada
-    uno bajo su apartado. Nada más: ni la historia previa, ni los códigos, ni la
-    transcripción entera. Lo que el modelo no recibe no lo puede colar en la
-    nota, y esa es la primera de las cuatro defensas contra que invente.
+    El briefing lleva los hechos de las secciones con `in_note`, cada uno bajo
+    su apartado, y después la conversación entera, en orden. Ni la historia
+    previa ni los códigos: lo que el modelo no recibe no lo puede colar en la
+    nota. La conversación sí entra, porque todo lo que contiene se dijo, y sin
+    ella la nota omitía: «Sí, a la penicilina.» llegaba sin la pregunta que la
+    hace una alergia, y lo que la segmentación mandaba a la reserva no llegaba.
 
     Recibe los candidatos en vez de un proveedor ya compuesto, y los recorre en
     orden hasta que uno devuelve algo válido. Así la procedencia dice **quién
@@ -152,6 +155,9 @@ def build_note(
             for spec, texts in in_note_sections
         )
     )
+    lineas = tuple(linea for linea in conversation if linea.strip())
+    if lineas:
+        briefing += "\n\nConversación completa, en orden:\n" + "\n".join(lineas)
     valid_ids = {spec.section_id for spec, _texts in in_note_sections}
 
     for index, (name, candidate) in enumerate(providers):

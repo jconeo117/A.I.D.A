@@ -195,6 +195,11 @@ class MatchedCode:
     """La frase que produjo la mejor puntuación de este código. Vacía solo
     cuando el cotejo se hizo por la puerta de un texto suelto (`match_codes`),
     que no sabe de qué frase viene."""
+    matched_words: frozenset[str] = frozenset()
+    """Las palabras de la consulta que este código comparte con ella. Lo lee
+    `match_codes_each` para distinguir un segundo diagnóstico de la misma frase
+    de una alternativa al primero: la alternativa no explica ninguna palabra
+    nueva."""
 
 
 def match_codes_each(
@@ -209,13 +214,26 @@ def match_codes_each(
     produjo, que es lo que el profesional necesita para juzgarlo—, y el orden
     final es el de siempre: puntuación descendente y, en empate, código
     ascendente.
+
+    De cada texto entran el mejor código y los que explican alguna palabra que
+    los anteriores no explicaban. Sin eso, los huecos libres se llenaban con
+    otras lecturas de la misma frase: «hipotiroidismo» proponía también
+    HIPOTIROIDISMO CONGENITO SIN BOCIO.
     """
     mejor: dict[str, MatchedCode] = {}
     primeros: list[str] = []
     for codable in texts:
+        cubiertas: frozenset[str] = frozenset()
         for posicion, encontrado in enumerate(
             match_codes(codable.query, index, threshold=threshold, top_n=top_n)
         ):
+            # Más allá del primero, un código de la misma frase solo cuenta si
+            # explica alguna palabra que los anteriores no explicaban. Si no, es
+            # otra lectura del mismo diagnóstico —«hipotiroidismo» proponía además
+            # el CONGÉNITO—, no un diagnóstico más.
+            if posicion > 0 and encontrado.matched_words <= cubiertas:
+                continue
+            cubiertas = cubiertas | encontrado.matched_words
             codigo = encontrado.diagnostic.code
             previo = mejor.get(codigo)
             if previo is None or encontrado.score > previo.score:
@@ -246,14 +264,18 @@ def match_codes(
     if not query:
         return ()
     scored = [
-        (round(cosine(query, vector), 4), entry)
+        (round(cosine(query, vector), 4), entry, vector)
         for entry, vector in index.entries
     ]
-    scored = [(score, entry) for score, entry in scored if score >= threshold]
-    scored.sort(key=lambda pair: (-pair[0], pair[1].code))
+    scored = [item for item in scored if item[0] >= threshold]
+    scored.sort(key=lambda item: (-item[0], item[1].code))
     return tuple(
-        MatchedCode(diagnostic=entry, score=score)
-        for score, entry in scored[:top_n]
+        MatchedCode(
+            diagnostic=entry,
+            score=score,
+            matched_words=frozenset(query) & frozenset(vector),
+        )
+        for score, entry, vector in scored[:top_n]
     )
 
 

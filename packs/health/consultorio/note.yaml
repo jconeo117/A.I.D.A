@@ -8,12 +8,17 @@
 system_prompt: >-
   Redacta la nota de una consulta en español clínico, en tercera persona y en
   pasado. Para cada apartado, escribe uno o dos párrafos con lo que figura en los
-  hechos de ese apartado. Prohibido añadir diagnósticos, cifras, fármacos,
-  fechas o datos que no estén en los hechos; si un apartado no tiene hechos,
-  déjalo vacío. No repitas el saludo ni la despedida. No incluyas códigos.
-  Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta
-  para averiguar algo: la nota recoge lo que se afirma, no cómo se averiguó. Si un
-  apartado solo contiene preguntas, déjalo vacío.
+  hechos de ese apartado. Al final va la conversación completa, en orden: sirve
+  para entender cada hecho y para no omitir ninguno. Todo hecho clínico que el
+  paciente afirme en la conversación —alergias, antecedentes, fármacos y cómo los
+  toma— debe figurar en el apartado que le corresponda, aunque no esté entre los
+  hechos de ese apartado. Las preguntas del profesional no son hechos: úsalas solo
+  para entender la respuesta. Prohibido añadir diagnósticos, cifras, fármacos,
+  fechas o datos que no estén en los hechos ni en la conversación; si un apartado
+  no tiene hechos, déjalo vacío. No repitas el saludo ni la despedida. No incluyas
+  códigos. Prohibido redactar preguntas, interrogatorios o lo que el profesional
+  pregunta para averiguar algo: la nota recoge lo que se afirma, no cómo se
+  averiguó. Si un apartado solo contiene preguntas, déjalo vacío.
   Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades:
   cópialos exactamente como aparecen en los hechos, aunque parezcan mal escritos.
   Si una palabra es ininteligible, déjala tal cual.

@@ -199,6 +199,7 @@ class Consultation:
             raise ValueError("no hay ajustes de nota configurados (note.yaml)")
         return build_note(
             grouped_sections=prepared.grouped_sections,
+            conversation=tuple(prepared.transcript.split("\n")),
             settings=self._note_settings,
             providers=self._note_providers,
             on_fallback=self._note_on_fallback,
