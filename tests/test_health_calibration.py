@@ -25,7 +25,9 @@ from aida.arms.health.calibration import dump_phrases, section_report
 from aida.arms.health.sections import SectionCatalog, SectionSpec
 
 
-def _build_dummy_catalog(threshold: float = 0.20) -> SectionCatalog:
+def _build_dummy_catalog(
+    threshold: float = 0.20, skip_interrogative: bool = True
+) -> SectionCatalog:
     sec_motivo = SectionSpec(
         section_id="motivo_consulta",
         label="Motivo de consulta",
@@ -55,9 +57,10 @@ def _build_dummy_catalog(threshold: float = 0.20) -> SectionCatalog:
         in_note=False,
     )
     return SectionCatalog(
+        sections=(sec_motivo, sec_sintomas, sec_plan, sec_fallback),
         threshold=threshold,
         fallback=sec_fallback,
-        sections=(sec_motivo, sec_sintomas, sec_plan, sec_fallback),
+        skip_interrogative=skip_interrogative,
     )
 
 

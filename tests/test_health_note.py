@@ -74,7 +74,9 @@ def test_build_note_prosa_cuando_proveedor_contesta(sample_note_settings: NoteSe
     )
 
     rendered = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
 
     assert rendered.redacted is True
@@ -114,7 +116,9 @@ def test_build_note_orden_es_el_del_catalogo_no_el_del_modelo(
     )
 
     rendered = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
 
     assert rendered.redacted is True
@@ -151,7 +155,9 @@ def test_build_note_clave_no_declarada_invalida_respuesta_entera(
     )
 
     rendered = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
 
     assert rendered.redacted is False
@@ -183,7 +189,9 @@ def test_build_note_in_note_false_no_entra(sample_note_settings: NoteSettings) -
         response=ClinicalNote(fields={"motivo_consulta": "Consulta por tos seca."})
     )
     rendered_prosa = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
     assert rendered_prosa.redacted is True
     assert all(spec.section_id != "otros_comentarios" for spec, _ in rendered_prosa.fields)
@@ -192,7 +200,7 @@ def test_build_note_in_note_false_no_entra(sample_note_settings: NoteSettings) -
 
     # Respaldo sin proveedor
     rendered_respaldo = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=None
+        grouped_sections=grouped, settings=sample_note_settings, providers=()
     )
     assert rendered_respaldo.redacted is False
     assert all(spec.section_id != "otros_comentarios" for spec, _ in rendered_respaldo.fields)
@@ -218,7 +226,9 @@ def test_build_note_apartado_sin_hechos_no_aparece_ni_se_pide(
         response=ClinicalNote(fields={"motivo_consulta": "Consulta por lumbalgia."})
     )
     rendered = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
 
     assert rendered.redacted is True
@@ -230,14 +240,14 @@ def test_build_note_apartado_sin_hechos_no_aparece_ni_se_pide(
 
 
 def test_build_note_sin_proveedor_da_respaldo_literal(sample_note_settings: NoteSettings) -> None:
-    """Caso 6 (§B.1): Sin proveedor (provider=None) produce respaldo literal con
+    """Caso 6 (§B.1): Sin proveedores (providers=()) produce respaldo literal con
     redacted=False, provider=None y frases tal como se dijeron unidas por salto de línea."""
     spec_motivo = SectionSpec(
         "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
     )
     grouped = ((spec_motivo, ("dolor agudo", "cefalea constante")),)
 
-    rendered = build_note(grouped_sections=grouped, settings=sample_note_settings, provider=None)
+    rendered = build_note(grouped_sections=grouped, settings=sample_note_settings, providers=())
 
     assert rendered.redacted is False
     assert rendered.provider is None
@@ -254,7 +264,9 @@ def test_build_note_proveedor_levanta_da_respaldo(sample_note_settings: NoteSett
 
     provider = _SpyProvider(raise_exc=RuntimeError("Servicio de LLM caído"))
     rendered = build_note(
-        grouped_sections=grouped, settings=sample_note_settings, provider=provider
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
     )
 
     assert rendered.redacted is False
@@ -274,13 +286,21 @@ def test_build_note_proveedor_devuelve_none_o_invalido_da_respaldo(
 
     # Devuelve None
     p_none = _SpyProvider(response=None)
-    r1 = build_note(grouped_sections=grouped, settings=sample_note_settings, provider=p_none)
+    r1 = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", p_none),),
+    )
     assert r1.redacted is False
     assert r1.fields == ((spec_motivo, "dolor agudo"),)
 
     # Devuelve objeto no ClinicalNote
     p_invalido = _SpyProvider(response="texto no estructurado")
-    r2 = build_note(grouped_sections=grouped, settings=sample_note_settings, provider=p_invalido)
+    r2 = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", p_invalido),),
+    )
     assert r2.redacted is False
     assert r2.fields == ((spec_motivo, "dolor agudo"),)
 
@@ -303,7 +323,11 @@ def test_build_note_briefing_solo_lleva_hechos_de_secciones_in_note(
     )
 
     provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Motivo redactado."}))
-    build_note(grouped_sections=grouped, settings=sample_note_settings, provider=provider)
+    build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
 
     assert provider.captured_briefing is not None
     briefing = provider.captured_briefing
@@ -326,7 +350,11 @@ def test_build_note_instruccion_sale_del_pack(sample_note_settings: NoteSettings
     grouped = ((spec_motivo, ("hecho 1",)),)
 
     provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Redacción"}))
-    build_note(grouped_sections=grouped, settings=sample_note_settings, provider=provider)
+    build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
 
     assert provider.captured_briefing is not None
     assert provider.captured_briefing.startswith(sample_note_settings.system_prompt)
@@ -386,10 +414,162 @@ def test_note_prohibicion_preguntas_en_system_prompt_y_briefing() -> None:
     )
     grouped = ((spec_motivo, ("dolor de cabeza",)),)
     provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Cefalea."}))
-    build_note(grouped_sections=grouped, settings=settings, provider=provider)
+    build_note(
+        grouped_sections=grouped,
+        settings=settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
 
     assert provider.captured_briefing is not None
     assert (
         "Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta"
         in provider.captured_briefing
     )
+
+
+def test_build_note_procedencia_es_quien_respondio(sample_note_settings: NoteSettings) -> None:
+    """Caso 10 (§B.3, M6): La procedencia es quien respondió.
+    Dos candidatos: el primero devuelve None, el segundo redacta -> la nota dice el segundo."""
+    spec_motivo = SectionSpec("motivo_consulta", "Motivo", (), codable=True, in_note=True)
+    grouped = ((spec_motivo, ("dolor agudo",)),)
+
+    candidato_1 = _SpyProvider(response=None)
+    candidato_2 = _SpyProvider(
+        response=ClinicalNote(fields={"motivo_consulta": "Cefalea aguda."})
+    )
+
+    rendered = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(
+            ("openai/gpt-4.1-mini", candidato_1),
+            ("ollama/llama3.2:3b", candidato_2),
+        ),
+    )
+    assert rendered.redacted is True
+    assert rendered.provider == "ollama/llama3.2:3b"
+    assert rendered.fields[0][1] == "Cefalea aguda."
+
+
+def test_build_note_primer_candidato_responde_segundo_no_se_toca(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 11 (§B.3, M7): Si responde el primer candidato, el segundo no se toca."""
+    spec_motivo = SectionSpec("motivo_consulta", "Motivo", (), codable=True, in_note=True)
+    grouped = ((spec_motivo, ("dolor agudo",)),)
+
+    candidato_1 = _SpyProvider(
+        response=ClinicalNote(fields={"motivo_consulta": "Cefalea por candidato 1."})
+    )
+    candidato_2 = _SpyProvider(
+        response=ClinicalNote(fields={"motivo_consulta": "Cefalea por candidato 2."})
+    )
+
+    rendered = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(
+            ("openai/gpt-4.1-mini", candidato_1),
+            ("ollama/llama3.2:3b", candidato_2),
+        ),
+    )
+    assert rendered.redacted is True
+    assert rendered.provider == "openai/gpt-4.1-mini"
+    assert rendered.fields[0][1] == "Cefalea por candidato 1."
+    assert candidato_2.captured_briefing is None
+
+
+def test_build_note_sin_candidatos_o_todos_fallan_respaldo_literal_sin_proveedor(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 12 (§B.3, M8): Si ninguno responde, respaldo literal con
+    provider=None y redacted=False."""
+    spec_motivo = SectionSpec("motivo_consulta", "Motivo", (), codable=True, in_note=True)
+    grouped = ((spec_motivo, ("dolor agudo",)),)
+
+    candidato_falla_1 = _SpyProvider(response=None)
+    candidato_falla_2 = _SpyProvider(raise_exc=RuntimeError("Caída total"))
+
+    rendered = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(
+            ("openai/gpt-4.1-mini", candidato_falla_1),
+            ("ollama/llama3.2:3b", candidato_falla_2),
+        ),
+    )
+    assert rendered.redacted is False
+    assert rendered.provider is None
+    assert rendered.fields == ((spec_motivo, "dolor agudo"),)
+
+
+def test_build_note_nombre_viaja_con_version_de_modelo(sample_note_settings: NoteSettings) -> None:
+    """Caso 13 (§B.3): El nombre que viaja es el que se pasó con versión de modelo incluida."""
+    spec_motivo = SectionSpec("motivo_consulta", "Motivo", (), codable=True, in_note=True)
+    grouped = ((spec_motivo, ("dolor",)),)
+
+    provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Dolor."}))
+    rendered = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(("anthropic/claude-3-5-sonnet-20241022", provider),),
+    )
+    assert rendered.provider == "anthropic/claude-3-5-sonnet-20241022"
+
+
+def test_build_note_aviso_caida_nombra_ambos_proveedores(
+    sample_note_settings: NoteSettings,
+) -> None:
+    """Caso 14 (§B.3): El aviso de caída on_fallback nombra al que falló y al que respondió."""
+    spec_motivo = SectionSpec("motivo_consulta", "Motivo", (), codable=True, in_note=True)
+    grouped = ((spec_motivo, ("dolor",)),)
+
+    candidato_1 = _SpyProvider(response=None)
+    candidato_2 = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Dolor."}))
+
+    eventos_fallback: list[tuple[str, str]] = []
+
+    def spy_fallback(fallido: str, respondedor: str) -> None:
+        eventos_fallback.append((fallido, respondedor))
+
+    rendered = build_note(
+        grouped_sections=grouped,
+        settings=sample_note_settings,
+        providers=(
+            ("openai/gpt-4.1-mini", candidato_1),
+            ("ollama/llama3.2:3b", candidato_2),
+        ),
+        on_fallback=spy_fallback,
+    )
+    assert rendered.redacted is True
+    assert len(eventos_fallback) == 1
+    assert eventos_fallback[0] == ("openai/gpt-4.1-mini", "ollama/llama3.2:3b")
+
+
+def test_note_prohibicion_reescribir_nombres_en_system_prompt_y_briefing() -> None:
+    """Caso 19 (§B.5, M12): La instrucción de no reescribir nombres está en el
+    system_prompt del pack y viaja en el briefing."""
+    settings = load_note_settings()
+    assert (
+        "Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades"
+        in settings.system_prompt
+    )
+    assert "cópialos exactamente como aparecen en los hechos" in settings.system_prompt
+
+    spec_motivo = SectionSpec(
+        "motivo_consulta", "Motivo de consulta", (), codable=True, in_note=True
+    )
+    grouped = ((spec_motivo, ("toma lupusveno",)),)
+    provider = _SpyProvider(response=ClinicalNote(fields={"motivo_consulta": "Lupusveno."}))
+    build_note(
+        grouped_sections=grouped,
+        settings=settings,
+        providers=(("openai/gpt-4.1-mini", provider),),
+    )
+
+    assert provider.captured_briefing is not None
+    assert (
+        "Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades"
+        in provider.captured_briefing
+    )
+

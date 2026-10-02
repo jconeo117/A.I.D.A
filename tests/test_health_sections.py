@@ -57,6 +57,7 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
     data = {
         "threshold": 0.25,
         "fallback": "sec_b",
+        "skip_interrogative": True,
         "sections": [
             {
                 "id": "sec_a",
@@ -86,6 +87,7 @@ def test_load_sections_yaml_valido_personalizado(tmp_path: Path) -> None:
 
     catalog = load_sections(custom_yaml)
     assert catalog.threshold == 0.25
+    assert catalog.skip_interrogative is True
     assert catalog.fallback.section_id == "sec_b"
     assert tuple(s.section_id for s in catalog.sections) == ("sec_a", "sec_b", "sec_c")
     assert catalog.sections[0].label == "Sección A"
@@ -182,6 +184,7 @@ def test_load_sections_fallback_no_esta_en_sections_lanza_value_error(tmp_path: 
             {
                 "threshold": 0.2,
                 "fallback": "inexistente",
+                "skip_interrogative": True,
                 "sections": [
                     {
                         "id": "motivo",
@@ -205,7 +208,7 @@ def test_load_sections_falta_sections_o_vacia_lanza_value_error(tmp_path: Path) 
     """Falta 'sections', no es lista o es lista vacía -> lanza ValueError."""
     sin_sections = tmp_path / "sin_sections.yaml"
     sin_sections.write_text(
-        yaml.safe_dump({"threshold": 0.2, "fallback": "f"}),
+        yaml.safe_dump({"threshold": 0.2, "fallback": "f", "skip_interrogative": True}),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'sections' \(lista no vacía\)"):
@@ -213,7 +216,9 @@ def test_load_sections_falta_sections_o_vacia_lanza_value_error(tmp_path: Path) 
 
     sections_vacia = tmp_path / "sections_vacia.yaml"
     sections_vacia.write_text(
-        yaml.safe_dump({"threshold": 0.2, "fallback": "f", "sections": []}),
+        yaml.safe_dump(
+            {"threshold": 0.2, "fallback": "f", "skip_interrogative": True, "sections": []}
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'sections' \(lista no vacía\)"):
@@ -221,7 +226,14 @@ def test_load_sections_falta_sections_o_vacia_lanza_value_error(tmp_path: Path) 
 
     sections_no_lista = tmp_path / "sections_no_lista.yaml"
     sections_no_lista.write_text(
-        yaml.safe_dump({"threshold": 0.2, "fallback": "f", "sections": "no_es_lista"}),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "skip_interrogative": True,
+                "sections": "no_es_lista",
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"falta 'sections' \(lista no vacía\)"):
@@ -232,7 +244,14 @@ def test_load_sections_entrada_sections_no_es_dict_lanza_value_error(tmp_path: P
     """Cada entrada de 'sections' debe ser un mapeo (dict) -> lanza ValueError si no."""
     archivo = tmp_path / "entrada_no_dict.yaml"
     archivo.write_text(
-        yaml.safe_dump({"threshold": 0.2, "fallback": "f", "sections": ["no_es_un_dict"]}),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "skip_interrogative": True,
+                "sections": ["no_es_un_dict"],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"cada entrada de 'sections' debe ser un mapeo"):
@@ -247,6 +266,7 @@ def test_load_sections_id_o_label_mal_tipado_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "f",
+                "skip_interrogative": True,
                 "sections": [{"label": "Solo Label"}],
             }
         ),
@@ -261,6 +281,7 @@ def test_load_sections_id_o_label_mal_tipado_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "f",
+                "skip_interrogative": True,
                 "sections": [{"id": 42, "label": "Label"}],
             }
         ),
@@ -271,7 +292,14 @@ def test_load_sections_id_o_label_mal_tipado_lanza_value_error(tmp_path: Path) -
 
     sin_label = tmp_path / "sin_label.yaml"
     sin_label.write_text(
-        yaml.safe_dump({"threshold": 0.2, "fallback": "f", "sections": [{"id": "f"}]}),
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "f",
+                "skip_interrogative": True,
+                "sections": [{"id": "f"}],
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"'id' y 'label' deben ser cadenas"):
@@ -286,6 +314,7 @@ def test_load_sections_trigger_phrases_mal_tipado_lanza_value_error(tmp_path: Pa
             {
                 "threshold": 0.2,
                 "fallback": "f",
+                "skip_interrogative": True,
                 "sections": [{"id": "f", "label": "F", "trigger_phrases": "frase suelta"}],
             }
         ),
@@ -300,6 +329,7 @@ def test_load_sections_trigger_phrases_mal_tipado_lanza_value_error(tmp_path: Pa
             {
                 "threshold": 0.2,
                 "fallback": "f",
+                "skip_interrogative": True,
                 "sections": [{"id": "f", "label": "F", "trigger_phrases": ["buena", 123]}],
             }
         ),
@@ -317,6 +347,7 @@ def test_load_sections_id_repetido_lanza_value_error(tmp_path: Path) -> None:
             {
                 "threshold": 0.2,
                 "fallback": "duplicado",
+                "skip_interrogative": True,
                 "sections": [
                     {"id": "duplicado", "label": "Primera vez", "codable": True, "in_note": True},
                     {"id": "duplicado", "label": "Segunda vez", "codable": True, "in_note": True},
@@ -337,6 +368,7 @@ def test_load_sections_sin_codable_o_no_bool_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "sec_a",
+                "skip_interrogative": True,
                 "sections": [{"id": "sec_a", "label": "A"}],
             }
         ),
@@ -351,6 +383,7 @@ def test_load_sections_sin_codable_o_no_bool_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "sec_a",
+                "skip_interrogative": True,
                 "sections": [{"id": "sec_a", "label": "A", "codable": "si"}],
             }
         ),
@@ -368,6 +401,7 @@ def test_load_sections_sin_in_note_o_no_bool_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "sec_a",
+                "skip_interrogative": True,
                 "sections": [{"id": "sec_a", "label": "A", "codable": True}],
             }
         ),
@@ -382,6 +416,7 @@ def test_load_sections_sin_in_note_o_no_bool_lanza_value_error(tmp_path: Path) -
             {
                 "threshold": 0.2,
                 "fallback": "sec_a",
+                "skip_interrogative": True,
                 "sections": [{"id": "sec_a", "label": "A", "codable": True, "in_note": "si"}],
             }
         ),
@@ -437,3 +472,58 @@ def test_sections_cada_seccion_tiene_al_menos_un_gatillo_y_no_vacio() -> None:
         assert len(spec.trigger_phrases) > 0, f"Sección '{spec.section_id}' sin gatillos"
         for phrase in spec.trigger_phrases:
             assert phrase.strip() != "", f"Gatillo vacío en sección '{spec.section_id}'"
+
+
+def test_load_sections_skip_interrogative_obligatorio_y_booleano(tmp_path: Path) -> None:
+    """Caso 18 (§B.4): skip_interrogative es obligatorio en sections.yaml y booleano
+    — la cadena 'false' se rechaza con ValueError."""
+    # Pack real declara True
+    catalog = load_sections()
+    assert catalog.skip_interrogative is True
+
+    # Falta skip_interrogative
+    sin_skip = tmp_path / "sin_skip.yaml"
+    sin_skip.write_text(
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "sections": [{"id": "sec_a", "label": "A", "codable": True, "in_note": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'skip_interrogative' \(sí o no\)"):
+        load_sections(sin_skip)
+
+    # skip_interrogative como string "false"
+    skip_str = tmp_path / "skip_str.yaml"
+    skip_str.write_text(
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "skip_interrogative": "false",
+                "sections": [{"id": "sec_a", "label": "A", "codable": True, "in_note": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'skip_interrogative' \(sí o no\)"):
+        load_sections(skip_str)
+
+    # skip_interrogative como int
+    skip_int = tmp_path / "skip_int.yaml"
+    skip_int.write_text(
+        yaml.safe_dump(
+            {
+                "threshold": 0.2,
+                "fallback": "sec_a",
+                "skip_interrogative": 1,
+                "sections": [{"id": "sec_a", "label": "A", "codable": True, "in_note": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"falta 'skip_interrogative' \(sí o no\)"):
+        load_sections(skip_int)

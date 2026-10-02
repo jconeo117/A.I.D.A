@@ -780,10 +780,14 @@ def test_rendered_note_provider_provenance() -> None:
         def think(self, briefing: str, schema: type) -> object | None:
             return ClinicalNote(fields={"motivo_consulta": "Redactado"})
 
-    r_prosa = build_note(grouped_sections=grouped, settings=settings, provider=_DoubleProvider())
+    r_prosa = build_note(
+        grouped_sections=grouped,
+        settings=settings,
+        providers=((f"{settings.provider}/{settings.provider_model}", _DoubleProvider()),),
+    )
     assert r_prosa.provider == f"{settings.provider}/{settings.provider_model}"
 
-    r_respaldo = build_note(grouped_sections=grouped, settings=settings, provider=None)
+    r_respaldo = build_note(grouped_sections=grouped, settings=settings, providers=())
     assert r_respaldo.provider is None
 
 

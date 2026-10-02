@@ -31,7 +31,11 @@ from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, CodableText, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
 from aida.arms.health.model import ClinicalFinding
-from aida.arms.health.negation import load_negation, load_retraction
+from aida.arms.health.negation import (
+    load_negation,
+    load_retraction,
+    load_third_party,
+)
 from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -751,7 +755,7 @@ def test_consultation_con_diarizador_y_segmentador_juntos(
     """
     segments = (
         TranscriptSegment(
-            start=0.0, end=3.0, text="Buenos días, ¿cuál es el motivo de consulta hoy?"
+            start=0.0, end=3.0, text="Buenos días, el motivo de consulta es revisión rutinaria."
         ),
         TranscriptSegment(start=3.0, end=6.0, text="Tengo fiebre alta desde hace dos semanas."),
         TranscriptSegment(start=6.0, end=9.0, text="De acuerdo, se receta reposo y antipiréticos."),
@@ -787,13 +791,13 @@ def test_consultation_con_diarizador_y_segmentador_juntos(
         history_text="Sin antecedentes.",
     )
 
-    assert "MÉDICO: Buenos días, ¿cuál es el motivo de consulta hoy?" in result.transcript
+    assert "MÉDICO: Buenos días, el motivo de consulta es revisión rutinaria." in result.transcript
     assert "PACIENTE: Tengo fiebre alta desde hace dos semanas." in result.transcript
     assert "MÉDICO: De acuerdo, se receta reposo y antipiréticos." in result.transcript
 
     # Clasificación por contenido a pesar del prefijo MÉDICO / PACIENTE
     assert (
-        "### Motivo de consulta\nMÉDICO: Buenos días, ¿cuál es el motivo de consulta hoy?"
+        "### Motivo de consulta\nMÉDICO: Buenos días, el motivo de consulta es revisión rutinaria."
         in result.summary_markdown
     )
     assert (
@@ -3410,3 +3414,152 @@ def test_consultation_review_cortada_registra_elapsed_seconds(
     assert len(records) == 1
     assert records[0].completed is False
     assert records[0].seconds == 77.5
+
+
+def test_consultation_terceros_no_produce_codigo_ni_por_lexico(
+    sample_wording_sections: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 6 (§B.2, M2): Una frase de tercero no produce código, ni por el léxico.
+    «Mi padre murió de un infarto» con léxico que traduce «infarto» no produce I214."""
+    code_infarto = DiagnosticCode("I214", "Infarto subendocárdico agudo del miocardio", 3, "ambas")
+    catalog_index = build_index((code_infarto,))
+    lexicon: Lexicon = (("infarto", "infarto subendocárdico agudo del miocardio"),)
+
+    segments = (
+        TranscriptSegment(start=0.0, end=3.0, text="Mi padre murió de un infarto a los 60."),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    # Con filtro de terceros: NO sale el código
+    consultation_con_tp = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        lexicon=lexicon,
+        third_party=load_third_party(),
+    )
+    res_con_tp = consultation_con_tp.run_with_history(
+        owner=AgentId("doc_tp"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+    assert "I214" not in res_con_tp.matched_codes
+
+    # Sin filtro de terceros (third_party=None): SÍ sale el código
+    consultation_sin_tp = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        lexicon=lexicon,
+        third_party=None,
+    )
+    res_sin_tp = consultation_sin_tp.run_with_history(
+        owner=AgentId("doc_no_tp"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+    assert "I214" in res_sin_tp.matched_codes
+
+
+def test_consultation_filtro_terceros_actua_antes_del_lexico(
+    sample_wording_sections: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 7 (§B.2, M1): El filtro de terceros actúa ANTES del léxico:
+    si actuara después, clinical_terms ya habría generado el término clínico
+    y el código se colaría."""
+    lexicon: Lexicon = (("infarto", "infarto agudo de miocardio"),)
+    code_infarto = DiagnosticCode("I214", "Infarto agudo de miocardio", 3, "ambas")
+    catalog_index = build_index((code_infarto,))
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=catalog_index,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        lexicon=lexicon,
+        third_party=load_third_party(),
+    )
+    # _affirmed debe descartar antes de traducir, devolviendo tupla vacía
+    afirmados = consultation._affirmed(("Mi padre murió de un infarto a los 60.",))
+    assert len(afirmados) == 0
+
+
+def test_consultation_frase_de_tercero_sigue_en_la_nota(
+    sample_wording_sections: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 8 (§B.2, M3): La frase de tercero sigue en la nota:
+    grouped_sections y el modelo clínico la conservan íntegramente (§3.1)."""
+    frase_familiar = "Mi padre murió de un infarto a los 60."
+    segments = (TranscriptSegment(start=0.0, end=3.0, text=frase_familiar),)
+    stt = _SpyWhisperSTT(segments=segments)
+    ocr = _DummyOCR()
+    log = EventLog(window=100)
+    segmenter = ClinicalSegmenter(load_sections())
+
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=stt,
+        ocr=ocr,
+        catalog_index=CatalogIndex(entries=(), stopwords=frozenset()),
+        provider=None,
+        cache=sample_cache,
+        log=log,
+        segmenter=segmenter,
+        third_party=load_third_party(),
+    )
+    res = consultation.run_with_history(
+        owner=AgentId("doc_note_tp"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="Sin antecedentes.",
+    )
+    # La frase debe estar en el transcript, en el modelo clínico y en la nota/resumen
+    assert frase_familiar in res.transcript
+    assert res.encounter is not None
+    hallazgos_textos = [
+        finding.text
+        for findings in res.encounter.findings.values()
+        for finding in findings
+    ]
+    assert frase_familiar in hallazgos_textos
+    assert frase_familiar in res.summary_markdown
+
+
+def test_consultation_sin_terceros_inyectado_conserva_comportamiento(
+    sample_wording_sections: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 9 (§B.2): Sin catálogo inyectado (third_party=None), nada cambia:
+    el comportamiento previo se conserva."""
+    consultation = Consultation(
+        wording=sample_wording_sections,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=CatalogIndex(entries=(), stopwords=frozenset()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        third_party=None,
+    )
+    afirmados = consultation._affirmed(("Mi padre murió de un infarto a los 60.",))
+    assert len(afirmados) > 0
+    assert any("Mi padre murió de un infarto" in c.query for c in afirmados)
+

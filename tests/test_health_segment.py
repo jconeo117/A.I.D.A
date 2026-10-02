@@ -334,6 +334,7 @@ def test_build_health_segmenter_por_defecto_y_con_ruta(tmp_path: Path) -> None:
     custom_yaml.write_text(
         "threshold: 0.2\n"
         "fallback: s1\n"
+        "skip_interrogative: true\n"
         "sections:\n"
         "  - id: s1\n"
         "    label: S1\n"
@@ -347,3 +348,98 @@ def test_build_health_segmenter_por_defecto_y_con_ruta(tmp_path: Path) -> None:
     res = seg_custom.segment("hola doctor")
     assert len(res) == 1
     assert res[0][0].section_id == "s1"
+
+
+def test_segment_lines_interrogativa_va_a_reserva() -> None:
+    """Caso 15 (§B.4, M9): Una frase que termina en '?' va a la reserva
+    (fallback), aunque su similitud con una sección sea alta."""
+    spec_motivo = SectionSpec(
+        section_id="motivo_consulta",
+        label="Motivo de consulta",
+        trigger_phrases=("motivo de consulta", "que lo trae por aqui"),
+        codable=True,
+        in_note=True,
+    )
+    spec_fallback = SectionSpec(
+        section_id="otros_comentarios",
+        label="Otros comentarios",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
+    )
+    index = build_section_index((spec_motivo, spec_fallback))
+
+    lineas = ("¿Cuénteme qué lo trae por aquí?", "¿Cuál es el motivo de consulta?")
+    resultado = segment_lines(
+        lineas,
+        index,
+        threshold=0.20,
+        fallback=spec_fallback,
+        skip_interrogative=True,
+    )
+    assert len(resultado) == 2
+    assert resultado[0].section.section_id == "otros_comentarios"
+    assert resultado[1].section.section_id == "otros_comentarios"
+
+
+def test_segment_lines_con_skip_interrogative_false_clasifica_normal() -> None:
+    """Caso 16 (§B.4, M11): Con skip_interrogative: false, una frase que
+    termina en '?' se clasifica por coseno normalmente hacia su sección."""
+    spec_motivo = SectionSpec(
+        section_id="motivo_consulta",
+        label="Motivo de consulta",
+        trigger_phrases=("motivo de consulta", "que lo trae por aqui"),
+        codable=True,
+        in_note=True,
+    )
+    spec_fallback = SectionSpec(
+        section_id="otros_comentarios",
+        label="Otros comentarios",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
+    )
+    index = build_section_index((spec_motivo, spec_fallback))
+
+    lineas = ("¿Cuál es el motivo de consulta?",)
+    resultado = segment_lines(
+        lineas,
+        index,
+        threshold=0.20,
+        fallback=spec_fallback,
+        skip_interrogative=False,
+    )
+    assert len(resultado) == 1
+    assert resultado[0].section.section_id == "motivo_consulta"
+
+
+def test_segment_lines_signo_en_medio_no_cuenta_como_interrogativa() -> None:
+    """Caso 17 (§B.4, M10): Un signo '?' en medio de la frase no se desvía a la
+    reserva; solo se envía si la frase termina en '?'."""
+    spec_sintomas = SectionSpec(
+        section_id="sintomas",
+        label="Síntomas",
+        trigger_phrases=("dolor de cabeza intenso", "mareos frecuentes"),
+        codable=True,
+        in_note=True,
+    )
+    spec_fallback = SectionSpec(
+        section_id="otros_comentarios",
+        label="Otros comentarios",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
+    )
+    index = build_section_index((spec_sintomas, spec_fallback))
+
+    # Frase que tiene '?' en medio pero no termina en '?'
+    frase_intermedia = "Dijo ¿por qué? y luego continuó con dolor de cabeza intenso."
+    resultado = segment_lines(
+        (frase_intermedia,),
+        index,
+        threshold=0.20,
+        fallback=spec_fallback,
+        skip_interrogative=True,
+    )
+    assert len(resultado) == 1
+    assert resultado[0].section.section_id == "sintomas"

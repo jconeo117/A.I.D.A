@@ -230,7 +230,10 @@ def build_provider(
         return GeminiProvider(client) if model is None else GeminiProvider(client, model=model)
 
     if name == "ollama":
-        client = httpx.Client(base_url=os.environ.get("OLLAMA_HOST", base_url))
+        client = httpx.Client(
+            base_url=os.environ.get("OLLAMA_HOST", base_url),
+            timeout=httpx.Timeout(300.0),
+        )
         return OllamaProvider(client) if model is None else OllamaProvider(client, model=model)
 
     if name == "openai":

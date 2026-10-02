@@ -13,8 +13,11 @@ from aida.arms.health.negation import (
     NegationCatalog,
     PolarityParts,
     RetractionRule,
+    ThirdPartyCatalog,
+    is_third_party,
     load_negation,
     load_retraction,
+    load_third_party,
     retracted_replies,
     split_polarity,
 )
@@ -229,3 +232,58 @@ def test_load_retraction_pack_real_declara_24() -> None:
     """Caso 16 (§B.3): El pack real declara max_chars: 24."""
     regla = load_retraction()
     assert regla.max_chars == 24
+
+
+def test_is_third_party_detecta_familiar_y_no_paciente() -> None:
+    """Caso 1 (§B.1): «Mi padre murió de un infarto» es de tercero;
+    «Tengo la presión alta» no."""
+    catalog = load_third_party()
+    assert is_third_party("Mi padre murió de un infarto a los 60.", catalog) is True
+    assert is_third_party("Tengo la presión alta desde hace años.", catalog) is False
+
+
+def test_is_third_party_compara_plegado() -> None:
+    """Caso 2 (§B.1, M4): Se compara con texto plegado: «Mi Padre», «MI PADRE»,
+    «mi padre» y tildes como «Mí Padre» dan lo mismo."""
+    catalog = ThirdPartyCatalog(cues=(("mi", "padre"),))
+    assert is_third_party("Mi Padre tuvo un infarto.", catalog) is True
+    assert is_third_party("MI PADRE tuvo un infarto.", catalog) is True
+    assert is_third_party("mi padre tuvo un infarto.", catalog) is True
+    assert is_third_party("Mí Padre tuvo un infarto.", catalog) is True
+
+
+def test_is_third_party_senal_multipalabra_entera() -> None:
+    """Caso 3 (§B.1, M5): Una señal multipalabra se detecta entera:
+    «antecedentes familiares» sí, «antecedentes» a secas no."""
+    catalog = ThirdPartyCatalog(cues=(("antecedentes", "familiares"),))
+    assert is_third_party("Tiene antecedentes familiares de diabetes.", catalog) is True
+    assert is_third_party("Tiene antecedentes personales de diabetes.", catalog) is False
+    assert is_third_party("Antecedentes quirúrgicos previos.", catalog) is False
+
+
+def test_load_third_party_valida_claves_y_tipos(tmp_path: Path) -> None:
+    """Caso 4 (§B.1): El cargador valida: sin third_party, sin cues, con lista
+    vacía o con elemento no string -> ValueError que nombra la ruta."""
+    def _probar(contenido: str, match: str) -> None:
+        p = tmp_path / "tp.yaml"
+        p.write_text(contenido, encoding="utf-8")
+        with pytest.raises(ValueError, match=match):
+            load_third_party(p)
+
+    _probar("negation: {}", "falta 'third_party'")
+    _probar("third_party: {}", r"'cues' debe ser una lista no vacía de cadenas")
+    _probar("third_party:\n  cues: []", r"'cues' debe ser una lista no vacía de cadenas")
+    _probar("third_party:\n  cues: [123]", r"'cues' debe ser una lista no vacía de cadenas")
+    _probar("third_party:\n  cues: 'no_es_lista'", r"'cues' debe ser una lista no vacía de cadenas")
+
+
+def test_load_third_party_pack_real_trae_senales() -> None:
+    """Caso 5 (§B.1): El pack real trae las señales requeridas para terceros."""
+    catalog = load_third_party()
+    assert len(catalog.cues) >= 10
+    cues_strings = {" ".join(cue) for cue in catalog.cues}
+    assert "mi padre" in cues_strings
+    assert "mi madre" in cues_strings
+    assert "antecedentes familiares" in cues_strings
+    assert "un vecino" in cues_strings
+
