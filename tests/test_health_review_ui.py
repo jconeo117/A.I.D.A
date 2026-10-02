@@ -43,6 +43,14 @@ from aida.arms.health.review_ui import (
     load_ui_settings,
     reviewer_from,
 )
+from tests.conftest import _ORIGINAL_HANDLE_REQUEST
+
+
+@pytest.fixture(autouse=True)
+def _permitir_servidor_revision_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restaura el transporte real de httpx para comunicar con el ThreadingHTTPServer
+    efímero que este módulo levanta en localhost para probar la interfaz web (§B.8 #17)."""
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _ORIGINAL_HANDLE_REQUEST)
 
 
 def _crear_items_prueba() -> tuple[ReviewItem, ReviewItem]:

@@ -306,7 +306,8 @@ tuning:
 
 
 def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Limpia variables de entorno de LLM para garantizar aislamiento total de red."""
+    """Limpia las variables de entorno de LLM. No aísla de la red: eso lo hace
+    `_sin_red`, en `tests/conftest.py`."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("AIDA_LLM_PROVIDER", raising=False)
@@ -3041,6 +3042,7 @@ def test_build_consultation_camino_dual_sigue_vivo(
         threshold=0.5,
         top_n=5,
         stopwords=frozenset(),
+        absence_markers=frozenset(),
         catalog=CatalogSpec(kind="dual", paths=(f_json, f_csv)),
     )
     monkeypatch.setattr(match_mod, "load_matching_settings", lambda *a, **kw: fake_settings)
@@ -3890,3 +3892,104 @@ def test_section_report_archivo_inexistente_da_error_y_codigo_distinto_de_cero(
     assert codigo == 1
     assert "aida: error:" in captured.err
     assert "no_existe_referencia" in captured.err or "No such file" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Plan 79 (§B.4): Marcadores en _build_consultation y modelo en procedencia
+# ---------------------------------------------------------------------------
+
+
+def test_build_consultation_pasa_absence_markers_a_build_index(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 11 (§B.4, M7): _build_consultation pasa absence_markers de MatchingSettings
+    a build_index."""
+    import aida.arms.health.match as match_mod
+    from aida.run import _build_consultation
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    captured_kw: dict[str, Any] = {}
+    orig_build_index = match_mod.build_index
+
+    def spy_build_index(*args: Any, **kwargs: Any) -> Any:
+        captured_kw.update(kwargs)
+        return orig_build_index(*args, **kwargs)
+
+    monkeypatch.setattr(match_mod, "build_index", spy_build_index)
+
+    args = argparse.Namespace(llm=None)
+    consultation = _build_consultation(args, stt=MagicMock(), ocr=MagicMock(), key=key)
+    assert consultation is not None
+    assert captured_kw.get("absence_markers") == frozenset({"sin"})
+
+
+def test_cognition_candidates_candidato_local_lleva_su_modelo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 12 (§B.4, M8): El candidato local lleva su modelo en el nombre.
+    (openai/m-nube, ollama/m-local)."""
+    from aida.arms.health.note import NoteSettings
+    from aida.run import _cognition_candidates
+
+    class _FakeProvider:
+        def __init__(self, model_name: str) -> None:
+            self.model = model_name
+
+    def fake_build_provider(name: str, *, model: str | None = None) -> Any:
+        if name == "openai":
+            return _FakeProvider("m-nube")
+        if name == "ollama":
+            return _FakeProvider("m-local")
+        return None
+
+    monkeypatch.setattr("aida.run.build_provider", fake_build_provider)
+    monkeypatch.delenv("AIDA_LLM_PROVIDER", raising=False)
+
+    args = argparse.Namespace(llm=None)
+    settings = NoteSettings(
+        system_prompt="",
+        provider="openai",
+        provider_model="gpt-4.1-mini",
+        field_heading="",
+        provenance_template="",
+        fallback_notice="",
+    )
+    candidates = _cognition_candidates(args, settings)
+    nombres = tuple(c[0] for c in candidates)
+    assert nombres == ("openai/m-nube", "ollama/m-local")
+
+
+def test_cognition_candidates_con_llm_nombre_es_del_objeto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 13 (§B.4, M9): Con --llm, el nombre es el del objeto (f"{llm}/{candidato.model}")."""
+    from aida.arms.health.note import NoteSettings
+    from aida.run import _cognition_candidates
+
+    class _FakeProvider:
+        def __init__(self, model_name: str) -> None:
+            self.model = model_name
+
+    def fake_build_provider(name: str, *, model: str | None = None) -> Any:
+        if name == "openai":
+            return _FakeProvider("m-otro")
+        return None
+
+    monkeypatch.setattr("aida.run.build_provider", fake_build_provider)
+
+    args = argparse.Namespace(llm="openai")
+    settings = NoteSettings(
+        system_prompt="",
+        provider="openai",
+        provider_model="gpt-4.1-mini",
+        field_heading="",
+        provenance_template="",
+        fallback_notice="",
+    )
+    candidates = _cognition_candidates(args, settings)
+    assert len(candidates) == 1
+    assert candidates[0][0] == "openai/m-otro"
+

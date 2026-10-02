@@ -321,7 +321,10 @@ def test_load_matching_settings_pack_real_y_validaciones(tmp_path: Path) -> None
     with pytest.raises(ValueError, match=r"debe ser un mapeo YAML"):
         load_matching_settings(no_map)
 
-    cat_yaml = "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n"
+    cat_yaml = (
+        "absence_markers: ['sin']\n"
+        "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n"
+    )
 
     # Clave faltante
     sin_thresh = tmp_path / "sin_thresh.yaml"
@@ -644,7 +647,7 @@ def test_load_matching_settings_stopwords_plegadas(tmp_path: Path) -> None:
     descarta el token 'mas'."""
     yaml_file = tmp_path / "matching_stop.yaml"
     yaml_file.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: ['más']\n"
+        "threshold: 0.5\ntop_n: 5\nstopwords: ['más']\nabsence_markers: []\n"
         "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n",
         encoding="utf-8",
     )
@@ -668,7 +671,7 @@ def test_load_matching_settings_kind_y_archivos_concordancia(tmp_path: Path) -> 
     # reference con 2
     ref_dos = tmp_path / "ref_dos.yaml"
     ref_dos.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: []\n"
         "catalog:\n  kind: reference\n  files: ['f1.csv', 'f2.csv']\n",
         encoding="utf-8",
     )
@@ -678,7 +681,7 @@ def test_load_matching_settings_kind_y_archivos_concordancia(tmp_path: Path) -> 
     # dual con 1
     dual_uno = tmp_path / "dual_uno.yaml"
     dual_uno.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: []\n"
         "catalog:\n  kind: dual\n  files: ['f1.csv']\n",
         encoding="utf-8",
     )
@@ -688,7 +691,7 @@ def test_load_matching_settings_kind_y_archivos_concordancia(tmp_path: Path) -> 
     # kind desconocido
     desconocido = tmp_path / "desconocido.yaml"
     desconocido.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: []\n"
         "catalog:\n  kind: desconocido\n  files: ['f1.csv']\n",
         encoding="utf-8",
     )
@@ -701,7 +704,7 @@ def test_load_matching_settings_catalogo_ausente_falla_con_ruta(tmp_path: Path) 
     con la ruta en el mensaje de error."""
     yaml_file = tmp_path / "ausente.yaml"
     yaml_file.write_text(
-        "threshold: 0.5\ntop_n: 5\nstopwords: []\n"
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: []\n"
         "catalog:\n  kind: reference\n  files: ['archivo_inexistente_123.csv']\n",
         encoding="utf-8",
     )
@@ -728,6 +731,197 @@ def test_pack_consultorio_declara_reference_con_archivo_existente() -> None:
     assert len(settings.catalog.paths) == 1
     assert settings.catalog.paths[0].is_file()
     assert settings.catalog.paths[0].name == "cie10-co.csv"
+
+
+# ---------------------------------------------------------------------------
+# Plan 79 (§B.1, §B.2, §B.3): Marcadores de ausencia en catálogo (I-144)
+# ---------------------------------------------------------------------------
+
+_CATALOGO_P79 = (
+    DiagnosticCode("E140", "DIABETES MELLITUS NO ESPECIFICADA, CON COMA", 3, "test"),
+    DiagnosticCode(
+        "E149",
+        "DIABETES MELLITUS NO ESPECIFICADA, SIN MENCION DE COMPLICACION",
+        3,
+        "test",
+    ),
+    DiagnosticCode(
+        "B162",
+        "HEPATITIS AGUDA TIPO B, SIN AGENTE DELTA, CON COMA HEPATICO",
+        3,
+        "test",
+    ),
+)
+_VACIAS_P79 = frozenset({"no", "especificada", "con", "sin", "de"})
+
+
+def test_build_index_con_marcador_variante_sencilla_gana() -> None:
+    """Caso 1 (§B.1, M1, M2): Con el marcador, la variante sencilla gana.
+    build_index con absence_markers={'sin'}, consulta 'diabetes mellitus', umbral 0.5:
+    primer código es E149 con puntuación 1.0."""
+    index = build_index(
+        _CATALOGO_P79,
+        stopwords=_VACIAS_P79,
+        absence_markers=frozenset({"sin"}),
+    )
+    matches = match_codes("diabetes mellitus", index, threshold=0.5, top_n=3)
+    assert len(matches) > 0
+    assert matches[0].diagnostic.code == "E149"
+    assert math.isclose(matches[0].score, 1.0, rel_tol=1e-3)
+
+
+def test_build_index_sin_marcador_gana_complicada() -> None:
+    """Caso 2 (§B.1): Sin el marcador, gana la complicada.
+    El mismo catálogo con absence_markers=frozenset(): el primer código es E140."""
+    index = build_index(
+        _CATALOGO_P79,
+        stopwords=_VACIAS_P79,
+        absence_markers=frozenset(),
+    )
+    matches = match_codes("diabetes mellitus", index, threshold=0.5, top_n=3)
+    assert len(matches) > 0
+    assert matches[0].diagnostic.code == "E140"
+
+
+def test_build_index_tramo_acaba_en_coma() -> None:
+    """Caso 3 (§B.1, M3): El tramo acaba en la coma.
+    Consulta 'coma hepatico' con marcador: B162 sale, con puntuación >= 0.5."""
+    index = build_index(
+        _CATALOGO_P79,
+        stopwords=_VACIAS_P79,
+        absence_markers=frozenset({"sin"}),
+    )
+    matches = match_codes("coma hepatico", index, threshold=0.5, top_n=3)
+    assert any(m.diagnostic.code == "B162" for m in matches)
+    matched_b162 = next(m for m in matches if m.diagnostic.code == "B162")
+    assert matched_b162.score >= 0.5
+
+
+def test_build_index_descripcion_devuelta_intacta() -> None:
+    """Caso 4 (§B.1): La descripción que se devuelve está intacta.
+    En Caso 1, matches[0].diagnostic.description es la cadena original completa."""
+    index = build_index(
+        _CATALOGO_P79,
+        stopwords=_VACIAS_P79,
+        absence_markers=frozenset({"sin"}),
+    )
+    matches = match_codes("diabetes mellitus", index, threshold=0.5, top_n=3)
+    assert len(matches) > 0
+    assert (
+        matches[0].diagnostic.description
+        == "DIABETES MELLITUS NO ESPECIFICADA, SIN MENCION DE COMPLICACION"
+    )
+
+
+def test_build_index_consulta_no_se_recorta() -> None:
+    """Caso 5 (§B.1, M4): La consulta no se recorta.
+    Catálogo con R51X CEFALEA CON NAUSEAS, stopwords=VACIAS, marcador {'sin'};
+    consulta 'cefalea sin nauseas': puntuación es 1.0."""
+    cat = (DiagnosticCode("R51X", "CEFALEA CON NAUSEAS", 3, "test"),)
+    index = build_index(
+        cat,
+        stopwords=_VACIAS_P79,
+        absence_markers=frozenset({"sin"}),
+    )
+    matches = match_codes("cefalea sin nauseas", index, threshold=0.5, top_n=1)
+    assert len(matches) == 1
+    assert matches[0].diagnostic.code == "R51X"
+    assert math.isclose(matches[0].score, 1.0, rel_tol=1e-3)
+
+
+def test_build_index_por_defecto_no_descarta_nada() -> None:
+    """Caso 6 (§B.1, M10): Por defecto no se descarta nada.
+    build_index(CATALOGO, stopwords=VACIAS) produce exactamente los mismos vectores
+    que vectorize(fold(d), stopwords=VACIAS) para cada descripción."""
+    from aida.textmatch import fold, vectorize
+
+    index = build_index(_CATALOGO_P79, stopwords=_VACIAS_P79)
+    for entry, vec in index.entries:
+        expected_vec = vectorize(fold(entry.description), stopwords=_VACIAS_P79)
+        assert vec == expected_vec
+
+
+def test_load_matching_settings_pack_real_declara_absence_markers() -> None:
+    """Caso 7 (§B.2): El pack real declara el marcador:
+    load_matching_settings().absence_markers == frozenset({'sin'})."""
+    settings = load_matching_settings()
+    assert settings.absence_markers == frozenset({"sin"})
+
+
+def test_load_matching_settings_absence_markers_se_pliega(tmp_path: Path) -> None:
+    """Caso 8 (§B.2, M5): Se pliega al cargar:
+    un YAML con absence_markers: ['SÍN'] da frozenset({'sin'})."""
+    yaml_file = tmp_path / "matching_sin.yaml"
+    yaml_file.write_text(
+        "threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: ['SÍN']\n"
+        "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n",
+        encoding="utf-8",
+    )
+    settings = load_matching_settings(yaml_file)
+    assert settings.absence_markers == frozenset({"sin"})
+
+
+def test_load_matching_settings_absence_markers_obligatorio_y_validado(tmp_path: Path) -> None:
+    """Caso 9 (§B.2, M6): absence_markers es obligatorio y se valida.
+    Sin la clave, ValueError con 'absence_markers' en el mensaje;
+    con cadena o enteros, ValueError con 'debe ser una lista de cadenas'."""
+    cat_yaml = "catalog:\n  kind: reference\n  files: ['data/health/cie10/co/cie10-co.csv']\n"
+
+    # Falta clave
+    sin_markers = tmp_path / "sin_markers.yaml"
+    sin_markers.write_text(
+        f"threshold: 0.5\ntop_n: 5\nstopwords: []\n{cat_yaml}",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"absence_markers"):
+        load_matching_settings(sin_markers)
+
+    # Cadena en vez de lista
+    str_markers = tmp_path / "str_markers.yaml"
+    str_markers.write_text(
+        f"threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: sin\n{cat_yaml}",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"'absence_markers' debe ser una lista de cadenas"):
+        load_matching_settings(str_markers)
+
+    # Lista con entero
+    int_markers = tmp_path / "int_markers.yaml"
+    int_markers.write_text(
+        f"threshold: 0.5\ntop_n: 5\nstopwords: []\nabsence_markers: [1]\n{cat_yaml}",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"'absence_markers' debe ser una lista de cadenas"):
+        load_matching_settings(int_markers)
+
+
+def test_match_catalogo_real_con_absence_markers() -> None:
+    """Caso 10 (§B.3, M1): Con load_matching_settings() y load_reference_catalog(...) del pack,
+    y build_index(..., stopwords=s.stopwords, absence_markers=s.absence_markers):
+    - diabetes mellitus -> E149
+    - reflujo gastroesofágico -> K219
+    - infarto agudo de miocardio -> I219"""
+    from aida.arms.health.codes import load_reference_catalog
+
+    s = load_matching_settings()
+    catalog = load_reference_catalog(s.catalog.paths[0])
+    index = build_index(
+        catalog,
+        stopwords=s.stopwords,
+        absence_markers=s.absence_markers,
+    )
+    m_dm = match_codes("diabetes mellitus", index, threshold=s.threshold, top_n=1)
+    assert len(m_dm) == 1
+    assert m_dm[0].diagnostic.code == "E149"
+
+    m_ref = match_codes("reflujo gastroesofágico", index, threshold=s.threshold, top_n=1)
+    assert len(m_ref) == 1
+    assert m_ref[0].diagnostic.code == "K219"
+
+    m_iam = match_codes("infarto agudo de miocardio", index, threshold=s.threshold, top_n=1)
+    assert len(m_iam) == 1
+    assert m_iam[0].diagnostic.code == "I219"
+
 
 
 

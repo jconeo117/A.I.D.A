@@ -845,3 +845,32 @@ def test_export_escribe_procedencia_cuando_hay_nota_y_no_en_respaldo(tmp_path: P
     md2 = archivos2.summary.read_text(encoding="utf-8")
     assert "_Redactado por" not in md2
     assert settings.fallback_notice in md2
+
+
+# ---------------------------------------------------------------------------
+# Plan 79 (§B.4): Propiedad model en los cuatro proveedores
+# ---------------------------------------------------------------------------
+
+
+def test_providers_exponen_propiedad_model() -> None:
+    """Caso 14 (§B.4): Los cuatro proveedores exponen su modelo a través de .model.
+    Con un httpx.Client():
+    - OllamaProvider(c).model == "llama3.2" y con model="x" -> "x"
+    - ClaudeProvider(c).model == "claude-3-5-haiku-latest" y con model="x" -> "x"
+    - GeminiProvider(c).model == "gemini-2.5-flash" y con model="x" -> "x"
+    - OpenAIProvider(c).model == "gpt-4.1-mini" y con model="x" -> "x"
+    """
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+
+    assert OllamaProvider(client).model == "llama3.2"
+    assert OllamaProvider(client, model="custom-ollama").model == "custom-ollama"
+
+    assert ClaudeProvider(client).model == "claude-3-5-haiku-latest"
+    assert ClaudeProvider(client, model="custom-claude").model == "custom-claude"
+
+    assert GeminiProvider(client).model == "gemini-2.0-flash"
+    assert GeminiProvider(client, model="custom-gemini").model == "custom-gemini"
+
+    assert OpenAIProvider(client).model == "gpt-4.1-mini"
+    assert OpenAIProvider(client, model="custom-openai").model == "custom-openai"
+
