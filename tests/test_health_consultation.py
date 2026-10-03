@@ -36,7 +36,7 @@ from aida.arms.health.negation import (
     load_retraction,
     load_third_party,
 )
-from aida.arms.health.note import ClinicalNote, NoteSettings
+from aida.arms.health.note import ClinicalNote, NoteSettings, RenderedNote
 from aida.arms.health.review import Answer, ItemKind, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.segment import ClinicalSegmenter
@@ -3592,6 +3592,7 @@ def test_render_note_pasa_transcripcion_incluyendo_otros_comentarios(
         field_heading="### {}",
         provenance_template="_{}_",
         fallback_notice="",
+        edited_template="_{}_",
     )
 
     consultation = Consultation(
@@ -3634,5 +3635,116 @@ def test_render_note_pasa_transcripcion_incluyendo_otros_comentarios(
     hechos_parte = briefing.split("Conversación completa, en orden:")[0]
     assert linea_otros not in hechos_parte
     assert linea_otros in briefing
+
+
+# ---------------------------------------------------------------------------
+# §B.6 — Cableado (Casos 25 y 26)
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_review_note_y_edits_van_juntos(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+) -> None:
+    """Caso 25 (§B.6): Consultation.review con note y sin note_edits (o al revés) -> ValueError."""
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=CatalogIndex(entries=(), stopwords=frozenset()),
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+    )
+    prepared = consultation.prepare(
+        owner=AgentId("doc_note_edits"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="",
+    )
+    spec_a = SectionSpec("a", "A", (), True, True)
+    note = RenderedNote(fields=((spec_a, "uno"),), redacted=True)
+
+    def dummy_reviewer(item: ReviewItem) -> Answer:
+        return Answer(Verdict.CONFIRMED)
+
+    # Con note pero sin note_edits
+    with pytest.raises(
+        ValueError, match="la nota y sus ediciones van juntas, o ninguna de las dos"
+    ):
+        consultation.review(prepared, reviewer=dummy_reviewer, note=note, note_edits=None)
+
+    # Con note_edits pero sin note
+    with pytest.raises(
+        ValueError, match="la nota y sus ediciones van juntas, o ninguna de las dos"
+    ):
+        consultation.review(
+            prepared, reviewer=dummy_reviewer, note=None, note_edits={"a": "uno"}
+        )
+
+
+def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
+    sample_wording_review: SummaryWording,
+    sample_cache: ConsultationCache,
+    tmp_path: Path,
+) -> None:
+    """Caso 26 (§B.6, M11): Los eventos de los campos caen en el registro de la revisión:
+    tras Consultation.review(..., note=, note_edits=) con un campo editado, el ReviewRecord
+    guardado en ReviewMetricsStore trae ese campo en fields."""
+    metrics_path = tmp_path / "revisiones_pantalla.jsonl"
+    store = ReviewMetricsStore(metrics_path)
+    spec_motivo = SectionSpec("motivo", "Motivo de consulta", (), True, True)
+    spec_plan = SectionSpec("plan", "Plan de manejo", (), True, True)
+    note = RenderedNote(
+        fields=((spec_motivo, "Cefalea"), (spec_plan, "Ibuprofeno")),
+        redacted=True,
+    )
+
+    catalog = build_index(
+        (DiagnosticCode("I10", "Hipertensión esencial", 3, "ambas"),)
+    )
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+        review_metrics=store,
+    )
+    prepared = consultation.prepare(
+        owner=AgentId("doc_screen_metrics"),
+        audio_path=Path("/tmp/audio.wav"),
+        history_text="",
+    )
+
+    def dummy_reviewer(item: ReviewItem) -> Answer:
+        return Answer(Verdict.CONFIRMED)
+
+    result = consultation.review(
+        prepared,
+        reviewer=dummy_reviewer,
+        review_findings=False,
+        note=note,
+        note_edits={"motivo": "Cefalea", "plan": "Ibuprofeno 400mg"},
+    )
+
+    assert result.note is not None
+    assert result.note.edited == ("plan",)
+
+    records = store.read()
+    assert len(records) == 1
+    r = records[0]
+    assert r.completed is True
+    # Verificamos que fields contiene el campo editado y el confirmado
+    assert "plan" in r.fields
+    assert r.fields["plan"] == {"edited": 1}
+    assert "motivo" in r.fields
+    assert r.fields["motivo"] == {"confirmed": 1}
+
 
 

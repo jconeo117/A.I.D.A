@@ -732,6 +732,7 @@ def test_note_settings_provider_decide_quien_redacta_y_env_lo_pisa(
         field_heading="### {}",
         provenance_template="{}",
         fallback_notice="fb",
+        edited_template="{}",
     )
     settings_gemini = NoteSettings(
         system_prompt="p",
@@ -740,6 +741,7 @@ def test_note_settings_provider_decide_quien_redacta_y_env_lo_pisa(
         field_heading="### {}",
         provenance_template="{}",
         fallback_notice="fb",
+        edited_template="{}",
     )
 
     monkeypatch.setenv("OPENAI_API_KEY", "key-openai")

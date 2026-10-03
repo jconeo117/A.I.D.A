@@ -24,8 +24,11 @@ from aida.arms.health.export import (
     default_export_dir,
     export_consultation,
     export_name,
+    render_note_markdown,
 )
 from aida.arms.health.model import ClinicalFinding, Encounter
+from aida.arms.health.note import RenderedNote
+from aida.arms.health.sections import SectionSpec
 from aida.engine.ontology import AgentId
 
 
@@ -268,4 +271,56 @@ def test_export_consultation_json_incluye_negated(tmp_path: Path) -> None:
     data = json.loads(archivos.model.read_text(encoding="utf-8"))
     assert "motivo_consulta" in data
     assert data["motivo_consulta"][0]["negated"] == "No refiere fiebre"
+
+
+# ---------------------------------------------------------------------------
+# §B.3 — Render y procedencia (Casos 9 a 11)
+# ---------------------------------------------------------------------------
+
+
+def test_render_note_markdown_con_edited_y_provider_termina_en_editado() -> None:
+    """Caso 9 (§B.3): render_note_markdown con edited=('plan',) y provider='openai/m'
+    termina en la línea de procedencia seguida de '_Editado por el profesional: Plan_'.
+    """
+    spec_motivo = SectionSpec("motivo", "Motivo de consulta", (), True, True)
+    spec_plan = SectionSpec("plan", "Plan", (), True, True)
+    note = RenderedNote(
+        fields=((spec_motivo, "Cefalea"), (spec_plan, "Ibuprofeno")),
+        redacted=True,
+        provider="openai/m",
+        edited=("plan",),
+    )
+    rendered = render_note_markdown(note)
+    lineas = [line for line in rendered.splitlines() if line.strip()]
+    assert lineas[-2] == "_Redactado por openai (m)_"
+    assert lineas[-1] == "_Editado por el profesional: Plan_"
+
+
+def test_render_note_markdown_sin_edited_no_incluye_editado() -> None:
+    """Caso 10 (§B.3): Sin edited, no aparece 'Editado'."""
+    spec_motivo = SectionSpec("motivo", "Motivo de consulta", (), True, True)
+    note = RenderedNote(
+        fields=((spec_motivo, "Cefalea"),),
+        redacted=True,
+        provider="openai/m",
+        edited=(),
+    )
+    rendered = render_note_markdown(note)
+    assert "Editado" not in rendered
+
+
+def test_render_note_markdown_literal_fallback_con_edited_incluye_editado() -> None:
+    """Caso 11 (§B.3): Con respaldo literal (redacted=False, provider=None) y edited,
+    la línea de editados aparece igual."""
+    spec_plan = SectionSpec("plan", "Plan", (), True, True)
+    note = RenderedNote(
+        fields=((spec_plan, "Ibuprofeno editado"),),
+        redacted=False,
+        provider=None,
+        edited=("plan",),
+    )
+    rendered = render_note_markdown(note)
+    assert "_Editado por el profesional: Plan_" in rendered
+    assert "Redactado por" not in rendered
+
 

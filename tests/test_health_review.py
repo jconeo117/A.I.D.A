@@ -22,6 +22,7 @@ import pytest
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.model import ClinicalFinding, Encounter
+from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import (
     CODE_VERDICTS,
     FINDING_VERDICTS,
@@ -33,6 +34,7 @@ from aida.arms.health.review import (
     finding_item,
     review_encounter,
     review_items,
+    review_note,
 )
 from aida.arms.health.sections import SectionSpec
 from aida.engine.events import EventKind, EventLog
@@ -724,3 +726,193 @@ def test_code_item_compone_descripcion_sufijo_historia_y_evidencia_en_orden() ->
         evidence_template="{0} (motivo: {1})",
     )
     assert it_hist_ev.text == "Hipertensión · de la historia (motivo: tensión 150/90)"
+
+
+# ---------------------------------------------------------------------------
+# §B.1 — review_note (Casos 1 a 5)
+# ---------------------------------------------------------------------------
+
+
+def _crear_nota_review() -> tuple[AgentId, RenderedNote, EventLog]:
+    owner = AgentId("dra_martinez")
+    spec_a = SectionSpec(section_id="a", label="A", trigger_phrases=(), codable=True, in_note=True)
+    spec_b = SectionSpec(section_id="b", label="B", trigger_phrases=(), codable=True, in_note=True)
+    note = RenderedNote(fields=((spec_a, "uno"), (spec_b, "dos")), redacted=True)
+    log = EventLog()
+    return owner, note, log
+
+
+def test_review_note_sin_cambios() -> None:
+    """Caso 1 (§B.1): Sin cambios -> edited == (), textos iguales, dos ITEM_REVIEWED
+    con item == 'field' y verdict == 'confirmed', sin INPUT_OBSERVED."""
+    owner, note, log = _crear_nota_review()
+    reviewed = review_note(owner=owner, note=note, edits={"a": "uno", "b": "dos"}, log=log)
+    assert reviewed.edited == ()
+    assert [texto for _spec, texto in reviewed.fields] == ["uno", "dos"]
+
+    assert not any(e.kind is EventKind.INPUT_OBSERVED for e in log)
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert len(reviewed_events) == 2
+    assert all(
+        e.data["item"] == "field" and e.data["verdict"] == "confirmed" for e in reviewed_events
+    )
+    assert [e.data["ref"] for e in reviewed_events] == ["a", "b"]
+
+
+def test_review_note_un_campo_editado() -> None:
+    """Caso 2 (§B.1): Un campo editado -> edited == ('b',), texto de b actualizado,
+    INPUT_OBSERVED con content == 'dos corregido', y ITEM_REVIEWED de b con verdict == 'edited'."""
+    owner, note, log = _crear_nota_review()
+    reviewed = review_note(
+        owner=owner, note=note, edits={"a": "uno", "b": "dos corregido"}, log=log
+    )
+    assert reviewed.edited == ("b",)
+    assert [texto for _spec, texto in reviewed.fields] == ["uno", "dos corregido"]
+
+    obs_events = [e for e in log if e.kind is EventKind.INPUT_OBSERVED]
+    assert len(obs_events) == 1
+    assert obs_events[0].content == "dos corregido"
+    assert obs_events[0].owner == owner
+
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert len(reviewed_events) == 2
+    assert reviewed_events[0].data == {"item": "field", "ref": "a", "verdict": "confirmed"}
+    assert reviewed_events[1].data == {"item": "field", "ref": "b", "verdict": "edited"}
+
+
+def test_review_note_bordes_no_cuentan() -> None:
+    """Caso 3 (§B.1): Los bordes no cuentan -> edits con espacios o saltos de línea
+    en los bordes no cuentan como edición (edited == ())."""
+    owner, note, log = _crear_nota_review()
+    reviewed = review_note(
+        owner=owner, note=note, edits={"a": "uno\n", "b": "  dos"}, log=log
+    )
+    assert reviewed.edited == ()
+    assert not any(e.kind is EventKind.INPUT_OBSERVED for e in log)
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert len(reviewed_events) == 2
+    assert all(e.data["verdict"] == "confirmed" for e in reviewed_events)
+
+
+def test_review_note_cobertura_exacta() -> None:
+    """Caso 4 (§B.1): Falta b o sobra c -> ValueError."""
+    owner, note, log = _crear_nota_review()
+    # Falta b
+    with pytest.raises(
+        ValueError, match="las ediciones no cubren exactamente los campos de la nota"
+    ):
+        review_note(owner=owner, note=note, edits={"a": "uno"}, log=log)
+
+    # Sobra c
+    with pytest.raises(
+        ValueError, match="las ediciones no cubren exactamente los campos de la nota"
+    ):
+        review_note(
+            owner=owner, note=note, edits={"a": "uno", "b": "dos", "c": "tres"}, log=log
+        )
+
+
+def test_review_note_orden_de_eventos_sigue_note_fields() -> None:
+    """Caso 5 (§B.1): Los eventos salen en el orden de note.fields, no en el de edits."""
+    owner, note, log = _crear_nota_review()
+    # edits con claves al revés
+    review_note(owner=owner, note=note, edits={"b": "dos", "a": "uno"}, log=log)
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert [e.data["ref"] for e in reviewed_events] == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# §B.2 — Hallazgos opcionales (Casos 6 a 8)
+# ---------------------------------------------------------------------------
+
+
+def test_review_items_review_findings_false_devuelve_solo_codigos() -> None:
+    """Caso 6 (§B.2): review_items(..., review_findings=False) devuelve solo ítems de código."""
+    _owner, _spec1, _spec2, _f1, _f2, encounter, grouped_sections, m1, m2, matches = (
+        _crear_fixture_base()
+    )
+    items = review_items(
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        review_findings=False,
+    )
+    assert len(items) == len(matches)
+    assert all(it.kind is ItemKind.CODE for it in items)
+    assert [it.ref for it in items] == [m1.diagnostic.code, m2.diagnostic.code]
+
+
+def test_review_encounter_review_findings_false_conserva_hallazgos_sin_preguntar() -> None:
+    """Caso 7 (§B.2): review_encounter(..., review_findings=False) no llama al reviewer con
+    ningún hallazgo, no emite ITEM_REVIEWED de hallazgo, y devuelve grouped_sections y
+    encounter.findings intactos."""
+    owner, _spec1, _spec2, _f1, _f2, encounter, grouped_sections, _m1, _m2, matches = (
+        _crear_fixture_base()
+    )
+    log = EventLog()
+
+    preguntados: list[ReviewItem] = []
+
+    def reviewer(item: ReviewItem) -> Answer:
+        preguntados.append(item)
+        return Answer(verdict=Verdict.CONFIRMED)
+
+    def refine(finding: ClinicalFinding, text: str) -> ClinicalFinding:
+        raise AssertionError("refine no debe llamarse")
+
+    result = review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        reviewer=reviewer,
+        log=log,
+        refine=refine,
+        review_findings=False,
+    )
+
+    # Solo se preguntaron códigos
+    assert all(it.kind is ItemKind.CODE for it in preguntados)
+    assert len(preguntados) == len(matches)
+
+    # Ningún ITEM_REVIEWED de hallazgo en el log
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert all(e.data["item"] == "code" for e in reviewed_events)
+    assert len(reviewed_events) == len(matches)
+
+    # grouped_sections y encounter.findings intactos
+    assert result.grouped_sections == grouped_sections
+    assert result.encounter.findings == encounter.findings
+    assert result.confirmed_codes == matches
+
+
+def test_review_encounter_review_findings_true_por_defecto_conserva_comportamiento() -> None:
+    """Caso 8 (§B.2): Con review_findings=True (por defecto) todo sigue igual."""
+    owner, _spec1, _spec2, _f1, _f2, encounter, grouped_sections, _m1, _m2, matches = (
+        _crear_fixture_base()
+    )
+    log = EventLog()
+
+    preguntados: list[ReviewItem] = []
+
+    def reviewer(item: ReviewItem) -> Answer:
+        preguntados.append(item)
+        return Answer(verdict=Verdict.CONFIRMED)
+
+    result = review_encounter(
+        owner=owner,
+        grouped_sections=grouped_sections,
+        encounter=encounter,
+        matches=matches,
+        reviewer=reviewer,
+        log=log,
+        refine=lambda f, t: f,
+    )
+
+    # Preguntó hallazgos y códigos
+    assert any(it.kind is ItemKind.FINDING for it in preguntados)
+    assert any(it.kind is ItemKind.CODE for it in preguntados)
+    reviewed_events = [e for e in log if e.kind is EventKind.ITEM_REVIEWED]
+    assert any(e.data["item"] == "finding" for e in reviewed_events)
+    assert result.confirmed_codes == matches
+

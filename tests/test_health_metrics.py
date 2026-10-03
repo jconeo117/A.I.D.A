@@ -67,6 +67,7 @@ def test_review_record_serializado_to_json_exacto() -> None:
         '{"code_origins":{"today":{"rejected":2}},'
         '"codes":{"rejected":2},'
         '"completed":true,'
+        '"fields":{},'
         '"findings":{"confirmed":2,"edited":1,"rejected":1},'
         '"seconds":42.5,'
         '"sections":{'
@@ -122,6 +123,7 @@ def test_review_record_sin_datos_del_paciente() -> None:
         "code_origins",
         "codes",
         "completed",
+        "fields",
         "findings",
         "seconds",
         "sections",
@@ -382,3 +384,90 @@ def test_format_stats_imprime_bloque_codigos_por_origen() -> None:
     )
     salida_vacia = format_stats((r_vacio,))
     assert "códigos por origen" not in salida_vacia
+
+
+# ---------------------------------------------------------------------------
+# §B.4 — Métrica (Casos 13 a 15)
+# ---------------------------------------------------------------------------
+
+
+def test_review_record_cuenta_campos_en_fields() -> None:
+    """Caso 13 (§B.4): review_record sobre eventos ITEM_REVIEWED de item='field'
+    cuenta por campo y veredicto en fields."""
+    log = EventLog(window=10)
+    owner = AgentId("doc_fields")
+    log.emit(
+        tick=0,
+        kind=EventKind.ITEM_REVIEWED,
+        owner=owner,
+        data={"item": "field", "ref": "motivo", "verdict": "confirmed"},
+    )
+    log.emit(
+        tick=0,
+        kind=EventKind.ITEM_REVIEWED,
+        owner=owner,
+        data={"item": "field", "ref": "plan", "verdict": "edited"},
+    )
+    log.emit(
+        tick=0,
+        kind=EventKind.ITEM_REVIEWED,
+        owner=owner,
+        data={"item": "field", "ref": "plan", "verdict": "confirmed"},
+    )
+    record = review_record(log, completed=True, seconds=10.0)
+    assert record.fields == {
+        "motivo": {"confirmed": 1},
+        "plan": {"confirmed": 1, "edited": 1},
+    }
+
+
+def test_review_record_to_json_from_json_fields_y_retrocompatibilidad() -> None:
+    """Caso 14 (§B.4): to_json/from_json conservan fields; una línea vieja sin 'fields'
+    se lee con fields == {}."""
+    record = ReviewRecord(
+        completed=True,
+        seconds=12.0,
+        findings={},
+        codes={},
+        sections={},
+        code_origins={},
+        fields={"motivo": {"confirmed": 2}, "plan": {"edited": 1}},
+    )
+    json_str = record.to_json()
+    assert '"fields":{"motivo":{"confirmed":2},"plan":{"edited":1}}' in json_str
+    parsed = ReviewRecord.from_json(json_str)
+    assert parsed.fields == {"motivo": {"confirmed": 2}, "plan": {"edited": 1}}
+    assert parsed == record
+
+    # Línea vieja sin "fields"
+    legacy_json = json.dumps({
+        "completed": True,
+        "seconds": 10.0,
+        "findings": {},
+        "codes": {},
+        "sections": {},
+    })
+    legacy_record = ReviewRecord.from_json(legacy_json)
+    assert legacy_record.fields == {}
+
+
+def test_format_stats_imprime_bloque_campos_de_la_nota() -> None:
+    """Caso 15 (§B.4): format_stats imprime 'campos de la nota:' y una línea por campo
+    con el porcentaje de editados."""
+    record = ReviewRecord(
+        completed=True,
+        seconds=10.0,
+        findings={},
+        codes={},
+        sections={},
+        code_origins={},
+        fields={
+            "motivo": {"confirmed": 2},
+            "plan": {"confirmed": 1, "edited": 1},
+        },
+    )
+    salida = format_stats((record,))
+    assert "campos de la nota:\n" in salida
+    assert "  motivo: 2 (confirmados 100.0 %, editados 0.0 %)" in salida
+    assert "  plan: 2 (confirmados 50.0 %, editados 50.0 %)" in salida
+

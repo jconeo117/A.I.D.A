@@ -56,6 +56,7 @@ def sample_note_settings() -> NoteSettings:
         field_heading="### {}",
         provenance_template="_Redactado por {} ({})_",
         fallback_notice="(sin redacción: lo que sigue son las frases tal como se dijeron)",
+        edited_template="_Editado por el profesional: {}",
     )
 
 

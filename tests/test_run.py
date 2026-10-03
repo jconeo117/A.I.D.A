@@ -3427,10 +3427,19 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
 
     captured_items: list[ReviewItem] = []
 
-    def mock_collect(items: tuple[ReviewItem, ...], *, settings: Any) -> ReviewSubmission:
+    def mock_collect(
+        items: tuple[ReviewItem, ...],
+        *,
+        note: Any,
+        history: str,
+        transcript: str,
+        settings: Any,
+        **kwargs: Any,
+    ) -> ReviewSubmission:
         captured_items.extend(items)
         answers = {item.ref: Answer(Verdict.CONFIRMED) for item in items}
-        return ReviewSubmission(answers=answers, elapsed_seconds=42.5)
+        note_fields = {spec.section_id: texto for spec, texto in note.fields}
+        return ReviewSubmission(answers=answers, elapsed_seconds=42.5, note_fields=note_fields)
 
     monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_collect)
 
@@ -3443,9 +3452,12 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
         *,
         reviewer: Any,
         elapsed_seconds: float | None = None,
+        **kwargs: Any,
     ) -> Any:
         recorded_elapsed.append(elapsed_seconds)
-        return original_review(self, prepared, reviewer=reviewer, elapsed_seconds=elapsed_seconds)
+        return original_review(
+            self, prepared, reviewer=reviewer, elapsed_seconds=elapsed_seconds, **kwargs
+        )
 
     monkeypatch.setattr(Consultation, "review", spy_review)
 
@@ -3458,6 +3470,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
         [
             "--consultation",
             "--segment",
+            "--note",
             "--review",
             "--ui",
             "--audio",
@@ -3510,7 +3523,7 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
         lambda: (_DummySTT(), _DummyOCR()),
     )
 
-    def mock_abandoned(items: Any, *, settings: Any) -> Any:
+    def mock_abandoned(items: Any, **kwargs: Any) -> Any:
         raise ReviewAbandoned("sesión cerrada por el usuario")
 
     monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_abandoned)
@@ -3527,6 +3540,7 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
         [
             "--consultation",
             "--segment",
+            "--note",
             "--review",
             "--ui",
             "--export",
@@ -3627,6 +3641,7 @@ def test_cognition_llm_flag_desactiva_composicion(monkeypatch: pytest.MonkeyPatc
         field_heading="### {}",
         provenance_template="{}",
         fallback_notice="fb",
+        edited_template="{}",
     )
     args = argparse.Namespace(llm="openai")
     res = _cognition(args, settings)
@@ -3650,6 +3665,7 @@ def test_cognition_sin_llm_compone_nube_y_local(monkeypatch: pytest.MonkeyPatch)
         field_heading="### {}",
         provenance_template="{}",
         fallback_notice="fb",
+        edited_template="{}",
     )
     args = argparse.Namespace(llm=None)
 
@@ -3956,6 +3972,7 @@ def test_cognition_candidates_candidato_local_lleva_su_modelo(
         field_heading="",
         provenance_template="",
         fallback_notice="",
+        edited_template="",
     )
     candidates = _cognition_candidates(args, settings)
     nombres = tuple(c[0] for c in candidates)
@@ -3988,8 +4005,189 @@ def test_cognition_candidates_con_llm_nombre_es_del_objeto(
         field_heading="",
         provenance_template="",
         fallback_notice="",
+        edited_template="",
     )
     candidates = _cognition_candidates(args, settings)
     assert len(candidates) == 1
     assert candidates[0][0] == "openai/m-otro"
+
+
+# ---------------------------------------------------------------------------
+# §B.3 Caso 12, §B.6 Casos 23 y 24
+# ---------------------------------------------------------------------------
+
+
+def test_consultation_cli_salida_estandar_usa_render_note_markdown(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 12 (§B.3, M7): La salida estándar usa render_note_markdown para imprimir la nota."""
+    import aida.arms.health.export as health_export
+
+    called = []
+
+    def spy_render(note: Any) -> str:
+        called.append(note)
+        return "===BLOQUE_RENDERIZADO_EXACTO_NOTA==="
+
+    monkeypatch.setattr(health_export, "render_note_markdown", spy_render)
+
+    audio_path, hist_path = _preparar_entorno_consulta_sin_capture(monkeypatch, tmp_path)
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "sujeto_render_md",
+            "--note",
+            "--llm",
+            "ninguno",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    assert len(called) == 1
+    assert "===BLOQUE_RENDERIZADO_EXACTO_NOTA===" in captured.out
+
+
+def test_consultation_cli_ui_requiere_note(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Caso 23 (§B.6): --ui sin --note produce error 2 y aviso en stderr."""
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica.")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--review",
+            "--ui",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "doc_test_ui_no_note",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 2
+    assert "aida: error: --ui requiere --note" in captured.err
+
+
+def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 24 (§B.6, M5): Con --ui, la nota se redacta una sola vez: con un proveedor
+    espía que cuenta llamadas a think para la nota, y una pantalla falsa (collect_review
+    sustituido por una función que devuelve un ReviewSubmission con un campo editado),
+    hay una llamada, y la nota del resultado lleva el texto editado."""
+    from aida.arms.health.note import ClinicalNote
+    from aida.arms.health.review import Answer, ReviewItem, Verdict
+    from aida.arms.health.review_ui import ReviewSubmission
+
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _SpySTT:
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (
+                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor de cabeza intenso"),
+            )
+
+    class _SpyOCR:
+        def read(self, path: Path) -> str:
+            return "Sin antecedentes relevantes."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_SpySTT(), _SpyOCR()),
+    )
+
+    class _SpyNoteProvider:
+        def __init__(self) -> None:
+            self.think_calls = 0
+            self.model = "gpt-4.1-mini"
+
+        def think(self, briefing: str, schema: type) -> object | None:
+            self.think_calls += 1
+            return ClinicalNote(
+                fields={
+                    "motivo_consulta": "Dolor de cabeza agudo redactado por modelo.",
+                    "enfermedad_actual": "Cefalea intensa de inicio súbito.",
+                }
+            )
+
+    spy_provider = _SpyNoteProvider()
+
+    def fake_build_provider(name: str, *, model: str | None = None) -> Any:
+        if name == "openai":
+            return spy_provider
+        return None
+
+    monkeypatch.setattr("aida.run.build_provider", fake_build_provider)
+
+    texto_editado = "Dolor de cabeza agudo CORREGIDO por profesional en pantalla."
+
+    def fake_collect(
+        items: tuple[ReviewItem, ...],
+        *,
+        note: Any,
+        **kwargs: Any,
+    ) -> ReviewSubmission:
+        edits = {spec.section_id: texto for spec, texto in note.fields}
+        edits["motivo_consulta"] = texto_editado
+        answers = {item.ref: Answer(Verdict.CONFIRMED) for item in items}
+        return ReviewSubmission(
+            answers=answers,
+            elapsed_seconds=15.0,
+            note_fields=edits,
+        )
+
+    monkeypatch.setattr("aida.arms.health.review_ui.collect_review", fake_collect)
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Sin antecedentes.")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--note",
+            "--review",
+            "--ui",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "sujeto_una_redaccion",
+            "--llm",
+            "openai",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 0
+    # Exactamente una llamada a think (no se vuelve a redactar tras la pantalla)
+    assert spy_provider.think_calls == 1
+    # La salida lleva el texto editado
+    assert texto_editado in captured.out
+    # Y la procedencia con editados
+    assert "_Editado por el profesional: Motivo de consulta_" in captured.out
+
 
