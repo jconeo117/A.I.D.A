@@ -37,10 +37,11 @@ def export_name(owner: AgentId, moment: datetime) -> str:
     return f"{moment:%Y-%m-%d-%H%M}-{huella}"
 
 
-def _render_note_markdown(note: RenderedNote) -> str:
-    """La nota, con el encabezado por campo y —si hay respaldo o procedencia—
-    el aviso correspondiente. Antes del resumen de siempre: es lo que el
-    profesional va a copiar primero."""
+def render_note_markdown(note: RenderedNote) -> str:
+    """La nota, con el encabezado por campo y —si hay respaldo, procedencia o
+    campos editados— el aviso correspondiente. Es el único sitio que la pinta: la
+    usan el export y la salida estándar, y con dos copias la línea de campos
+    editados acabaría en una sí y en la otra no."""
     ajustes = load_note_settings()
     lineas: list[str] = []
     if not note.redacted:
@@ -53,6 +54,11 @@ def _render_note_markdown(note: RenderedNote) -> str:
     if note.provider is not None:
         proveedor, _separador, modelo = note.provider.partition("/")
         lineas.append(ajustes.provenance_template.format(proveedor, modelo))
+    if note.edited:
+        etiquetas = ", ".join(
+            spec.label for spec, _texto in note.fields if spec.section_id in note.edited
+        )
+        lineas.append(ajustes.edited_template.format(etiquetas))
     return "\n".join(lineas).rstrip()
 
 
@@ -84,7 +90,7 @@ def export_consultation(
 
     contenido = result.summary_markdown
     if result.note is not None:
-        contenido = _render_note_markdown(result.note) + "\n\n" + contenido
+        contenido = render_note_markdown(result.note) + "\n\n" + contenido
     summary_path.write_text(contenido + "\n", encoding="utf-8")
 
     model_path = None

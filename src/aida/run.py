@@ -100,7 +100,8 @@ def _construir_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ui",
         action="store_true",
-        help="revisa en el navegador en vez de por teclado (requiere --review)",
+        help="revisa en el navegador: la nota para editar y copiar, y los códigos "
+        "(requiere --review y --note)",
     )
     parser.add_argument(
         "--note",
@@ -659,6 +660,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.ui and not args.review:
             print("aida: error: --ui requiere --review", file=sys.stderr)
             return 2
+        if args.ui and not args.note:
+            print("aida: error: --ui requiere --note", file=sys.stderr)
+            return 2
         if args.note and not args.segment:
             print("aida: error: --note requiere --segment", file=sys.stderr)
             return 1
@@ -744,6 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         wording = default_summary_wording()
                         assert prepared.grouped_sections is not None
                         assert prepared.encounter is not None
+                        nota = consultation.render_note(prepared)
                         items = review_items(
                             grouped_sections=prepared.grouped_sections,
                             encounter=prepared.encounter,
@@ -751,10 +756,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                             known_code_suffix=wording.known_code_suffix,
                             evidence_template=wording.evidence_template,
                             negated_suffix=wording.negated_suffix,
+                            review_findings=False,
                         )
                         ajustes_ui = load_ui_settings()
                         try:
-                            envio = collect_review(items, settings=ajustes_ui)
+                            envio = collect_review(
+                                items,
+                                note=nota,
+                                history=prepared.history,
+                                transcript=prepared.transcript,
+                                settings=ajustes_ui,
+                            )
                         except ReviewAbandoned:
                             print(
                                 f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
@@ -764,6 +776,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             prepared,
                             reviewer=reviewer_from(envio),
                             elapsed_seconds=envio.elapsed_seconds,
+                            review_findings=False,
+                            note=nota,
+                            note_edits=envio.note_fields,
                         )
                     else:
                         try:
@@ -776,7 +791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             return 1
                 else:
                     result = consultation.finish(prepared)
-                if args.note:
+                if args.note and result.note is None:
                     note = consultation.render_note(prepared)
                     result = replace(result, note=note)
             else:
@@ -791,18 +806,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(result.summary_markdown)
         if args.note:
             assert result.note is not None
-            from aida.arms.health.note import load_note_settings
+            from aida.arms.health.export import render_note_markdown
 
-            ajustes_nota = load_note_settings()
             print()
-            if not result.note.redacted:
-                print(ajustes_nota.fallback_notice)
-            for spec, texto in result.note.fields:
-                print(ajustes_nota.field_heading.format(spec.label))
-                print(texto)
-            if result.note.provider is not None:
-                proveedor, _separador, modelo = result.note.provider.partition("/")
-                print(ajustes_nota.provenance_template.format(proveedor, modelo))
+            print(render_note_markdown(result.note))
         if args.export is not None:
             from datetime import datetime
 

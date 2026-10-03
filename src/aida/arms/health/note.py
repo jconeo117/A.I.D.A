@@ -28,6 +28,7 @@ _CLAVES_OBLIGATORIAS = (
     "field_heading",
     "provenance_template",
     "fallback_notice",
+    "edited_template",
 )
 
 
@@ -53,6 +54,7 @@ class NoteSettings:
     field_heading: str
     provenance_template: str
     fallback_notice: str
+    edited_template: str
 
 
 def load_note_settings(path: Path | None = None) -> NoteSettings:
@@ -76,6 +78,7 @@ def load_note_settings(path: Path | None = None) -> NoteSettings:
         field_heading=raw["field_heading"],
         provenance_template=raw["provenance_template"],
         fallback_notice=raw["fallback_notice"],
+        edited_template=raw["edited_template"],
     )
 
 
@@ -92,6 +95,10 @@ class RenderedNote:
     cuando es el respaldo literal. Lo lee el export y, en la unidad 73, la
     pantalla: una nota que acaba en una historia clínica tiene que poder decir
     qué la escribió."""
+    edited: tuple[str, ...] = ()
+    """Los `section_id` de los campos que el profesional reescribió en la pantalla,
+    en el orden de `fields`. Lo lee `render_note_markdown` para que la procedencia
+    no firme como del modelo un texto que escribió otra persona."""
 
 
 def _literal_fallback(

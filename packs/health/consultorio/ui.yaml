@@ -3,15 +3,17 @@
 # vocabulario no admite eso dentro de src/.
 
 title: "Revisión de la consulta"
-intro: "Revise cada apartado. Lo que no corrija se registra como confirmado."
+intro: "Lea la nota, corrija lo que haga falta y confirme los códigos. Lo que no corrija se registra como entregado sin cambios."
 confirm_label: "Correcto"
-edit_label: "Corregir"
 reject_label: "Quitar"
-section_reviewed_label: "Apartado revisado"
 codes_heading: "Códigos propuestos"
+history_heading: "Historia clínica"
+transcript_heading: "Transcripción"
+note_heading: "Nota"
+copy_label: "Copiar"
+copied_label: "Copiado"
 save_label: "Guardar y cerrar"
 saved_text: "Revisión guardada. Puede cerrar esta pestaña."
-missing_sections_text: "Falta marcar como revisado algún apartado."
 abandoned_text: "La revisión se cerró sin guardar: nada se registró como revisado."
 
 # Cuánto espera el programa a que se guarde la pantalla. Si expira, la revisión

@@ -44,3 +44,8 @@ provenance_template: "_Redactado por {} ({})_"
 # como se dijeron. No es prosa y no lo pretende — es lo que hay, y decirlo es
 # mejor que inventar una plantilla con huecos.
 fallback_notice: "(sin redacción: lo que sigue son las frases tal como se dijeron)"
+
+# Bajo la procedencia, qué campos reescribió el profesional en la pantalla. Sin
+# esto, «Redactado por …» firmaría como del modelo un texto que no escribió: la
+# misma mentira que I-138 e I-143.
+edited_template: "_Editado por el profesional: {}_"

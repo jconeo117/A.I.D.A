@@ -6,7 +6,7 @@ deliberación, es una tubería fija que se ejecuta cuando el médico la pide.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -34,7 +34,7 @@ from aida.arms.health.negation import (
     split_polarity,
 )
 from aida.arms.health.note import NoteSettings, RenderedNote, build_note
-from aida.arms.health.review import Reviewer, review_encounter
+from aida.arms.health.review import Reviewer, review_encounter, review_note
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
 from aida.cognition.briefing import SpokenReply
@@ -472,6 +472,9 @@ class Consultation:
         *,
         reviewer: Reviewer,
         elapsed_seconds: float | None = None,
+        review_findings: bool = True,
+        note: RenderedNote | None = None,
+        note_edits: Mapping[str, str] | None = None,
     ) -> ConsultationResult:
         """Solo tras contestar a todo se guarda. El resumen —la lista de
         hechos y códigos confirmados— sale sin modelo: eso es lo que el
@@ -479,9 +482,15 @@ class Consultation:
         en prosa (`render_note`) es una redacción de esos mismos hechos, no
         otra cosa que aprobar: copiarla a la historia clínica es el acto de
         aprobación final de esa redacción. Si `reviewer` levanta, se propaga y
-        no se guarda nada: callar no es confirmar."""
+        no se guarda nada: callar no es confirmar.
+
+        Con `note` y `note_edits` —la pantalla—, la nota ya redactada se revisa
+        aquí y la que vuelve es la entregada, con sus campos editados marcados.
+        """
         if prepared.encounter is None or prepared.grouped_sections is None:
             raise ValueError("revisión activa pero no hay segmentador configurado")
+        if (note is None) != (note_edits is None):
+            raise ValueError("la nota y sus ediciones van juntas, o ninguna de las dos")
         section_template = self._wording.section_template
         confirmed_template = self._wording.confirmed_template
         no_confirmed_text = self._wording.no_confirmed_text
@@ -506,6 +515,12 @@ class Consultation:
                 known_code_suffix=self._wording.known_code_suffix,
                 evidence_template=self._wording.evidence_template,
                 negated_suffix=self._wording.negated_suffix,
+                review_findings=review_findings,
+            )
+            reviewed_note = (
+                review_note(owner=prepared.owner, note=note, edits=note_edits, log=self._log)
+                if note is not None and note_edits is not None
+                else None
             )
         except BaseException:
             self._record_review(
@@ -536,6 +551,7 @@ class Consultation:
             matched_codes=tuple(m.diagnostic.code for m in reviewed.confirmed_codes),
             summary_markdown=summary,
             encounter=reviewed.encounter,
+            note=reviewed_note,
         )
         self._cache.store(owner=prepared.owner, summary_markdown=summary)
         return result

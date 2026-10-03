@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from aida.arms.health.review import CODE_VERDICTS, FINDING_VERDICTS, ItemKind, Verdict
@@ -28,6 +28,9 @@ class ReviewRecord:
     codes: Mapping[str, int]
     sections: Mapping[str, Mapping[str, int]]
     code_origins: Mapping[str, Mapping[str, int]]
+    fields: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    """Por campo de la nota, cuántas veces se entregó sin cambios y cuántas
+    editado. Es la señal que la pantalla existe para medir."""
 
     def to_json(self) -> str:
         """Claves ordenadas a todos los niveles: dos registros iguales dan la
@@ -39,6 +42,9 @@ class ReviewRecord:
                 },
                 "codes": dict(sorted(self.codes.items())),
                 "completed": self.completed,
+                "fields": {
+                    s: dict(sorted(c.items())) for s, c in sorted(self.fields.items())
+                },
                 "findings": dict(sorted(self.findings.items())),
                 "seconds": self.seconds,
                 "sections": {
@@ -66,6 +72,10 @@ class ReviewRecord:
                 str(o): {str(k): int(v) for k, v in sorted(c.items())}
                 for o, c in sorted(raw.get("code_origins", {}).items())
             },
+            fields={
+                str(s): {str(k): int(v) for k, v in sorted(c.items())}
+                for s, c in sorted(raw.get("fields", {}).items())
+            },
         )
 
 
@@ -76,6 +86,7 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
     codes: dict[str, int] = {}
     sections: dict[str, dict[str, int]] = {}
     origenes: dict[str, dict[str, int]] = {}
+    campos: dict[str, dict[str, int]] = {}
     for event in events:
         if event.kind is not EventKind.ITEM_REVIEWED:
             continue
@@ -93,6 +104,10 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
             section_id = str(event.data["ref"]).rpartition(":")[0]
             per_section = sections.setdefault(section_id, {})
             per_section[verdict] = per_section.get(verdict, 0) + 1
+        elif item == ItemKind.FIELD.value:
+            field_id = str(event.data["ref"])
+            per_field = campos.setdefault(field_id, {})
+            per_field[verdict] = per_field.get(verdict, 0) + 1
         else:
             raise ValueError(f"clase de ítem desconocida en ITEM_REVIEWED: {item!r}")
     return ReviewRecord(
@@ -102,6 +117,7 @@ def review_record(events: Iterable[Event], *, completed: bool, seconds: float) -
         codes=codes,
         sections=sections,
         code_origins=origenes,
+        fields=campos,
     )
 
 
@@ -142,6 +158,7 @@ _NAMES = {
 _ORIGENES = {"today": "de esta consulta", "history": "solo en la historia", "both": "en ambas"}
 _FINDING_ORDER = tuple(v.value for v in FINDING_VERDICTS)
 _CODE_ORDER = tuple(v.value for v in CODE_VERDICTS)
+_FIELD_ORDER = (Verdict.CONFIRMED.value, Verdict.EDITED.value)
 
 
 def _add(maps: Iterable[Mapping[str, int]]) -> dict[str, int]:
@@ -196,4 +213,12 @@ def format_stats(records: tuple[ReviewRecord, ...]) -> str:
         lines.append("por sección:")
         for section_id in sorted(by_section):
             lines.append(f"  {section_id}: " + _line(by_section[section_id], _FINDING_ORDER))
+    by_field: dict[str, dict[str, int]] = {}
+    for record in records:
+        for field_id in sorted(record.fields):
+            by_field[field_id] = _add((by_field.get(field_id, {}), record.fields[field_id]))
+    if by_field:
+        lines.append("campos de la nota:")
+        for field_id in sorted(by_field):
+            lines.append(f"  {field_id}: " + _line(by_field[field_id], _FIELD_ORDER))
     return "\n".join(lines)

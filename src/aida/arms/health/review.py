@@ -11,12 +11,13 @@ contesta: la CLI los lee de `ReviewItem.allowed` para preguntar, y
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.model import ClinicalFinding, Encounter
+from aida.arms.health.note import RenderedNote
 from aida.arms.health.sections import SectionSpec
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -31,6 +32,9 @@ class Verdict(StrEnum):
 class ItemKind(StrEnum):
     FINDING = "finding"
     CODE = "code"
+    FIELD = "field"
+    """Un campo de la nota. No es un `ReviewItem`: no se pregunta, se compara lo
+    entregado con lo redactado (`review_note`). Existe para el evento y la métrica."""
 
 
 FINDING_VERDICTS = (Verdict.CONFIRMED, Verdict.EDITED, Verdict.REJECTED)
@@ -117,6 +121,7 @@ def review_items(
     known_code_suffix: str | None = None,
     evidence_template: str | None = None,
     negated_suffix: str | None = None,
+    review_findings: bool = True,
 ) -> tuple[ReviewItem, ...]:
     """Todos los ítems que `review_encounter` va a preguntar, **en el mismo
     orden**: primero los hallazgos recorriendo el catálogo de secciones, después
@@ -126,11 +131,15 @@ def review_items(
     el contenido coincidan con lo que pregunta el bucle no es cortesía: si
     divergen, la pantalla recoge respuestas para ítems que no existen y el bucle
     pregunta por otros que nadie contestó."""
-    items = [
-        finding_item(spec, position, finding, negated_suffix=negated_suffix)
-        for spec, _texts in grouped_sections
-        for position, finding in enumerate(encounter.findings[spec.section_id])
-    ]
+    items = (
+        [
+            finding_item(spec, position, finding, negated_suffix=negated_suffix)
+            for spec, _texts in grouped_sections
+            for position, finding in enumerate(encounter.findings[spec.section_id])
+        ]
+        if review_findings
+        else []
+    )
     items.extend(
         code_item(
             match,
@@ -164,6 +173,7 @@ def review_encounter(
     known_code_suffix: str | None = None,
     evidence_template: str | None = None,
     negated_suffix: str | None = None,
+    review_findings: bool = True,
 ) -> ReviewedConsultation:
     """Recorre `grouped_sections` —una tupla, en el orden del catálogo— y no
     `encounter.findings`, que es un mapa: el orden de las preguntas no puede
@@ -172,29 +182,47 @@ def review_encounter(
 
     No captura nada. Si `reviewer` levanta a mitad, no hay resultado parcial:
     lo contestado queda en el registro porque ocurrió, pero nada cuenta como
-    revisado."""
+    revisado.
+
+    Con `review_findings=False` los hallazgos se conservan todos sin preguntar ni
+    dejar evento: es la pantalla, donde el profesional lee la nota y no frase a
+    frase. Un `ITEM_REVIEWED` por hallazgo diría que alguien los miró uno por uno.
+    """
     kept_sections: list[tuple[SectionSpec, tuple[str, ...]]] = []
     kept_findings: dict[str, tuple[ClinicalFinding, ...]] = {}
-    for spec, _texts in grouped_sections:
-        kept: list[ClinicalFinding] = []
-        for position, finding in enumerate(encounter.findings[spec.section_id]):
-            item = finding_item(spec, position, finding, negated_suffix=negated_suffix)
-            answer = reviewer(item)
-            _check(item, answer)
-            if answer.verdict is Verdict.EDITED and answer.text is not None:
-                log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=answer.text)
-                kept.append(refine(finding, answer.text))
-            elif answer.verdict is Verdict.CONFIRMED:
-                kept.append(finding)
-            log.emit(
-                tick=0,
-                kind=EventKind.ITEM_REVIEWED,
-                owner=owner,
-                data={"item": item.kind.value, "ref": item.ref, "verdict": answer.verdict.value},
-            )
-        if kept:
-            kept_findings[spec.section_id] = tuple(kept)
-            kept_sections.append((spec, tuple(f.text for f in kept)))
+    if review_findings:
+        for spec, _texts in grouped_sections:
+            kept: list[ClinicalFinding] = []
+            for position, finding in enumerate(encounter.findings[spec.section_id]):
+                item = finding_item(spec, position, finding, negated_suffix=negated_suffix)
+                answer = reviewer(item)
+                _check(item, answer)
+                if answer.verdict is Verdict.EDITED and answer.text is not None:
+                    log.emit(
+                        tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=answer.text
+                    )
+                    kept.append(refine(finding, answer.text))
+                elif answer.verdict is Verdict.CONFIRMED:
+                    kept.append(finding)
+                log.emit(
+                    tick=0,
+                    kind=EventKind.ITEM_REVIEWED,
+                    owner=owner,
+                    data={
+                        "item": item.kind.value,
+                        "ref": item.ref,
+                        "verdict": answer.verdict.value,
+                    },
+                )
+            if kept:
+                kept_findings[spec.section_id] = tuple(kept)
+                kept_sections.append((spec, tuple(f.text for f in kept)))
+    else:
+        kept_sections = list(grouped_sections)
+        kept_findings = {
+            spec.section_id: encounter.findings[spec.section_id]
+            for spec, _texts in grouped_sections
+        }
 
     confirmed: list[MatchedCode] = []
     for match in matches:
@@ -224,3 +252,42 @@ def review_encounter(
         grouped_sections=tuple(kept_sections),
         confirmed_codes=tuple(confirmed),
     )
+
+
+def review_note(
+    *,
+    owner: AgentId,
+    note: RenderedNote,
+    edits: Mapping[str, str],
+    log: EventLog,
+) -> RenderedNote:
+    """Lo que el profesional entregó de cada campo, contra lo que se redactó.
+
+    El veredicto se decide aquí y no en la pantalla: comparar en el navegador sería
+    una segunda puerta, y la que manda es la que deja el evento. Se compara sin los
+    espacios de los bordes: un salto de línea añadido al final no es una edición.
+
+    Las ediciones tienen que cubrir exactamente los campos de la nota. Un campo sin
+    respuesta no se da por bueno: sería un `confirmed` que nadie entregó."""
+    esperados = [spec.section_id for spec, _texto in note.fields]
+    if sorted(edits) != sorted(esperados):
+        raise ValueError("las ediciones no cubren exactamente los campos de la nota")
+    campos: list[tuple[SectionSpec, str]] = []
+    editados: list[str] = []
+    for spec, texto in note.fields:
+        entregado = edits[spec.section_id]
+        if entregado.strip() != texto.strip():
+            log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=entregado)
+            campos.append((spec, entregado))
+            editados.append(spec.section_id)
+            veredicto = Verdict.EDITED
+        else:
+            campos.append((spec, texto))
+            veredicto = Verdict.CONFIRMED
+        log.emit(
+            tick=0,
+            kind=EventKind.ITEM_REVIEWED,
+            owner=owner,
+            data={"item": ItemKind.FIELD.value, "ref": spec.section_id, "verdict": veredicto.value},
+        )
+    return replace(note, fields=tuple(campos), edited=tuple(editados))
