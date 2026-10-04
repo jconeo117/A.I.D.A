@@ -22,7 +22,9 @@ from aida.arms.health.segment import (
     SegmentedLine,
     build_health_segmenter,
     build_section_index,
+    classify_line,
     group_by_section,
+    is_interrogative,
     segment_lines,
 )
 from aida.textmatch import cosine, vectorize
@@ -443,3 +445,58 @@ def test_segment_lines_signo_en_medio_no_cuenta_como_interrogativa() -> None:
     )
     assert len(resultado) == 1
     assert resultado[0].section.section_id == "sintomas"
+
+
+def test_is_interrogative() -> None:
+    """Caso 1 (§B.1): is_interrogative decide si una línea es pregunta:
+    - '¿Le duele?' -> True
+    - '  ¿Le duele?  ' -> True
+    - 'Me duele.' -> False
+    - '¿Le duele? Sí.' -> False (el signo no está al final)
+    """
+    assert is_interrogative("¿Le duele?") is True
+    assert is_interrogative("  ¿Le duele?  ") is True
+    assert is_interrogative("Me duele.") is False
+    assert is_interrogative("¿Le duele? Sí.") is False
+
+
+def test_classify_line_skip_interrogative_usa_is_interrogative() -> None:
+    """Caso 2 (§B.1, M1): classify_line con skip_interrogative=True manda a la
+    reserva exactamente lo que is_interrogative dice que es pregunta."""
+    spec_sintomas = SectionSpec(
+        section_id="sintomas",
+        label="Síntomas",
+        trigger_phrases=("dolor de cabeza",),
+        codable=True,
+        in_note=True,
+    )
+    spec_fallback = SectionSpec(
+        section_id="otros_comentarios",
+        label="Otros comentarios",
+        trigger_phrases=(),
+        codable=False,
+        in_note=False,
+    )
+    index = build_section_index((spec_sintomas, spec_fallback))
+
+    # Con '?' al final: is_interrogative es True -> va a fallback
+    res_q = classify_line(
+        "¿Tiene dolor de cabeza?",
+        index,
+        threshold=0.20,
+        fallback=spec_fallback,
+        skip_interrogative=True,
+    )
+    assert res_q.section == spec_fallback
+    assert res_q.score == 0.0
+
+    # Sin '?' al final: is_interrogative es False -> clasifica en sintomas
+    res_a = classify_line(
+        "Tiene dolor de cabeza.",
+        index,
+        threshold=0.20,
+        fallback=spec_fallback,
+        skip_interrogative=True,
+    )
+    assert res_a.section == spec_sintomas
+    assert res_a.score > 0.20

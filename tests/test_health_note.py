@@ -671,3 +671,23 @@ def test_note_instruccion_no_omitir_en_pack_real() -> None:
     assert "aunque no esté entre los hechos de ese apartado" in settings.system_prompt
 
 
+def test_note_registro_clinico_profesional_en_pack_real() -> None:
+    """Caso 14 (§B.4, M8): load_note_settings().system_prompt contiene
+    'registro clínico profesional', 'aproximadamente dos semanas' y
+    'no conviertas síntomas en diagnósticos', y siguen las frases ancladas por
+    los planes 75 y 80."""
+    settings = load_note_settings()
+    prompt = settings.system_prompt
+    assert "registro clínico profesional" in prompt
+    assert "aproximadamente dos semanas" in prompt
+    assert "no conviertas síntomas en diagnósticos" in prompt
+    assert (
+        "Prohibido redactar preguntas, interrogatorios o lo que el profesional pregunta" in prompt
+    )
+    assert "Las preguntas del profesional no son hechos" in prompt
+    assert "aunque no esté entre los hechos de ese apartado" in prompt
+    assert (
+        "Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades" in prompt
+    )
+
+
