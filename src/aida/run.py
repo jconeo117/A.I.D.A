@@ -736,10 +736,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if args.review:
                     if args.ui:
+                        from datetime import datetime
+
                         from aida.arms.health.review import review_items
                         from aida.arms.health.review_ui import (
                             ReviewAbandoned,
                             collect_review,
+                            history_view,
                             load_ui_settings,
                             reviewer_from,
                         )
@@ -762,9 +765,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         try:
                             envio = collect_review(
                                 items,
+                                matches=prepared.matches,
                                 note=nota,
-                                history=prepared.history,
                                 transcript=prepared.transcript,
+                                history=history_view(Path(args.history), prepared.history),
+                                owner=args.owner,
+                                moment=datetime.now(),
                                 settings=ajustes_ui,
                             )
                         except ReviewAbandoned:

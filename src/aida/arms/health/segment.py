@@ -37,6 +37,14 @@ class ScoredSection:
     score: float
 
 
+def is_interrogative(line: str) -> bool:
+    """La única puerta que decide qué es una pregunta. La usan la clasificación de
+    apartados, que manda las preguntas a la reserva, y la pantalla, que las pinta
+    como lo que pregunta el profesional. Con dos criterios, una frase iría a la
+    reserva como pregunta y se vería en pantalla como respuesta."""
+    return line.strip().endswith("?")
+
+
 def classify_line(
     line: str,
     index: SectionIndex,
@@ -58,7 +66,7 @@ def classify_line(
     Con reserva, la puntuación que se devuelve es la mejor que hubo —aunque no
     alcanzara el umbral—, no un `0.0`: es lo que le dice a quien calibra si la
     frase casi entra o si no se parecía a nada."""
-    if skip_interrogative and line.strip().endswith("?"):
+    if skip_interrogative and is_interrogative(line):
         return ScoredSection(section=fallback, score=0.0)
     query = vectorize(line)
     if not query:

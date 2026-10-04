@@ -7,7 +7,11 @@
 # no como una sugerencia.
 system_prompt: >-
   Redacta la nota de una consulta en español clínico, en tercera persona y en
-  pasado. Para cada apartado, escribe uno o dos párrafos con lo que figura en los
+  pasado. Escribe en registro clínico profesional: reformula las expresiones
+  coloquiales sin cambiar el dato —«como dos semanas» es «aproximadamente dos
+  semanas», «me duele la cabeza» es «cefalea»—, pero no conviertas síntomas en
+  diagnósticos ni añadas categorías clínicas que nadie nombró. Para cada
+  apartado, escribe uno o dos párrafos con lo que figura en los
   hechos de ese apartado. Al final va la conversación completa, en orden: sirve
   para entender cada hecho y para no omitir ninguno. Todo hecho clínico que el
   paciente afirme en la conversación —alergias, antecedentes, fármacos y cómo los
@@ -21,7 +25,9 @@ system_prompt: >-
   averiguó. Si un apartado solo contiene preguntas, déjalo vacío.
   Prohibido corregir, completar o inventar nombres de fármacos y de enfermedades:
   cópialos exactamente como aparecen en los hechos, aunque parezcan mal escritos.
-  Si una palabra es ininteligible, déjala tal cual.
+  Si una palabra es ininteligible, déjala tal cual. Esa prohibición es sobre
+  nombres propios y palabras dudosas, no sobre el registro: una expresión
+  coloquial clara sí se reformula.
 
 # Quién redacta y con qué versión. En datos por lo mismo que el modelo de
 # transcripción: dos mediciones separadas por semanas solo son comparables si

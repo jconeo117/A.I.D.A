@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import html
 import json
+import mimetypes
 import threading
 import time
 import webbrowser
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
@@ -25,23 +27,36 @@ from typing import Any
 
 import yaml
 
+from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import Answer, ItemKind, Reviewer, ReviewItem, Verdict
+from aida.arms.health.segment import is_interrogative
 
 _RAIZ = Path(__file__).resolve().parents[4]
 _UI_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "ui.yaml"
 
 _CLAVES_OBLIGATORIAS = (
+    "brand",
     "title",
-    "intro",
-    "confirm_label",
-    "reject_label",
-    "codes_heading",
-    "history_heading",
-    "transcript_heading",
     "note_heading",
+    "note_hint",
     "copy_label",
     "copied_label",
+    "copy_all_label",
+    "edited_label",
+    "empty_field_placeholder",
+    "codes_tab",
+    "transcript_tab",
+    "history_tab",
+    "origin_today_label",
+    "origin_history_label",
+    "origin_both_label",
+    "include_label",
+    "provenance_template",
+    "fallback_pill",
+    "edited_singular",
+    "edited_plural",
+    "codes_included",
     "save_label",
     "saved_text",
     "abandoned_text",
@@ -51,16 +66,27 @@ _CLAVES_OBLIGATORIAS = (
 
 @dataclass(frozen=True, slots=True)
 class ReviewWording:
+    brand: str
     title: str
-    intro: str
-    confirm_label: str
-    reject_label: str
-    codes_heading: str
-    history_heading: str
-    transcript_heading: str
     note_heading: str
+    note_hint: str
     copy_label: str
     copied_label: str
+    copy_all_label: str
+    edited_label: str
+    empty_field_placeholder: str
+    codes_tab: str
+    transcript_tab: str
+    history_tab: str
+    origin_today_label: str
+    origin_history_label: str
+    origin_both_label: str
+    include_label: str
+    provenance_template: str
+    fallback_pill: str
+    edited_singular: str
+    edited_plural: str
+    codes_included: str
     save_label: str
     saved_text: str
     abandoned_text: str
@@ -86,16 +112,27 @@ def load_ui_settings(path: Path | None = None) -> UISettings:
     if not isinstance(espera, int | float) or isinstance(espera, bool) or espera <= 0:
         raise ValueError(f"'timeout_seconds' debe ser un número positivo en {ruta}")
     wording = ReviewWording(
+        brand=str(raw["brand"]),
         title=str(raw["title"]),
-        intro=str(raw["intro"]),
-        confirm_label=str(raw["confirm_label"]),
-        reject_label=str(raw["reject_label"]),
-        codes_heading=str(raw["codes_heading"]),
-        history_heading=str(raw["history_heading"]),
-        transcript_heading=str(raw["transcript_heading"]),
         note_heading=str(raw["note_heading"]),
+        note_hint=str(raw["note_hint"]),
         copy_label=str(raw["copy_label"]),
         copied_label=str(raw["copied_label"]),
+        copy_all_label=str(raw["copy_all_label"]),
+        edited_label=str(raw["edited_label"]),
+        empty_field_placeholder=str(raw["empty_field_placeholder"]),
+        codes_tab=str(raw["codes_tab"]),
+        transcript_tab=str(raw["transcript_tab"]),
+        history_tab=str(raw["history_tab"]),
+        origin_today_label=str(raw["origin_today_label"]),
+        origin_history_label=str(raw["origin_history_label"]),
+        origin_both_label=str(raw["origin_both_label"]),
+        include_label=str(raw["include_label"]),
+        provenance_template=str(raw["provenance_template"]),
+        fallback_pill=str(raw["fallback_pill"]),
+        edited_singular=str(raw["edited_singular"]),
+        edited_plural=str(raw["edited_plural"]),
+        codes_included=str(raw["codes_included"]),
         save_label=str(raw["save_label"]),
         saved_text=str(raw["saved_text"]),
         abandoned_text=str(raw["abandoned_text"]),
@@ -117,87 +154,184 @@ class ReviewSubmission:
     `review_note`, no la página."""
 
 
-def _render_item_row(item: ReviewItem) -> str:
-    return (
-        f'<div class="item" data-ref="{html.escape(item.ref)}">'
-        f'<p class="item-text"><strong>{html.escape(item.label)}</strong> '
-        f"{html.escape(item.text)}</p>"
-        f'<label class="confirm"><input type="checkbox" class="confirm-box" checked>'
-        f'<span class="confirm-label"></span></label>'
-        f'<button type="button" class="reject-button"></button>'
-        f"</div>"
-    )
+@dataclass(frozen=True, slots=True)
+class HistoryView:
+    """Cómo se enseña la historia. El médico quiere ver su documento, no lo que el
+    OCR leyó de él: si el navegador sabe pintar el archivo, se sirve tal cual; si
+    no, queda el texto. `content_type is None` significa texto."""
+
+    content_type: str | None
+    data: bytes
+    text: str
 
 
-def _render_codes_block(heading: str, items: list[ReviewItem]) -> str:
-    if not items:
-        return ""
-    filas = "\n".join(_render_item_row(item) for item in items)
-    return f'<section class="codes"><h2>{html.escape(heading)}</h2>\n{filas}\n</section>'
+def history_view(path: Path | None, text: str) -> HistoryView:
+    """PDF o imagen, el archivo; cualquier otra cosa, el texto del OCR. Se lee una
+    vez aquí: la pantalla enseña la historia con la que se cotejó, aunque el archivo
+    cambie después en disco."""
+    if path is not None:
+        tipo, _codificacion = mimetypes.guess_type(path.name)
+        if tipo is not None and (tipo == "application/pdf" or tipo.startswith("image/")):
+            return HistoryView(content_type=tipo, data=path.read_bytes(), text=text)
+    return HistoryView(content_type=None, data=b"", text=text)
 
 
 def _render_page(
-    items: tuple[ReviewItem, ...],
+    matches: tuple[MatchedCode, ...],
     note: RenderedNote,
-    history: str,
     transcript: str,
+    history: HistoryView,
+    owner: str,
+    moment: datetime,
     wording: ReviewWording,
     token: str,
 ) -> str:
-    """Tres paneles —historia y transcripción para leer, la nota para editar y
-    copiar campo a campo— y debajo los códigos. El estado inicial de cada código
-    es *confirmado*: el profesional quita lo que sobra, no confirma lo que ya está
-    bien."""
-    items_json = json.dumps([{"ref": item.ref} for item in items], ensure_ascii=False)
+    """La nota al centro, que es lo que se copia; a la derecha, en pestañas, lo que
+    se consulta para corregirla. Cada código empieza incluido: el profesional quita
+    lo que sobra, no confirma lo que ya está bien."""
+    e = html.escape
+    origenes = {
+        CodeOrigin.TODAY: wording.origin_today_label,
+        CodeOrigin.HISTORY: wording.origin_history_label,
+        CodeOrigin.BOTH: wording.origin_both_label,
+    }
+    if note.redacted and note.provider is not None:
+        proveedor, _sep, modelo = note.provider.partition("/")
+        procedencia = wording.provenance_template.format(proveedor, modelo)
+        clase_pildora = "pill"
+    else:
+        procedencia = wording.fallback_pill
+        clase_pildora = "pill fallback"
+    copiar = (
+        f'<button type="button" class="icon-btn copy" data-label="{e(wording.copy_label)}">'
+        f'<svg><use href="#i-copy"/></svg><span>{e(wording.copy_label)}</span></button>'
+    )
+    campos = "\n".join(
+        f'<article class="field{"" if texto.strip() else " empty"}" '
+        f'data-field-id="{e(spec.section_id)}">'
+        f'<div class="field-head"><h3>{e(spec.label)}</h3>'
+        f'<span class="badge" hidden>{e(wording.edited_label)}</span>{copiar}</div>'
+        f'<textarea placeholder="{e(wording.empty_field_placeholder)}">{e(texto)}</textarea>'
+        f"</article>"
+        for spec, texto in note.fields
+    )
+    codigos = "\n".join(
+        f'<article class="code" data-ref="{e(m.diagnostic.code)}" '
+        f'data-origin="{m.origin.value}">'
+        f'<div class="code-head"><span class="code-id">{e(m.diagnostic.code)}</span>'
+        f'<span class="origin">{e(origenes[m.origin])}</span>'
+        f'<button type="button" class="switch" role="switch" aria-checked="true" '
+        f'aria-label="{e(wording.include_label)}"></button></div>'
+        f'<p class="code-desc">{e(m.diagnostic.description)}</p>'
+        + (
+            f'<p class="code-evidence"><svg><use href="#i-quote"/></svg>{e(m.evidence)}</p>'
+            if m.evidence
+            else ""
+        )
+        + "</article>"
+        for m in matches
+    )
+    leyenda = (
+        f'<div class="legend"><span>{e(wording.origin_today_label)}</span>'
+        f'<span class="h">{e(wording.origin_history_label)}</span>'
+        f'<span class="b">{e(wording.origin_both_label)}</span></div>'
+    )
+    burbujas = "\n".join(
+        f'<p class="{"q" if is_interrogative(linea) else "a"}">{e(linea.strip())}</p>'
+        for linea in transcript.split("\n")
+        if linea.strip()
+    )
+    if history.content_type == "application/pdf":
+        historia = (
+            f'<iframe class="history-frame" src="/{token}/historia" '
+            f'title="{e(wording.history_tab)}"></iframe>'
+        )
+    elif history.content_type is not None:
+        historia = (
+            f'<img class="history-image" src="/{token}/historia" alt="{e(wording.history_tab)}">'
+        )
+    else:
+        historia = f'<pre class="history-text">{e(history.text)}</pre>'
     wording_json = json.dumps(
         {
-            "confirm_label": wording.confirm_label,
-            "reject_label": wording.reject_label,
             "copy_label": wording.copy_label,
             "copied_label": wording.copied_label,
+            "edited_singular": wording.edited_singular,
+            "edited_plural": wording.edited_plural,
+            "codes_included": wording.codes_included,
         },
         ensure_ascii=False,
     )
-    campos = "\n".join(
-        f'<div class="field" data-field-id="{html.escape(spec.section_id)}">'
-        f"<h3>{html.escape(spec.label)}</h3>"
-        f'<textarea class="field-text">{html.escape(texto)}</textarea>'
-        f'<button type="button" class="copy-button"></button>'
-        f"</div>"
-        for spec, texto in note.fields
-    )
-    bloque_codigos = _render_codes_block(wording.codes_heading, list(items))
+    marca = wording.brand[:1]
 
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>{html.escape(wording.title)}</title>
+<title>{e(wording.title)}</title>
 <style>
 {_CSS}
 </style>
 </head>
 <body>
-<h1>{html.escape(wording.title)}</h1>
-<p class="intro">{html.escape(wording.intro)}</p>
-<form id="review-form">
-<div class="panels">
-<section class="panel"><h2>{html.escape(wording.history_heading)}</h2>
-<pre>{html.escape(history)}</pre></section>
-<section class="panel"><h2>{html.escape(wording.transcript_heading)}</h2>
-<pre>{html.escape(transcript)}</pre></section>
-<section class="panel"><h2>{html.escape(wording.note_heading)}</h2>
+{_ICONS}
+<header class="top">
+  <div class="mark"><i>{e(marca)}</i>{e(wording.brand)}</div>
+  <div class="sep"></div>
+  <div class="title"><strong>{e(wording.title)}</strong>
+    <span>{e(owner)} · {moment.strftime("%d/%m/%Y, %H:%M")}</span></div>
+  <div class="head-right">
+    <span class="{clase_pildora}"><span class="dot"></span>{e(procedencia)}</span>
+  </div>
+</header>
+<main>
+  <section class="column">
+    <div class="column-head">
+      <div><h2>{e(wording.note_heading)}</h2><p>{e(wording.note_hint)}</p></div>
+      <button type="button" class="btn" id="copy-all" data-label="{e(wording.copy_all_label)}">
+        <svg><use href="#i-copy"/></svg><span>{e(wording.copy_all_label)}</span>
+      </button>
+    </div>
+    <div class="scroll" id="note">
 {campos}
-</section>
-</div>
-{bloque_codigos}
-<button type="button" id="save-button">{html.escape(wording.save_label)}</button>
-<p id="save-error" class="error" hidden></p>
-</form>
-<p id="save-ok" hidden>{html.escape(wording.saved_text)}</p>
+    </div>
+  </section>
+  <section class="column">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab" role="tab" data-pane="codes" aria-selected="true">
+        <svg><use href="#i-codes"/></svg>{e(wording.codes_tab)}
+        <span class="count" id="codes-count"></span>
+      </button>
+      <button type="button" class="tab" role="tab" data-pane="transcript" aria-selected="false">
+        <svg><use href="#i-chat"/></svg>{e(wording.transcript_tab)}
+      </button>
+      <button type="button" class="tab" role="tab" data-pane="history" aria-selected="false">
+        <svg><use href="#i-doc"/></svg>{e(wording.history_tab)}
+      </button>
+    </div>
+    <div class="pane scroll" id="pane-codes">
+{leyenda}
+{codigos}
+    </div>
+    <div class="pane scroll" id="pane-transcript" hidden><div class="chat">
+{burbujas}
+    </div></div>
+    <div class="pane scroll" id="pane-history" hidden>
+{historia}
+    </div>
+  </section>
+</main>
+<div class="done-panel" id="save-ok" hidden>{e(wording.saved_text)}</div>
+<footer class="bar">
+  <span class="stat" id="stat-edited"></span>
+  <span class="stat" id="stat-codes"></span>
+  <span class="error" id="save-error" hidden></span>
+  <button type="button" class="btn btn-primary" id="save">
+    <svg><use href="#i-save"/></svg>{e(wording.save_label)}
+  </button>
+</footer>
 <script>
 const TOKEN = {json.dumps(token)};
-const ITEMS = {items_json};
 const WORDING = {wording_json};
 const STARTED_AT = Date.now();
 {_JS}
@@ -208,76 +342,361 @@ const STARTED_AT = Date.now();
 
 
 _CSS = """
-body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #1b1f24; }
-h1 { font-size: 1.4rem; }
-.intro { color: #44515c; }
-.panels { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 1rem; align-items: start; }
-.panel {
-  border: 1px solid #d7dee5; border-radius: 6px; padding: 0.5rem 1rem;
-  max-height: 75vh; overflow-y: auto;
+:root {
+  --canvas: #eceff3; --surface: #ffffff; --surface-2: #f7f9fb;
+  --ink: #111827; --ink-2: #374151; --muted: #6b7280; --faint: #9ca3af;
+  --line: #e3e7ec; --line-2: #d5dbe2;
+  --brand: #0f766e; --brand-ink: #0b5c56; --brand-soft: #e6f4f2; --brand-ring: rgba(15,118,110,.18);
+  --head: #0d1b2a; --head-2: #16283b; --head-ink: #e6edf5; --head-muted: #8fa3b8;
+  --today: #0f766e; --history: #4f46e5; --both: #9333ea;
+  --warn: #b45309; --warn-soft: #fef3c7; --off: #b91c1c; --off-soft: #fee2e2;
+  --r: 12px; --r-s: 8px;
+  --e1: 0 1px 2px rgba(15,23,42,.05), 0 1px 1px rgba(15,23,42,.03);
+  --e2: 0 4px 14px rgba(15,23,42,.08), 0 1px 3px rgba(15,23,42,.06);
 }
-.panel h2 { font-size: 1.1rem; color: #0b5fff; }
-.panel pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
-.field { margin-bottom: 1rem; }
-.field h3 { font-size: 1rem; margin: 0.5rem 0 0.3rem; }
-.field-text { width: 100%; min-height: 5rem; box-sizing: border-box; font-family: inherit; }
-.item {
-  border-top: 1px solid #edf1f4; padding: 0.6rem 0; display: flex;
-  flex-wrap: wrap; align-items: center; gap: 0.6rem;
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; font: 15px/1.6 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink); background: var(--canvas); display: flex; flex-direction: column;
+  -webkit-font-smoothing: antialiased;
 }
-.item-text { flex: 1 1 100%; margin: 0 0 0.3rem; }
-.confirm { display: flex; align-items: center; gap: 0.3rem; }
-button {
-  background: #0b5fff; color: white; border: none; border-radius: 4px;
-  padding: 0.4rem 0.8rem; cursor: pointer;
+svg {
+  width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
 }
-button.reject-button, button.copy-button { background: #eef3ff; color: #0b5fff; }
-.codes { margin-top: 1.5rem; }
-.codes h2 { font-size: 1.1rem; color: #0b5fff; }
-#save-button { margin-top: 1rem; }
-.error { color: #c0392b; }
+
+/* Cabecera */
+header.top {
+  display: flex; align-items: center; gap: 1.25rem; padding: 0 1.75rem; height: 60px;
+  background: linear-gradient(180deg, var(--head), var(--head-2)); color: var(--head-ink);
+}
+.mark {
+  display: flex; align-items: center; gap: .55rem; font-weight: 700; letter-spacing: .14em;
+  font-size: .85rem;
+}
+.mark i {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: linear-gradient(135deg, #14b8a6, #0f766e); display: grid; place-items: center;
+  font-style: normal; font-size: .75rem; letter-spacing: 0; color: white;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.15);
+}
+.sep { width: 1px; height: 24px; background: rgba(255,255,255,.12); }
+.title { display: flex; flex-direction: column; line-height: 1.2; }
+.title strong { font-size: .95rem; font-weight: 600; }
+.title span { font-size: .78rem; color: var(--head-muted); }
+.pill {
+  display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .7rem;
+  border-radius: 999px; font-size: .78rem; background: rgba(255,255,255,.07);
+  color: var(--head-ink); border: 1px solid rgba(255,255,255,.1);
+}
+.pill .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #2dd4bf;
+  box-shadow: 0 0 0 3px rgba(45,212,191,.2);
+}
+.pill.fallback .dot { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,.2); }
+.head-right { margin-left: auto; display: flex; gap: .6rem; }
+
+/* Cuerpo */
+main {
+  flex: 1; display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 1.5rem;
+  padding: 1.5rem 1.75rem 1rem; min-height: 0;
+}
+.column { display: flex; flex-direction: column; min-height: 0; }
+.column-head {
+  display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 1rem;
+  min-height: 40px;
+}
+.column-head h2 { margin: 0; font-size: 1.25rem; font-weight: 650; letter-spacing: -.01em; }
+.column-head p { margin: .1rem 0 0; color: var(--muted); font-size: .85rem; }
+.scroll {
+  overflow-y: auto; min-height: 0; padding: 2px 6px 1rem 2px; scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+.scroll::-webkit-scrollbar {
+  width: 8px; } .scroll::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px;
+}
+
+/* Campos de la nota */
+.field {
+  position: relative; background: var(--surface); border-radius: var(--r); box-shadow: var(--e1);
+  border: 1px solid var(--line); margin-bottom: .85rem; overflow: hidden;
+  transition: box-shadow .15s, border-color .15s;
+}
+.field::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent;
+  transition: background .15s;
+}
+.field:hover { box-shadow: var(--e2); }
+.field:focus-within { border-color: var(--brand); box-shadow: 0 0 0 4px var(--brand-ring); }
+.field:focus-within::before { background: var(--brand); }
+.field.edited::before { background: var(--warn); }
+.field-head { display: flex; align-items: center; gap: .6rem; padding: .7rem 1rem .1rem 1.15rem; }
+.field-head h3 {
+  margin: 0; font-size: .72rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--brand-ink);
+}
+.badge {
+  font-size: .7rem; font-weight: 650; padding: .08rem .5rem; border-radius: 999px;
+  background: var(--warn-soft); color: var(--warn);
+}
+.badge[hidden] { display: none; }
+.field textarea {
+  display: block; width: 100%; border: 0; resize: none; overflow: hidden;
+  padding: .35rem 1.15rem .95rem; font: inherit; font-size: .97rem; color: var(--ink-2);
+  background: transparent; outline: none; min-height: 2.5rem;
+}
+.field textarea::placeholder { color: var(--faint); font-style: italic; }
+.field.empty { background: var(--surface-2); box-shadow: none; border-style: dashed; }
+
+/* Botones */
+button { font: inherit; cursor: pointer; }
+.icon-btn {
+  margin-left: auto; display: inline-flex; align-items: center; gap: .35rem;
+  border: 1px solid transparent; background: transparent; color: var(--muted);
+  padding: .25rem .55rem; border-radius: var(--r-s); font-size: .8rem; opacity: .75;
+  transition: all .12s;
+}
+.field:hover .icon-btn, .icon-btn:focus {
+  opacity: 1; background: var(--surface-2); border-color: var(--line);
+}
+.icon-btn:hover { color: var(--brand); }
+.icon-btn.done { color: var(--brand); opacity: 1; }
+.btn {
+  display: inline-flex; align-items: center; gap: .45rem; border-radius: var(--r-s);
+  padding: .5rem .9rem; font-size: .87rem; font-weight: 550; border: 1px solid var(--line-2);
+  background: var(--surface); color: var(--ink-2); box-shadow: var(--e1);
+}
+.btn:hover { border-color: var(--brand); color: var(--brand); }
+.btn-primary {
+  border: 0; background: var(--brand); color: white; padding: .65rem 1.3rem; font-weight: 600;
+  box-shadow: 0 2px 6px rgba(15,118,110,.35);
+}
+.btn-primary:hover { background: var(--brand-ink); color: white; }
+
+/* Pestañas */
+.tabs {
+  display: inline-flex; gap: 2px; padding: 3px; background: #dfe4ea; border-radius: 10px;
+  margin-bottom: 1rem; align-self: flex-start;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: .4rem; border: 0; background: transparent;
+  padding: .42rem .8rem; color: var(--muted); border-radius: 8px; font-weight: 600;
+  font-size: .86rem;
+}
+.tab[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--e1); }
+.tab .count {
+  font-size: .72rem; font-variant-numeric: tabular-nums; background: var(--brand-soft);
+  color: var(--brand-ink); padding: 0 .45rem; border-radius: 999px;
+}
+.pane[hidden] { display: none; }
+.pane { flex: 1; min-height: 0; }
+
+/* Códigos */
+.code {
+  position: relative; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: var(--e1); padding: .85rem 1rem .85rem 1.15rem;
+  margin-bottom: .7rem; overflow: hidden; transition: opacity .15s, box-shadow .15s;
+}
+.code::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--today);
+}
+.code[data-origin="history"]::before { background: var(--history); }
+.code[data-origin="both"]::before { background: var(--both); }
+.code:hover { box-shadow: var(--e2); }
+.code-head { display: flex; align-items: center; gap: .6rem; }
+.code-id {
+  font: 650 .82rem ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  letter-spacing: .02em; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--line); padding: .05rem .45rem; border-radius: 6px;
+}
+.origin { font-size: .74rem; font-weight: 600; color: var(--today); }
+.code[data-origin="history"] .origin { color: var(--history); }
+.code[data-origin="both"] .origin { color: var(--both); }
+.code-desc {
+  margin: .5rem 0 .2rem; font-weight: 600; font-size: .93rem; text-transform: lowercase;
+}
+.code-desc::first-letter { text-transform: uppercase; }
+.code-evidence { margin: 0; display: flex; gap: .4rem; color: var(--muted); font-size: .85rem; }
+.code-evidence svg { margin-top: .2rem; width: 14px; height: 14px; color: var(--faint); }
+.switch {
+  margin-left: auto; position: relative; width: 38px; height: 22px; border-radius: 999px;
+  border: 0; background: var(--brand); transition: background .15s; padding: 0;
+}
+.switch::after {
+  content: ""; position: absolute; top: 3px; left: 19px; width: 16px; height: 16px;
+  border-radius: 50%; background: white; box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  transition: left .15s;
+}
+.code.off { opacity: .6; background: var(--surface-2); box-shadow: none; }
+.code.off::before { background: var(--line-2); }
+.code.off .code-desc { text-decoration: line-through; color: var(--muted); }
+.code.off .switch { background: #c7cdd4; }
+.code.off .switch::after { left: 3px; }
+.legend {
+  display: flex; gap: 1rem; font-size: .75rem; color: var(--muted); margin: -.3rem 0 .8rem;
+}
+.legend span::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: .35rem; background: var(--today);
+}
+.legend .h::before { background: var(--history); } .legend .b::before { background: var(--both); }
+
+/* Transcripción */
+.chat { display: flex; flex-direction: column; gap: .45rem; }
+.chat p {
+  margin: 0; max-width: 88%; padding: .5rem .8rem; border-radius: 12px; font-size: .9rem;
+  line-height: 1.5;
+}
+.chat .q {
+  align-self: flex-start; background: #e2e8ef; color: var(--ink-2); border-bottom-left-radius: 4px;
+}
+.chat .a {
+  align-self: flex-end; background: var(--surface); border: 1px solid var(--line);
+  box-shadow: var(--e1); border-bottom-right-radius: 4px;
+}
+
+/* Historia */
+.history-frame {
+  width: 100%; height: 100%; min-height: 60vh; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--surface); box-shadow: var(--e1);
+}
+
+/* Barra */
+footer.bar {
+  display: flex; align-items: center; gap: 1.25rem; padding: .85rem 1.75rem;
+  background: var(--surface); border-top: 1px solid var(--line);
+  box-shadow: 0 -4px 16px rgba(15,23,42,.05);
+}
+.stat { display: flex; align-items: baseline; gap: .4rem; color: var(--muted); font-size: .85rem; }
+.stat b { color: var(--ink); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.stat.warn b { color: var(--warn); }
+footer .btn-primary { margin-left: auto; }
+.error { color: var(--off); font-size: .88rem; }
+
+/* Estados que la maqueta no enseña */
+.history-image {
+  display: block; width: 100%; height: auto; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--surface); box-shadow: var(--e1);
+}
+.history-text {
+  margin: 0; padding: 1rem 1.15rem; white-space: pre-wrap; font: inherit; font-size: .9rem;
+  color: var(--ink-2); background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: var(--e1);
+}
+.done-panel {
+  flex: 1; display: grid; place-items: center; color: var(--ink-2); font-size: 1.05rem;
+}
+main[hidden], footer[hidden], .done-panel[hidden] { display: none; }
 """
 
+_ICONS = """<svg style="display:none"><defs>
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <rect x="9" y="9" width="12" height="12" rx="2"/>
+    <path d="M5 15V5a2 2 0 0 1 2-2h10"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-quote" viewBox="0 0 24 24">
+    <path d="M7 7h4v4c0 3-2 5-4 6M15 7h4v4c0 3-2 5-4 6"/>
+  </symbol>
+  <symbol id="i-codes" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24">
+    <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24">
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/>
+    <path d="M14 3v5h5M9 13h6M9 17h6"/>
+  </symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+</defs></svg>"""
+
 _JS = """
-function label(cls, text) { document.querySelectorAll(cls).forEach(el => el.textContent = text); }
-label('.confirm-label', WORDING.confirm_label);
-label('.reject-button', WORDING.reject_label);
-label('.copy-button', WORDING.copy_label);
+const grow = t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; };
 
-const state = {};
-ITEMS.forEach(item => { state[item.ref] = 'confirmed'; });
+function setStat(el, n, text) {
+  const b = document.createElement('b');
+  b.textContent = n;
+  el.replaceChildren(b, document.createTextNode(text));
+}
 
-document.querySelectorAll('.item').forEach(row => {
-  const ref = row.dataset.ref;
-  const confirmBox = row.querySelector('.confirm-box');
-  confirmBox.addEventListener('change', () => {
-    state[ref] = confirmBox.checked ? 'confirmed' : 'rejected';
+function status() {
+  const edited = document.querySelectorAll('.field.edited').length;
+  const all = document.querySelectorAll('.code').length;
+  const on = document.querySelectorAll('.code:not(.off)').length;
+  document.getElementById('codes-count').textContent = on + '/' + all;
+  const se = document.getElementById('stat-edited');
+  se.classList.toggle('warn', edited > 0);
+  setStat(se, edited, edited === 1 ? WORDING.edited_singular : WORDING.edited_plural);
+  setStat(document.getElementById('stat-codes'), on, WORDING.codes_included.replace('{}', all));
+}
+
+function copy(text, button) {
+  navigator.clipboard.writeText(text).then(() => {
+    const label = button.querySelector('span');
+    button.classList.add('done');
+    label.textContent = WORDING.copied_label;
+    setTimeout(() => {
+      button.classList.remove('done');
+      label.textContent = button.dataset.label;
+    }, 1500);
   });
-  row.querySelector('.reject-button').addEventListener('click', () => {
-    confirmBox.checked = false;
-    state[ref] = 'rejected';
-  });
-});
+}
 
 document.querySelectorAll('.field').forEach(field => {
-  const text = field.querySelector('.field-text');
-  const button = field.querySelector('.copy-button');
-  button.addEventListener('click', () => {
-    navigator.clipboard.writeText(text.value).then(() => {
-      button.textContent = WORDING.copied_label;
-      setTimeout(() => { button.textContent = WORDING.copy_label; }, 1500);
-    });
+  const text = field.querySelector('textarea');
+  const original = text.value;
+  grow(text);
+  text.addEventListener('input', () => {
+    grow(text);
+    const edited = text.value.trim() !== original.trim();
+    field.classList.toggle('edited', edited);
+    field.querySelector('.badge').hidden = !edited;
+    field.classList.toggle('empty', !text.value.trim());
+    status();
+  });
+  const button = field.querySelector('.copy');
+  button.addEventListener('click', () => copy(text.value, button));
+});
+
+document.getElementById('copy-all').addEventListener('click', event => {
+  const parts = [];
+  document.querySelectorAll('.field').forEach(field => {
+    const value = field.querySelector('textarea').value.trim();
+    if (value) { parts.push(field.querySelector('h3').textContent + '\\n' + value); }
+  });
+  copy(parts.join('\\n\\n'), event.currentTarget);
+});
+
+document.querySelectorAll('.code').forEach(code => {
+  const toggle = code.querySelector('.switch');
+  toggle.addEventListener('click', () => {
+    code.classList.toggle('off');
+    toggle.setAttribute('aria-checked', String(!code.classList.contains('off')));
+    status();
   });
 });
 
-document.getElementById('save-button').addEventListener('click', () => {
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.setAttribute('aria-selected', String(t === tab));
+  });
+  document.querySelectorAll('.pane').forEach(p => {
+    p.hidden = p.id !== 'pane-' + tab.dataset.pane;
+  });
+}));
+
+document.getElementById('save').addEventListener('click', () => {
   const errorBox = document.getElementById('save-error');
   errorBox.hidden = true;
   const answers = {};
-  for (const ref in state) { answers[ref] = { verdict: state[ref] }; }
+  document.querySelectorAll('.code').forEach(code => {
+    const off = code.classList.contains('off');
+    answers[code.dataset.ref] = { verdict: off ? 'rejected' : 'confirmed' };
+  });
   const note = {};
   document.querySelectorAll('.field').forEach(field => {
-    note[field.dataset.fieldId] = field.querySelector('.field-text').value;
+    note[field.dataset.fieldId] = field.querySelector('textarea').value;
   });
   fetch('/' + TOKEN + '/guardar', {
     method: 'POST',
@@ -289,13 +708,16 @@ document.getElementById('save-button').addEventListener('click', () => {
     }),
   }).then(resp => {
     if (resp.ok) {
-      document.getElementById('review-form').hidden = true;
+      document.querySelector('main').hidden = true;
+      document.querySelector('footer.bar').hidden = true;
       document.getElementById('save-ok').hidden = false;
     } else {
       resp.json().then(data => { errorBox.textContent = data.error; errorBox.hidden = false; });
     }
   });
 });
+
+status();
 """
 
 
@@ -338,9 +760,12 @@ class _Outcome:
 def collect_review(
     items: tuple[ReviewItem, ...],
     *,
+    matches: tuple[MatchedCode, ...],
     note: RenderedNote,
-    history: str,
     transcript: str,
+    history: HistoryView,
+    owner: str,
+    moment: datetime,
     settings: UISettings,
     open_browser: Callable[[str], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -353,12 +778,16 @@ def collect_review(
     una persona y muere."""
     if any(item.kind is not ItemKind.CODE for item in items):
         raise ValueError("la pantalla solo confirma códigos: los hallazgos se leen en la nota")
+    if [item.ref for item in items] != [m.diagnostic.code for m in matches]:
+        raise ValueError(
+            "los ítems y los códigos no coinciden: la pantalla pintaría unos y validaría otros"
+        )
     token = token_urlsafe(16)
     wording = settings.wording
     outcome = _Outcome()
     done = threading.Event()
     started = clock()
-    page = _render_page(items, note, history, transcript, wording, token)
+    page = _render_page(matches, note, transcript, history, owner, moment, wording, token)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:
@@ -393,6 +822,13 @@ def collect_review(
                 self.send_header("Content-Length", str(len(cuerpo)))
                 self.end_headers()
                 self.wfile.write(cuerpo)
+                return
+            if self.path == f"/{token}/historia" and history.content_type is not None:
+                self.send_response(200)
+                self.send_header("Content-Type", history.content_type)
+                self.send_header("Content-Length", str(len(history.data)))
+                self.end_headers()
+                self.wfile.write(history.data)
                 return
             self._responder_404()
 
