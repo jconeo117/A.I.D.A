@@ -19,12 +19,13 @@ import threading
 import time
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Any, Protocol
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -35,6 +36,7 @@ from aida.arms.health.consultation import (
     ConsultationResult,
     PreparedConsultation,
 )
+from aida.arms.health.live import LiveSession, LiveTranscriber, line_kind
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import ReviewItem, review_items
 from aida.arms.health.review_ui import (
@@ -48,6 +50,7 @@ from aida.arms.health.review_ui import (
     parse_submission,
     reviewer_from,
 )
+from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -105,8 +108,6 @@ _CLAVES_APP = (
     "exit_label",
     "closed_text",
     "recording_pill",
-    "recording_state",
-    "recording_hint",
     "stop_button",
     "working_lead",
     "working_count",
@@ -128,6 +129,26 @@ _CLAVES_APP = (
     "problem_processing_title",
     "problem_processing_detail",
     "problem_processing_command",
+    "live_title",
+    "live_hint",
+    "live_tab",
+    "state_ai",
+    "state_writing",
+    "state_mine",
+    "state_waiting",
+    "waiting_placeholder",
+    "banner_live",
+    "banner_offline",
+    "listening",
+    "listening_offline",
+    "strip_recording",
+    "strip_paused",
+    "pause_label",
+    "resume_label",
+    "pill_paused",
+    "pause_mark",
+    "new_label",
+    "new_count",
 )
 
 _CSS_EXTRA = """.mode {
@@ -297,6 +318,81 @@ _ICONS_EXTRA = """  <symbol id="i-audio" viewBox="0 0 24 24">
 
 _ICONS_APP = _ICONS.replace("</defs></svg>", _ICONS_EXTRA + "\n</defs></svg>")
 
+_CSS_LIVE = """/* La 77b: la consulta en vivo */
+.field-state {
+  display: inline-flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--faint);
+  font-weight: 500;
+}
+.field-state svg { width: 12px; height: 12px; }
+.field-state.writing { color: var(--brand); font-weight: 600; }
+.field-state.mine { color: var(--warn); font-weight: 650; }
+.field.writing textarea {
+  background: linear-gradient(90deg, transparent 0%, var(--brand-soft) 50%, transparent 100%);
+  background-size: 200% 100%; animation: shimmer 1.8s linear infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.field.waiting { background: var(--surface-2); box-shadow: none; border-style: dashed; }
+.live-banner {
+  display: flex; align-items: center; gap: .45rem; margin-bottom: .8rem; padding: .45rem .75rem;
+  border-radius: var(--r-s); background: var(--brand-soft); color: var(--brand-ink);
+  font-size: .8rem;
+}
+.live-banner svg { width: 14px; height: 14px; }
+.live-banner.offline { background: var(--warn-soft); color: var(--warn); }
+.live-banner[hidden], .listening[hidden], .pause-mark[hidden] { display: none; }
+.chat .a.fresh { animation: arrive 2.4s ease-out; border-color: var(--brand); }
+@keyframes arrive { from { background: var(--brand-soft); } to { background: var(--surface); } }
+.listening {
+  display: flex; align-items: center; gap: .5rem; margin-top: .6rem; color: var(--muted);
+  font-size: .82rem;
+}
+.listening .dot-live {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--brand);
+  animation: blink 1.2s ease-in-out infinite;
+}
+@keyframes blink { 50% { opacity: .25; } }
+.pause-mark {
+  align-self: center; font-size: .75rem; color: var(--warn); letter-spacing: .08em;
+  text-transform: uppercase; margin: .4rem 0;
+}
+.badge.new { background: var(--brand-soft); color: var(--brand-ink); }
+.code.fresh { border-color: var(--brand); box-shadow: 0 0 0 4px var(--brand-ring); }
+.tab .count.new { background: var(--brand); color: white; }
+.rec-strip { display: flex; align-items: center; gap: .9rem; }
+.rec-strip .rec-small {
+  width: 12px; height: 12px; border-radius: 50%; background: #dc2626;
+  box-shadow: 0 0 0 0 rgba(220,38,38,.5); animation: pulse 1.6s ease-out infinite;
+}
+.rec-strip .rec-clock {
+  font: 600 1.05rem ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.rec-strip .meter { height: 22px; gap: 2px; }
+.rec-strip .meter span { width: 4px; }
+.rec-strip .note { font-size: .8rem; color: var(--muted); }
+.btn-pause { background: var(--surface); }
+footer .btn-pause { margin-left: auto; }
+footer .btn-pause + .btn-primary { margin-left: 0; }
+body.paused .rec-strip .rec-small { background: #f59e0b; animation: none; }
+body.paused .rec-strip .rec-clock { color: var(--warn); }
+body.paused .rec-strip .meter span { opacity: .25; }
+.pill.pause-pill .dot { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,.2); }"""
+
+_ICONS_LIVE_EXTRA = """  <symbol id="i-lock" viewBox="0 0 24 24">
+    <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+  </symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24">
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>
+    <path d="M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>
+  </symbol>
+  <symbol id="i-offline" viewBox="0 0 24 24">
+    <path d="M2 8.8a15 15 0 0 1 4.2-2.6M10.7 5.1A15 15 0 0 1 22 8.8M5 12.9a10 10 0 0 1 3.1-2"/>
+    <path d="M12.5 10.1a10 10 0 0 1 6.5 2.8M8.5 16.4a5 5 0 0 1 7 0M12 20h.01M2 2l20 20"/>
+  </symbol>"""
+
+_ICONS_LIVE = _ICONS_APP.replace("</defs></svg>", _ICONS_LIVE_EXTRA + "\n</defs></svg>")
+
 
 @dataclass(frozen=True, slots=True)
 class AppWording:
@@ -353,6 +449,9 @@ class AppReady:
     log: EventLog
     cloud: bool
     writer: str | None
+    live_stt: LiveTranscriber | None = None
+    """El transcriptor del vivo (plan 77b): solo la nube. `None` sin clave de nube, y
+    entonces grabar sigue funcionando, pero sin vivo: todo se procesa al terminar."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,10 +530,18 @@ class _Session:
     view: HistoryView | None = None
     problem: AppProblem | None = None
     started: float = 0.0
+    live: LiveSession | None = None
+    mine: Mapping[str, str] = field(default_factory=dict)
+    excluded: frozenset[str] = frozenset()
 
     def clean(self) -> None:
         """Lo subido o grabado no se queda en disco: el audio en claro es lo más
         sensible de una sesión, y la transcripción ya vive en la caché cifrada."""
+        if self.live is not None:
+            self.live.stop()
+        self.live = None
+        self.mine = {}
+        self.excluded = frozenset()
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)
         self.workdir = None
@@ -458,11 +565,24 @@ def serve(
     open_browser: Callable[[str], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = datetime.now,
+    vad_factory: Callable[[], Callable[[Any], Any]] | None = None,
+    note_sections: Sequence[SectionSpec] | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
     for resto in sorted(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*")):
         shutil.rmtree(resto, ignore_errors=True)
+    secciones: Sequence[SectionSpec] = (
+        note_sections
+        if note_sections is not None
+        else tuple(s for s in load_sections().sections if s.in_note)
+    )
+    if vad_factory is None:
+        from aida.voice.listen import vad_from_faster_whisper
+
+        crear_vad: Callable[[], Callable[[Any], Any]] = vad_from_faster_whisper
+    else:
+        crear_vad = vad_factory
     token = token_urlsafe(16)
     lock = threading.Lock()
     session = _Session(ready=build())
@@ -470,7 +590,14 @@ def serve(
         session.state = "problem"
         session.problem = session.ready
 
-    def procesar(ready: AppReady, owner: str, audio: Path, document: Path) -> None:
+    def procesar(
+        ready: AppReady,
+        owner: str,
+        audio: Path,
+        document: Path,
+        mine: Mapping[str, str] | None = None,
+        excluded: frozenset[str] = frozenset(),
+    ) -> None:
         try:
             wav = audio.with_name("audio-16k.wav")
             to_wav(audio, wav)
@@ -479,7 +606,9 @@ def serve(
                 audio_path=wav,
                 history_text=lambda: ready.reader.read(document),
             )
-            draft = draft_for_screen(ready.consultation, prepared)
+            draft = _keep_mine(
+                draft_for_screen(ready.consultation, prepared), mine or {}, secciones
+            )
             vista = history_view(document, prepared.history)
         except (TranscriptionError, ModelUnavailableError) as exc:
             with lock:
@@ -495,6 +624,8 @@ def serve(
             return
         with lock:
             session.drafted = True
+            session.mine = dict(mine or {})
+            session.excluded = excluded
             session.draft = draft
             session.view = vista
             session.started = clock()
@@ -513,8 +644,14 @@ def serve(
                 momento,
                 settings.wording,
                 token,
+                overrides=session.mine,
+                excluded=session.excluded,
             )
         marca = settings.wording.brand
+        if session.state == "live" and session.live is not None:
+            return _live_page(
+                wording, settings, token, session.owner, momento, secciones, session.view
+            )
         if session.state == "working":
             return _working_page(wording, marca, token, session.owner, momento)
         if session.state == "problem" and session.problem is not None:
@@ -559,10 +696,13 @@ def serve(
                         pasos = progress(eventos, drafted=session.drafted)
                     self._json(200, {"state": session.state, "steps": list(pasos)})
                     return
+                if self.path.startswith(f"/{token}/vivo"):
+                    self._json(200, _live_status(session, self.path))
+                    return
                 vista = session.view
                 if (
                     self.path == f"/{token}/historia"
-                    and session.state == "review"
+                    and session.state in ("review", "live")
                     and vista is not None
                     and vista.content_type is not None
                 ):
@@ -582,6 +722,10 @@ def serve(
                 self._start()
             elif accion == "guardar":
                 self._save()
+            elif accion in ("pcm", "campo", "codigo", "pausa"):
+                self._live(accion)
+            elif accion == "terminar":
+                self._finish()
             elif accion == "volver":
                 with lock:
                     session.clean()
@@ -608,6 +752,65 @@ def serve(
                 threading.Thread(target=http_server.shutdown, daemon=True).start()
             else:
                 self._404()
+
+        def _live(self, accion: str) -> None:
+            datos = self._body()
+            with lock:
+                vivo = session.live if session.state == "live" else None
+            if vivo is None or datos is None:
+                self._json(409, {"error": "no hay una grabación en curso"})
+                return
+            if accion == "pcm":
+                vivo.feed(datos)
+                self._json(200, {"ok": True})
+                return
+            try:
+                pedido = json.loads(datos or b"{}")
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict):
+                self._json(400, {"error": "cuerpo inválido"})
+                return
+            if accion == "campo":
+                ok = isinstance(pedido.get("id"), str) and isinstance(pedido.get("text"), str)
+                if not ok or not vivo.edit_field(pedido["id"], pedido["text"]):
+                    self._json(400, {"error": "campo desconocido"})
+                    return
+            elif accion == "codigo":
+                if not isinstance(pedido.get("code"), str):
+                    self._json(400, {"error": "código inválido"})
+                    return
+                vivo.set_code(pedido["code"], pedido.get("included") is not False)
+            else:
+                vivo.pause(pedido.get("paused") is True)
+            self._json(200, {"ok": True})
+
+        def _finish(self) -> None:
+            with lock:
+                ready = session.ready
+                vivo = session.live
+                document = session.document
+                if (
+                    session.state != "live"
+                    or vivo is None
+                    or document is None
+                    or not isinstance(ready, AppReady)
+                ):
+                    self._json(409, {"error": "no hay una grabación en curso"})
+                    return
+                session.state = "working"
+                session.start_index = len(ready.log)
+                session.drafted = False
+            audio = vivo.stop()
+            mine, excluded = vivo.mine(), vivo.rejected()
+            with lock:
+                session.live = None
+            threading.Thread(
+                target=procesar,
+                args=(ready, session.owner, audio, document, mine, excluded),
+                daemon=True,
+            ).start()
+            self._json(200, {"ok": True})
 
         def _upload(self, accion: str) -> None:
             datos = self._body()
@@ -650,14 +853,33 @@ def serve(
                 if pedido.get("recorded") is True and pedido.get("consent") is not True:
                     self._json(400, {"error": wording["missing_consent"]})
                     return
-                if session.audio is None or session.document is None:
+                grabando = pedido.get("recorded") is True
+                if session.document is None or (session.audio is None and not grabando):
                     self._json(400, {"error": wording["missing_document"]})
                     return
                 session.owner = owner
+                if grabando and session.workdir is not None:
+                    documento = session.document
+                    session.live = LiveSession(
+                        consultation=ready.consultation,
+                        owner=owner,
+                        note_sections=secciones,
+                        history_text=lambda: ready.reader.read(documento),
+                        workdir=session.workdir,
+                        transcriber=ready.live_stt,
+                        vad=crear_vad(),
+                        clock=clock,
+                    )
+                    session.live.start()
+                    session.view = history_view(documento, "")
+                    session.state = "live"
+                    self._json(200, {"ok": True})
+                    return
                 session.start_index = len(ready.log)
                 session.drafted = False
                 session.state = "working"
                 audio, document = session.audio, session.document
+                assert audio is not None and document is not None
             threading.Thread(
                 target=procesar, args=(ready, owner, audio, document), daemon=True
             ).start()
@@ -720,20 +942,22 @@ def _page(
     pill_class: str,
     body: str,
     script: str,
+    live: bool = False,
 ) -> str:
     e = html.escape
+    estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}" if live else f"{_CSS}\n{_CSS_EXTRA}"
+    iconos = _ICONS_LIVE if live else _ICONS_APP
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <title>{e(title)}</title>
 <style>
-{_CSS}
-{_CSS_EXTRA}
+{estilo}
 </style>
 </head>
 <body>
-{_ICONS_APP}
+{iconos}
 <header class="top">
   <div class="mark"><i>{e(brand[:1])}</i>{e(brand)}</div>
   <div class="sep"></div>
@@ -770,7 +994,6 @@ def _start_page(
         f'<span class="check{"" if ok else " warn"}"><span class="dot"></span>{e(t)}</span>'
         for t, ok in chips
     )
-    barras = "".join("<span></span>" for _ in range(12))
     body = f"""<section class="screen" id="s-start">
   <div class="stage">
     <div class="panel-card">
@@ -817,28 +1040,11 @@ def _start_page(
     <button type="button" class="btn btn-primary" id="go" disabled>
       <svg><use href="#i-play"/></svg><span>{e(w["start_button"])}</span></button>
   </footer>
-</section>
-<section class="screen" id="s-recording" hidden>
-  <div class="stage">
-    <div class="panel-card">
-      <div class="rec">
-        <div class="rec-dot"></div>
-        <div class="rec-time" id="rec-time">00:00</div>
-        <div class="meter">{barras}</div>
-        <div class="rec-state" id="rec-state"></div>
-      </div>
-    </div>
-  </div>
-  <footer class="bar">
-    <span class="stat">{e(w["recording_hint"])}</span>
-    <button type="button" class="btn btn-primary btn-stop" id="stop">
-      <svg><use href="#i-stop"/></svg>{e(w["stop_button"])}</button>
-  </footer>
 </section>"""
     claves = (
         "lead_upload", "lead_record", "owner_invalid", "change_file", "mic_denied",
         "missing_owner", "missing_audio", "missing_document", "missing_consent", "ready",
-        "start_button", "record_button", "closed_text", "recording_pill", "recording_state",
+        "start_button", "record_button", "closed_text",
     )
     textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
     script = f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_START}"
@@ -922,9 +1128,6 @@ const ownerOk = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 let mode = 'upload';
 let audioFile = null;
 let docFile = null;
-let recorder = null;
-let chunks = [];
-let recordedAt = 0;
 
 function pick(dropId, inputId, set) {
   const drop = document.getElementById(dropId);
@@ -997,8 +1200,10 @@ function fail(text) {
 }
 
 async function send(audio, name) {
-  const sent = await post('/audio', audio, { 'X-Name': name });
-  if (!sent.ok) { fail((await sent.json()).error); return; }
+  if (audio) {
+    const sent = await post('/audio', audio, { 'X-Name': name });
+    if (!sent.ok) { fail((await sent.json()).error); return; }
+  }
   const doc = await post('/documento', docFile, { 'X-Name': docFile.name });
   if (!doc.ok) { fail((await doc.json()).error); return; }
   const body = JSON.stringify({
@@ -1011,55 +1216,8 @@ async function send(audio, name) {
   location.reload();
 }
 
-async function record() {
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (err) {
-    fail(W.mic_denied);
-    return;
-  }
-  recorder = new MediaRecorder(stream);
-  chunks = [];
-  recorder.ondataavailable = ev => { if (ev.data.size) { chunks.push(ev.data); } };
-  recorder.onstop = () => {
-    stream.getTracks().forEach(track => track.stop());
-    const type = recorder.mimeType || 'audio/webm';
-    const name = type.includes('ogg') ? 'rec.ogg' : 'rec.webm';
-    send(new Blob(chunks, { type: type }), name);
-  };
-  recorder.start(1000);
-  recordedAt = Date.now();
-  document.getElementById('s-start').hidden = true;
-  document.getElementById('s-recording').hidden = false;
-  document.getElementById('rec-state').textContent =
-    W.recording_state.replace('{}', owner.value.trim());
-  document.getElementById('pill-text').textContent = W.recording_pill;
-  document.getElementById('head-pill').classList.add('rec-pill');
-  const context = new AudioContext();
-  const analyser = context.createAnalyser();
-  analyser.fftSize = 64;
-  context.createMediaStreamSource(stream).connect(analyser);
-  const bins = new Uint8Array(analyser.frequencyBinCount);
-  const bars = document.querySelectorAll('.meter span');
-  const tick = () => {
-    if (recorder.state !== 'recording') { return; }
-    const seconds = Math.floor((Date.now() - recordedAt) / 1000);
-    const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
-    const ss = String(seconds % 60).padStart(2, '0');
-    document.getElementById('rec-time').textContent = mm + ':' + ss;
-    analyser.getByteFrequencyData(bins);
-    bars.forEach((bar, i) => { bar.style.height = Math.max(8, bins[i + 2] / 2.55) + '%'; });
-    requestAnimationFrame(tick);
-  };
-  tick();
-}
-
 document.getElementById('go').addEventListener('click', () => {
-  if (mode === 'upload') { send(audioFile, audioFile.name); } else { record(); }
-});
-document.getElementById('stop').addEventListener('click', () => {
-  if (recorder) { recorder.stop(); }
+  if (mode === 'upload') { send(audioFile, audioFile.name); } else { send(null, ''); }
 });
 document.getElementById('exit').addEventListener('click', async () => {
   await post('/salir', '');
@@ -1106,4 +1264,427 @@ if (copyButton) {
     navigator.clipboard.writeText(document.getElementById('cmd').textContent);
   });
 }
+"""
+
+
+def _keep_mine(
+    draft: ReviewDraft, mine: Mapping[str, str], note_sections: Sequence[SectionSpec]
+) -> ReviewDraft:
+    """Un campo que el profesional escribió en vivo y que el análisis final no trae
+    no puede perderse: se añade vacío del lado del modelo, y la revisión lo registra
+    como editado (`review_note`), que es lo que fue."""
+    presentes = {spec.section_id for spec, _texto in draft.note.fields}
+    faltan = tuple(
+        (spec, "")
+        for spec in note_sections
+        if spec.section_id in mine and spec.section_id not in presentes
+    )
+    if not faltan:
+        return draft
+    return replace(draft, note=replace(draft.note, fields=draft.note.fields + faltan))
+
+
+def _live_status(session: _Session, path: str) -> dict[str, Any]:
+    if session.state != "live" or session.live is None:
+        return {"state": session.state}
+    try:
+        desde = max(0, int(parse_qs(urlsplit(path).query).get("desde", ["0"])[0]))
+    except ValueError:
+        desde = 0
+    estado = session.live.snapshot(desde)
+    for linea in estado["lines"]:
+        if linea["kind"] != "pause":
+            linea["kind"] = line_kind(linea["text"])
+    return {"state": "live", **estado}
+
+
+def _live_page(
+    w: AppWording,
+    settings: UISettings,
+    token: str,
+    owner: str,
+    moment: datetime,
+    note_sections: Sequence[SectionSpec],
+    view: HistoryView | None,
+) -> str:
+    e = html.escape
+    r = settings.wording
+    copiar = (
+        f'<button type="button" class="icon-btn copy" data-label="{e(r.copy_label)}">'
+        f'<svg><use href="#i-copy"/></svg><span>{e(r.copy_label)}</span></button>'
+    )
+    campos = "\n".join(
+        f'      <article class="field waiting" data-field-id="{e(spec.section_id)}">'
+        f'<div class="field-head"><h3>{e(spec.label)}</h3>'
+        f'<span class="field-state">{e(w["state_waiting"])}</span>{copiar}</div>\n'
+        f'        <textarea placeholder="{e(w["waiting_placeholder"])}"></textarea></article>'
+        for spec in note_sections
+    )
+    if view is not None and view.content_type == "application/pdf":
+        historia = (
+            f'<iframe class="history-frame" src="/{token}/historia" '
+            f'title="{e(r.history_tab)}"></iframe>'
+        )
+    elif view is not None and view.content_type is not None:
+        historia = f'<img class="history-image" src="/{token}/historia" alt="{e(r.history_tab)}">'
+    else:
+        historia = ""
+    barras = "".join("<span></span>" for _ in range(12))
+    body = f"""<main>
+  <section class="column">
+    <div class="column-head">
+      <div><h2>{e(r.note_heading)}</h2><p>{e(w["live_hint"])}</p></div>
+      <button type="button" class="btn" id="copy-all" data-label="{e(r.copy_all_label)}">
+        <svg><use href="#i-copy"/></svg><span>{e(r.copy_all_label)}</span>
+      </button>
+    </div>
+    <div class="scroll">
+{campos}
+    </div>
+  </section>
+  <section class="column">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab" data-pane="live" aria-selected="true">
+        <svg><use href="#i-chat"/></svg>{e(w["live_tab"])}</button>
+      <button type="button" class="tab" data-pane="codes" aria-selected="false">
+        <svg><use href="#i-codes"/></svg>{e(r.codes_tab)}
+        <span class="count" id="codes-count">0</span>
+        <span class="count new" id="codes-new" hidden></span></button>
+      <button type="button" class="tab" data-pane="history" aria-selected="false">
+        <svg><use href="#i-doc"/></svg>{e(r.history_tab)}</button>
+    </div>
+    <div class="pane scroll" id="pane-live">
+      <div class="live-banner" id="banner-live">
+        <svg><use href="#i-spark"/></svg>{e(w["banner_live"])}</div>
+      <div class="live-banner offline" id="banner-offline" hidden>
+        <svg><use href="#i-offline"/></svg>{e(w["banner_offline"])}</div>
+      <div class="chat" id="chat"></div>
+      <div class="listening" id="listening"><span class="dot-live"></span>
+        <span id="listening-text">{e(w["listening"])}</span></div>
+    </div>
+    <div class="pane scroll" id="pane-codes" hidden>
+      <div class="legend"><span>{e(r.origin_today_label)}</span>
+        <span class="h">{e(r.origin_history_label)}</span>
+        <span class="b">{e(r.origin_both_label)}</span></div>
+      <div id="codes"></div>
+    </div>
+    <div class="pane" id="pane-history" hidden>
+{historia}
+    </div>
+  </section>
+</main>
+<footer class="bar">
+  <div class="rec-strip">
+    <span class="rec-small"></span>
+    <span class="rec-clock" id="clock">00:00</span>
+    <div class="meter">{barras}</div>
+    <span class="note" id="strip-note">{e(w["strip_recording"])}</span>
+  </div>
+  <span class="error" id="live-error" hidden></span>
+  <button type="button" class="btn btn-pause" id="pause">
+    <svg><use href="#i-pause"/></svg><span>{e(w["pause_label"])}</span></button>
+  <button type="button" class="btn btn-primary btn-stop" id="stop">
+    <svg><use href="#i-stop"/></svg>{e(w["stop_button"])}</button>
+</footer>"""
+    claves = (
+        "state_ai", "state_writing", "state_mine", "state_waiting", "listening",
+        "listening_offline", "strip_recording", "strip_paused", "pause_label",
+        "resume_label", "pill_paused", "recording_pill", "pause_mark", "new_label",
+        "new_count", "mic_denied",
+    )
+    textos = {c: w[c] for c in claves}
+    textos.update(
+        {
+            "copied_label": r.copied_label,
+            "include_label": r.include_label,
+            "today": r.origin_today_label,
+            "history": r.origin_history_label,
+            "both": r.origin_both_label,
+        }
+    )
+    script = (
+        f"const TOKEN = {json.dumps(token)};\n"
+        f"const W = {json.dumps(textos, ensure_ascii=False)};\n{_JS_LIVE}"
+    )
+    return _page(
+        brand=r.brand, title=w["live_title"], place=f'{owner} · {w["header_place"]}',
+        moment=moment, pill=w["recording_pill"], pill_class="pill rec-pill",
+        body=body, script=script, live=True,
+    )
+
+
+_JS_LIVE = """
+const grow = t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; };
+const WORKLET = 'class Tap extends AudioWorkletProcessor {' +
+  ' process(inputs) { const ch = inputs[0][0]; if (ch) { this.port.postMessage(ch.slice(0)); }' +
+  ' return true; } } registerProcessor("aida-tap", Tap);';
+let since = 0;
+let version = -1;
+let paused = false;
+let pending = [];
+let context = null;
+let elapsed = 0;
+const timers = new Map();
+
+function post(path, body, json) {
+  const headers = json ? { 'Content-Type': 'application/json' } : {};
+  return fetch('/' + TOKEN + path, { method: 'POST', headers: headers, body: body });
+}
+
+function showError(text) {
+  const box = document.getElementById('live-error');
+  box.textContent = text;
+  box.hidden = false;
+}
+
+function age(seconds) {
+  return seconds < 60 ? seconds + ' s' : Math.floor(seconds / 60) + ' min';
+}
+
+function setState(field, kind, text) {
+  const state = field.querySelector('.field-state');
+  state.className = 'field-state' + (kind ? ' ' + kind : '');
+  state.replaceChildren();
+  const icon = kind === 'writing' ? 'i-spark' : kind === 'mine' ? 'i-lock' : '';
+  if (icon) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', '#' + icon);
+    svg.appendChild(use);
+    state.appendChild(svg);
+  }
+  state.appendChild(document.createTextNode(text));
+}
+
+document.querySelectorAll('.field').forEach(field => {
+  const text = field.querySelector('textarea');
+  text.addEventListener('input', () => {
+    grow(text);
+    field.dataset.mine = '1';
+    field.classList.remove('waiting', 'writing');
+    field.classList.add('edited');
+    setState(field, 'mine', W.state_mine);
+    clearTimeout(timers.get(field));
+    timers.set(field, setTimeout(() => {
+      post('/campo', JSON.stringify({ id: field.dataset.fieldId, text: text.value }), true);
+    }, 1200));
+  });
+  const button = field.querySelector('.copy');
+  button.addEventListener('click', () => copy(text.value, button));
+});
+
+function copy(text, button) {
+  navigator.clipboard.writeText(text).then(() => {
+    const label = button.querySelector('span');
+    label.textContent = W.copied_label;
+    setTimeout(() => { label.textContent = button.dataset.label; }, 1500);
+  });
+}
+
+document.getElementById('copy-all').addEventListener('click', event => {
+  const parts = [];
+  document.querySelectorAll('.field').forEach(field => {
+    const value = field.querySelector('textarea').value.trim();
+    if (value) { parts.push(field.querySelector('h3').textContent + '\\n' + value); }
+  });
+  copy(parts.join('\\n\\n'), event.currentTarget);
+});
+
+document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.setAttribute('aria-selected', String(t === tab));
+  });
+  document.querySelectorAll('.pane').forEach(p => {
+    p.hidden = p.id !== 'pane-' + tab.dataset.pane;
+  });
+}));
+
+function updateField(f) {
+  const field = document.querySelector('.field[data-field-id="' + f.id + '"]');
+  if (!field || field.dataset.mine === '1') { return; }
+  const text = field.querySelector('textarea');
+  if (document.activeElement === text) { return; }
+  if (text.value !== f.text) { text.value = f.text; grow(text); }
+  field.classList.toggle('waiting', !f.text);
+  field.classList.toggle('writing', f.state === 'writing');
+  if (f.state === 'writing') {
+    setState(field, 'writing', W.state_writing);
+  } else if (f.text) {
+    setState(field, '', W.state_ai.replace('{}', age(f.age)));
+  } else {
+    setState(field, '', W.state_waiting);
+  }
+}
+
+function addLine(line) {
+  const chat = document.getElementById('chat');
+  chat.querySelectorAll('.fresh').forEach(x => x.classList.remove('fresh'));
+  const p = document.createElement('p');
+  if (line.kind === 'pause') {
+    p.className = 'pause-mark';
+    p.textContent = W.pause_mark;
+  } else {
+    p.className = line.kind + (line.kind === 'a' ? ' fresh' : '');
+    p.textContent = line.text;
+  }
+  chat.appendChild(p);
+  const pane = document.getElementById('pane-live');
+  pane.scrollTop = pane.scrollHeight;
+}
+
+function renderCodes(codes) {
+  const box = document.getElementById('codes');
+  box.replaceChildren();
+  let fresh = 0;
+  codes.forEach(c => {
+    const card = document.createElement('article');
+    card.className = 'code' + (c.included ? '' : ' off') + (c.fresh ? ' fresh' : '');
+    card.dataset.origin = c.origin;
+    const head = document.createElement('div');
+    head.className = 'code-head';
+    const id = document.createElement('span');
+    id.className = 'code-id';
+    id.textContent = c.code;
+    const origin = document.createElement('span');
+    origin.className = 'origin';
+    origin.textContent = W[c.origin];
+    head.append(id, origin);
+    if (c.fresh) {
+      fresh += 1;
+      const badge = document.createElement('span');
+      badge.className = 'badge new';
+      badge.textContent = W.new_label;
+      head.appendChild(badge);
+    }
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'switch';
+    toggle.setAttribute('aria-label', W.include_label);
+    toggle.addEventListener('click', () => {
+      card.classList.toggle('off');
+      const body = JSON.stringify({ code: c.code, included: !card.classList.contains('off') });
+      post('/codigo', body, true);
+    });
+    head.appendChild(toggle);
+    const desc = document.createElement('p');
+    desc.className = 'code-desc';
+    desc.textContent = c.description;
+    card.append(head, desc);
+    if (c.evidence) {
+      const ev = document.createElement('p');
+      ev.className = 'code-evidence';
+      ev.textContent = c.evidence;
+      card.appendChild(ev);
+    }
+    box.appendChild(card);
+  });
+  document.getElementById('codes-count').textContent = String(codes.length);
+  const badge = document.getElementById('codes-new');
+  badge.hidden = fresh === 0;
+  badge.textContent = W.new_count.replace('{}', fresh);
+}
+
+async function poll() {
+  try {
+    const answer = await fetch('/' + TOKEN + '/vivo?desde=' + since);
+    const s = await answer.json();
+    if (s.state !== 'live') { location.reload(); return; }
+    since = s.line_count;
+    s.lines.forEach(addLine);
+    document.getElementById('banner-live').hidden = s.offline;
+    document.getElementById('banner-offline').hidden = !s.offline;
+    document.getElementById('listening-text').textContent =
+      s.offline ? W.listening_offline : W.listening;
+    if (s.version !== version) {
+      version = s.version;
+      s.fields.forEach(updateField);
+      renderCodes(s.codes);
+    }
+  } catch (err) {
+    // un sondeo perdido no importa: el siguiente trae todo lo que falte
+  }
+  setTimeout(poll, 1000);
+}
+
+function flush() {
+  if (!pending.length || !context) { return; }
+  const total = pending.reduce((n, a) => n + a.length, 0);
+  const all = new Float32Array(total);
+  let offset = 0;
+  pending.forEach(a => { all.set(a, offset); offset += a.length; });
+  pending = [];
+  const ratio = context.sampleRate / 16000;
+  const n = Math.floor(all.length / ratio);
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * ratio);
+    const b = Math.min(all.length, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for (let j = a; j < b; j++) { sum += all[j]; }
+    const v = sum / Math.max(1, b - a);
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+  }
+  post('/pcm', out.buffer, false);
+}
+
+async function startAudio() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  } catch (err) {
+    showError(W.mic_denied);
+    return;
+  }
+  context = new AudioContext();
+  const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+  await context.audioWorklet.addModule(url);
+  const source = context.createMediaStreamSource(stream);
+  const tap = new AudioWorkletNode(context, 'aida-tap');
+  tap.port.onmessage = ev => { if (!paused) { pending.push(ev.data); } };
+  source.connect(tap);
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 64;
+  source.connect(analyser);
+  const bins = new Uint8Array(analyser.frequencyBinCount);
+  const bars = document.querySelectorAll('.meter span');
+  const draw = () => {
+    analyser.getByteFrequencyData(bins);
+    bars.forEach((bar, i) => { bar.style.height = Math.max(8, bins[i + 2] / 2.55) + '%'; });
+    requestAnimationFrame(draw);
+  };
+  draw();
+  setInterval(flush, 1000);
+  setInterval(() => {
+    if (paused) { return; }
+    elapsed += 1;
+    const clock = String(Math.floor(elapsed / 60)).padStart(2, '0') + ':' +
+      String(elapsed % 60).padStart(2, '0');
+    document.getElementById('clock').textContent = clock;
+    document.getElementById('pill-text').textContent = W.recording_pill + ' ' + clock;
+  }, 1000);
+}
+
+document.getElementById('pause').addEventListener('click', () => {
+  paused = !paused;
+  if (paused) { pending = []; }
+  post('/pausa', JSON.stringify({ paused: paused }), true);
+  document.body.classList.toggle('paused', paused);
+  const pill = document.getElementById('head-pill');
+  pill.classList.toggle('rec-pill', !paused);
+  pill.classList.toggle('pause-pill', paused);
+  if (paused) { document.getElementById('pill-text').textContent = W.pill_paused; }
+  document.getElementById('strip-note').textContent = paused ? W.strip_paused : W.strip_recording;
+  document.querySelector('#pause span').textContent = paused ? W.resume_label : W.pause_label;
+  document.querySelector('#pause use').setAttribute('href', paused ? '#i-play' : '#i-pause');
+  document.getElementById('listening').hidden = paused;
+});
+
+document.getElementById('stop').addEventListener('click', async () => {
+  flush();
+  await post('/terminar', '', false);
+  location.reload();
+});
+
+startAudio();
+poll();
 """

@@ -29,9 +29,11 @@ from aida.engine.state import AgentState, ExecutionState
 
 if TYPE_CHECKING:
     from aida.arms.health.app import AppProblem, AppReady
+    from aida.arms.health.capture import CaptureSettings
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
+    from aida.arms.health.transcription import CloudWhisperSTT
     from aida.engine.events import EventLog
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
@@ -230,7 +232,7 @@ def _transcription(stt: object, key: str) -> object:
     import os
 
     from aida.arms.health.capture import load_capture_settings
-    from aida.arms.health.transcription import CloudWhisperSTT, FallbackTranscription
+    from aida.arms.health.transcription import FallbackTranscription
     from aida.arms.health.transcripts import CachedSTT, TranscriptCache
 
     ajustes = load_capture_settings()
@@ -258,28 +260,8 @@ def _transcription(stt: object, key: str) -> object:
         )
         return local
 
-    import httpx
-
-    http = httpx.Client(
-        base_url=ajustes.cloud_base_url,
-        timeout=httpx.Timeout(
-            connect=ajustes.connect_timeout_seconds,
-            read=ajustes.timeout_seconds,
-            write=ajustes.timeout_seconds,
-            pool=ajustes.timeout_seconds,
-        ),
-        headers={"Authorization": f"Bearer {api_key}"},
-    )
     nube = CachedSTT(
-        CloudWhisperSTT(
-            http,
-            model=ajustes.cloud_model,
-            language=ajustes.cloud_language,
-            prompt=ajustes.transcription_prompt,
-            formats=frozenset(ajustes.cloud_formats),
-            timestamps=ajustes.cloud_timestamps,
-            abbreviations=frozenset(ajustes.abbreviations),
-        ),
+        _cloud_stt(ajustes, api_key),
         cache,
         model=f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:{prompt}",
         no_speech_threshold=ajustes.no_speech_threshold,
@@ -293,6 +275,48 @@ def _transcription(stt: object, key: str) -> object:
         )
 
     return FallbackTranscription(nube, cast(Any, local), on_fallback=aviso)
+
+
+def _cloud_stt(ajustes: CaptureSettings, api_key: str) -> CloudWhisperSTT:
+    """El cliente de transcripción en la nube, en un solo sitio: lo usan la consulta
+    de siempre (con caché y respaldo) y el vivo (sin ninguno de los dos). Con dos
+    construcciones, el vivo acabaría con otro modelo, otro idioma u otro prompt."""
+    import httpx
+
+    from aida.arms.health.transcription import CloudWhisperSTT
+
+    http = httpx.Client(
+        base_url=ajustes.cloud_base_url,
+        timeout=httpx.Timeout(
+            connect=ajustes.connect_timeout_seconds,
+            read=ajustes.timeout_seconds,
+            write=ajustes.timeout_seconds,
+            pool=ajustes.timeout_seconds,
+        ),
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    return CloudWhisperSTT(
+        http,
+        model=ajustes.cloud_model,
+        language=ajustes.cloud_language,
+        prompt=ajustes.transcription_prompt,
+        formats=frozenset(ajustes.cloud_formats),
+        timestamps=ajustes.cloud_timestamps,
+        abbreviations=frozenset(ajustes.abbreviations),
+    )
+
+
+def _live_transcriber() -> CloudWhisperSTT | None:
+    """El transcriptor del vivo: solo la nube, sin caché ni respaldo local. En vivo
+    el modelo local acierta mal los nombres (`I-137`) y se vería peor de lo que es;
+    sin nube, el vivo se pausa y todo se transcribe al terminar (plan 77b)."""
+    from aida.arms.health.capture import load_capture_settings
+
+    ajustes = load_capture_settings()
+    api_key = os.environ.get("AIDA_STT_API_KEY")
+    if ajustes.provider != "cloud" or not api_key:
+        return None
+    return _cloud_stt(ajustes, api_key)
 
 
 def _cognition(args: argparse.Namespace, note_settings: NoteSettings) -> object | None:
@@ -473,6 +497,7 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
         log=log,
         cloud=bool(os.environ.get("AIDA_STT_API_KEY")),
         writer=escritor,
+        live_stt=_live_transcriber(),
     )
 
 

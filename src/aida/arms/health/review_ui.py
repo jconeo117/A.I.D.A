@@ -30,6 +30,7 @@ import yaml
 from aida.arms.health.match import CodeOrigin, MatchedCode
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import Answer, ItemKind, Reviewer, ReviewItem, Verdict
+from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import is_interrogative
 
 _RAIZ = Path(__file__).resolve().parents[4]
@@ -176,6 +177,24 @@ def history_view(path: Path | None, text: str) -> HistoryView:
     return HistoryView(content_type=None, data=b"", text=text)
 
 
+def _render_field(
+    spec: SectionSpec, texto: str, propio: str | None, wording: ReviewWording, copiar: str
+) -> str:
+    e = html.escape
+    visible = propio if propio is not None else texto
+    editado = propio is not None and propio.strip() != texto.strip()
+    clases = "field" + ("" if visible.strip() else " empty") + (" edited" if editado else "")
+    return (
+        f'<article class="{clases}" data-field-id="{e(spec.section_id)}" '
+        f'data-original="{e(texto)}">'
+        f'<div class="field-head"><h3>{e(spec.label)}</h3>'
+        f'<span class="badge"{"" if editado else " hidden"}>{e(wording.edited_label)}</span>'
+        f"{copiar}</div>"
+        f'<textarea placeholder="{e(wording.empty_field_placeholder)}">{e(visible)}</textarea>'
+        f"</article>"
+    )
+
+
 def _render_page(
     matches: tuple[MatchedCode, ...],
     note: RenderedNote,
@@ -185,6 +204,9 @@ def _render_page(
     moment: datetime,
     wording: ReviewWording,
     token: str,
+    *,
+    overrides: Mapping[str, str] | None = None,
+    excluded: frozenset[str] = frozenset(),
 ) -> str:
     """La nota al centro, que es lo que se copia; a la derecha, en pestañas, lo que
     se consulta para corregirla. Cada código empieza incluido: el profesional quita
@@ -206,21 +228,21 @@ def _render_page(
         f'<button type="button" class="icon-btn copy" data-label="{e(wording.copy_label)}">'
         f'<svg><use href="#i-copy"/></svg><span>{e(wording.copy_label)}</span></button>'
     )
+    # Lo que el profesional escribió en vivo (plan 77b) llega ya puesto y marcado
+    # como editado; `data-original` guarda lo del modelo, que es contra lo que se
+    # compara al guardar (`review_note`).
+    propios = overrides or {}
     campos = "\n".join(
-        f'<article class="field{"" if texto.strip() else " empty"}" '
-        f'data-field-id="{e(spec.section_id)}">'
-        f'<div class="field-head"><h3>{e(spec.label)}</h3>'
-        f'<span class="badge" hidden>{e(wording.edited_label)}</span>{copiar}</div>'
-        f'<textarea placeholder="{e(wording.empty_field_placeholder)}">{e(texto)}</textarea>'
-        f"</article>"
+        _render_field(spec, texto, propios.get(spec.section_id), wording, copiar)
         for spec, texto in note.fields
     )
     codigos = "\n".join(
-        f'<article class="code" data-ref="{e(m.diagnostic.code)}" '
-        f'data-origin="{m.origin.value}">'
+        f'<article class="code{" off" if m.diagnostic.code in excluded else ""}" '
+        f'data-ref="{e(m.diagnostic.code)}" data-origin="{m.origin.value}">'
         f'<div class="code-head"><span class="code-id">{e(m.diagnostic.code)}</span>'
         f'<span class="origin">{e(origenes[m.origin])}</span>'
-        f'<button type="button" class="switch" role="switch" aria-checked="true" '
+        f'<button type="button" class="switch" role="switch" '
+        f'aria-checked="{"false" if m.diagnostic.code in excluded else "true"}" '
         f'aria-label="{e(wording.include_label)}"></button></div>'
         f'<p class="code-desc">{e(m.diagnostic.description)}</p>'
         + (
@@ -645,7 +667,7 @@ function copy(text, button) {
 
 document.querySelectorAll('.field').forEach(field => {
   const text = field.querySelector('textarea');
-  const original = text.value;
+  const original = field.dataset.original;
   grow(text);
   text.addEventListener('input', () => {
     grow(text);

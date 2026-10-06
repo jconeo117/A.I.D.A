@@ -209,18 +209,41 @@ class Consultation:
         self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
     ) -> PreparedConsultation:
         """Transcribe, segmenta, extrae, lee la historia y coteja — y se para
-        ahí: ni modelo ni caché."""
+        ahí: ni modelo ni caché. Es la composición de `transcribe` y `analyze`:
+        quien ya tiene el texto (el vivo, plan 77b) entra por `analyze` y pasa por
+        exactamente el mismo análisis."""
         if self._extractor is not None and self._segmenter is None:
             raise ValueError("extracción activa pero no hay segmentador configurado")
+        transcript = self.transcribe(owner=owner, audio_path=audio_path)
+        return self.analyze(owner=owner, transcript=transcript, history_text=history_text)
 
+    def transcribe(self, *, owner: AgentId, audio_path: Path) -> str:
         if self._diarizer is not None:
-            transcript = self._diarize_and_label(owner, audio_path)
-        elif self._segmenter is not None:
+            return self._diarize_and_label(owner, audio_path)
+        if self._segmenter is not None:
             segments = self._stt.transcribe_segments(audio_path)
-            transcript = "\n".join(s.text for s in segments)
-        else:
-            transcript = self._stt.transcribe(audio_path)
-        self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
+            return "\n".join(s.text for s in segments)
+        return self._stt.transcribe(audio_path)
+
+    def analyze(
+        self,
+        *,
+        owner: AgentId,
+        transcript: str,
+        history_text: str | Callable[[], str],
+        log: EventLog | None = None,
+    ) -> PreparedConsultation:
+        """El análisis de un texto ya transcrito. Una sola puerta: la usan `prepare`
+        y el vivo, y con dos copias el borrador en vivo y el definitivo podrían
+        ordenar o cotejar distinto.
+
+        `log` lo pasa el vivo con un registro propio: lo provisional se analiza
+        muchas veces y no es una entrada del sistema, así que no va al journal de
+        la consulta. Lo que se registra es el análisis definitivo."""
+        if self._extractor is not None and self._segmenter is None:
+            raise ValueError("extracción activa pero no hay segmentador configurado")
+        registro = log if log is not None else self._log
+        registro.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=transcript)
 
         retractadas: frozenset[str] = frozenset()
         if self._retraction is not None:
@@ -234,7 +257,7 @@ class Consultation:
         encounter = None
         if self._segmenter is not None:
             grouped_sections = self._segmenter.segment(transcript)
-            self._log.emit(
+            registro.emit(
                 tick=0,
                 kind=EventKind.TEXT_SEGMENTED,
                 owner=owner,
@@ -244,7 +267,7 @@ class Consultation:
             )
             if grouped_sections is not None:
                 encounter = build_encounter(owner=owner, grouped_sections=grouped_sections)
-                self._log.emit(
+                registro.emit(
                     tick=0,
                     kind=EventKind.MODEL_BUILT,
                     owner=owner,
@@ -275,7 +298,7 @@ class Consultation:
                         )
                         if value is not None
                     }
-                    self._log.emit(
+                    registro.emit(
                         tick=0,
                         kind=EventKind.FIELDS_EXTRACTED,
                         owner=owner,
@@ -283,7 +306,7 @@ class Consultation:
                     )
 
         history = history_text() if callable(history_text) else history_text
-        self._log.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
+        registro.emit(tick=0, kind=EventKind.INPUT_OBSERVED, owner=owner, content=history)
 
         de_hoy, de_historia = self._codable_texts(
             transcript, history, grouped_sections, retractadas
@@ -295,7 +318,7 @@ class Consultation:
             threshold=self._threshold,
             top_n=self._top_n,
         )
-        self._log.emit(
+        registro.emit(
             tick=0,
             kind=EventKind.CATALOG_MATCHED,
             owner=owner,

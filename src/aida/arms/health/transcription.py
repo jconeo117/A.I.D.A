@@ -117,7 +117,13 @@ class CloudWhisperSTT:
         self._timestamps = timestamps
         self._abbreviations = abbreviations
 
-    def transcribe_segments(self, audio_path: Path) -> tuple[TranscriptSegment, ...]:
+    def transcribe_segments(
+        self, audio_path: Path, *, context: str = ""
+    ) -> tuple[TranscriptSegment, ...]:
+        """`context` es lo último que se dijo, para el vivo (plan 77b): un enunciado
+        suelto de cinco segundos no sabe de qué se hablaba, y con las frases
+        anteriores en el prompt los nombres propios se aciertan mejor. Por la puerta
+        de siempre llega vacío y nada cambia."""
         # Antes de abrir el archivo: subir diez megabytes para que el proveedor
         # los rechace cuesta minutos, y la extensión ya lo dice. `formats` vacío
         # significa «no se declaró ninguna restricción», no «ninguno vale».
@@ -135,8 +141,9 @@ class CloudWhisperSTT:
             datos["timestamp_granularities[]"] = "segment"
         else:
             datos["response_format"] = "json"
-        if self._prompt:
-            datos["prompt"] = self._prompt
+        prompt = f"{self._prompt} {context}".strip() if context else self._prompt
+        if prompt:
+            datos["prompt"] = prompt
         with audio_path.open("rb") as audio:
             response = self._client.post(  # type: ignore[attr-defined]
                 "/v1/audio/transcriptions",
