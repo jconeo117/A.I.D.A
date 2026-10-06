@@ -708,9 +708,12 @@ document.getElementById('save').addEventListener('click', () => {
     }),
   }).then(resp => {
     if (resp.ok) {
-      document.querySelector('main').hidden = true;
-      document.querySelector('footer.bar').hidden = true;
-      document.getElementById('save-ok').hidden = false;
+      resp.json().then(data => {
+        if (data.next) { location.href = data.next; return; }
+        document.querySelector('main').hidden = true;
+        document.querySelector('footer.bar').hidden = true;
+        document.getElementById('save-ok').hidden = false;
+      });
     } else {
       resp.json().then(data => { errorBox.textContent = data.error; errorBox.hidden = false; });
     }
@@ -750,6 +753,44 @@ def _parse_answers(
             return {}, f"texto sin edición para {ref!r}"
         answers[ref] = Answer(verdict=verdict, text=text if verdict is Verdict.EDITED else None)
     return answers, None
+
+
+def parse_submission(
+    payload: Mapping[str, Any],
+    *,
+    items: tuple[ReviewItem, ...],
+    note: RenderedNote,
+    measured_elapsed: float,
+) -> tuple[ReviewSubmission | None, str]:
+    """Lo que la pantalla entregó, validado, o el motivo para rechazarlo. Es la
+    única puerta para eso: la usan la pantalla de un solo uso y la aplicación
+    (`app.py`), y con dos copias una acabaría aceptando lo que la otra rechaza.
+
+    El tiempo es el menor entre el que declara la página y el que midió quien
+    sirve: la página no puede alargar la revisión, y el servidor no sabe cuándo
+    se terminó de leer."""
+    answers, error = _parse_answers(payload.get("answers"), items)
+    if error is not None:
+        return None, error
+    campos = payload.get("note")
+    ids = sorted(spec.section_id for spec, _texto in note.fields)
+    if (
+        not isinstance(campos, dict)
+        or sorted(campos) != ids
+        or not all(isinstance(v, str) for v in campos.values())
+    ):
+        return None, "la nota no cubre exactamente sus campos"
+    declarado = payload.get("elapsed_seconds")
+    if not isinstance(declarado, int | float) or isinstance(declarado, bool) or declarado < 0:
+        return None, "elapsed_seconds inválido"
+    return (
+        ReviewSubmission(
+            answers=answers,
+            elapsed_seconds=min(float(declarado), measured_elapsed),
+            note_fields=dict(campos),
+        ),
+        "",
+    )
 
 
 @dataclass
@@ -846,30 +887,13 @@ def collect_review(
             if not isinstance(payload, dict):
                 self._responder_json(400, {"error": "cuerpo inválido"})
                 return
-            answers, error = _parse_answers(payload.get("answers"), items)
-            if error is not None:
+            submission, error = parse_submission(
+                payload, items=items, note=note, measured_elapsed=clock() - started
+            )
+            if submission is None:
                 self._responder_json(400, {"error": error})
                 return
-            campos = payload.get("note")
-            ids = sorted(spec.section_id for spec, _texto in note.fields)
-            if (
-                not isinstance(campos, dict)
-                or sorted(campos) != ids
-                or not all(isinstance(v, str) for v in campos.values())
-            ):
-                self._responder_json(400, {"error": "la nota no cubre exactamente sus campos"})
-                return
-            declarado_elapsed = payload.get("elapsed_seconds")
-            if not isinstance(declarado_elapsed, int | float) or isinstance(
-                declarado_elapsed, bool
-            ) or declarado_elapsed < 0:
-                self._responder_json(400, {"error": "elapsed_seconds inválido"})
-                return
-            medido_elapsed = clock() - started
-            elapsed_seconds = min(float(declarado_elapsed), medido_elapsed)
-            outcome.submission = ReviewSubmission(
-                answers=answers, elapsed_seconds=elapsed_seconds, note_fields=dict(campos)
-            )
+            outcome.submission = submission
             self._responder_json(200, {"ok": True})
             done.set()
 

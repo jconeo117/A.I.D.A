@@ -28,9 +28,11 @@ from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
 
 if TYPE_CHECKING:
+    from aida.arms.health.app import AppProblem, AppReady
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
+    from aida.engine.events import EventLog
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
@@ -102,6 +104,11 @@ def _construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="revisa en el navegador: la nota para editar y copiar, y los códigos "
         "(requiere --review y --note)",
+    )
+    parser.add_argument(
+        "--app",
+        action="store_true",
+        help="abre la aplicación local: subir o grabar, revisar y copiar, sin terminal",
     )
     parser.add_argument(
         "--note",
@@ -363,6 +370,7 @@ def _build_consultation(
     segmenter: object | None = None,
     extractor: object | None = None,
     key: str | None = None,
+    log: EventLog | None = None,
 ) -> Consultation | None:
     """`None` tras imprimir el error si falta o no vale AIDA_CONSULT_CACHE_KEY.
     Recibe STT y OCR ya construidos: quien llama decide si los comparte
@@ -412,7 +420,7 @@ def _build_consultation(
         cache=ConsultationCache(
             Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
         ),
-        log=EventLog(),
+        log=log if log is not None else EventLog(),
         diarizer=cast(Any, diarizer),
         segmenter=cast(Any, segmenter),
         extractor=cast(Any, extractor),
@@ -425,6 +433,46 @@ def _build_consultation(
         note_settings=ajustes_nota,
         note_providers=cast(Any, _cognition_candidates(args, ajustes_nota)),
         note_on_fallback=aviso_nota,
+    )
+
+
+def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
+    """Lo que la aplicación necesita, o por qué no puede arrancar. Se llama al
+    abrirla y cada vez que se pulsa «Reintentar»: así un extra instalado o una clave
+    puesta después se notan sin cerrar nada (`I-152`)."""
+    from aida.arms.health.app import AppProblem, AppReady
+    from aida.arms.health.capture import build_local_capture, capture_diagnosis
+    from aida.arms.health.extract import build_health_extractor
+    from aida.arms.health.note import load_note_settings
+    from aida.arms.health.segment import build_health_segmenter
+    from aida.engine.events import EventLog
+
+    if not all(correcto for _texto, correcto in capture_diagnosis()):
+        return AppProblem("capture")
+    key = _check_consult_cache_key()
+    if key is None:
+        return AppProblem("cache_key")
+    stt, ocr = build_local_capture()
+    log = EventLog()
+    consultation = _build_consultation(
+        args,
+        stt=stt,
+        ocr=ocr,
+        segmenter=build_health_segmenter(),
+        extractor=build_health_extractor(),
+        key=key,
+        log=log,
+    )
+    if consultation is None:
+        return AppProblem("cache_key")
+    candidatos = _cognition_candidates(args, load_note_settings())
+    escritor = candidatos[0][0].replace("/", " · ") if candidatos else None
+    return AppReady(
+        consultation=consultation,
+        reader=ocr,
+        log=log,
+        cloud=bool(os.environ.get("AIDA_STT_API_KEY")),
+        writer=escritor,
     )
 
 
@@ -646,6 +694,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{'ok   ' if correcto else 'FALTA'} {texto}")
         return 0 if all(correcto for _texto, correcto in lineas) else 1
 
+    if args.app:
+        from aida.arms.health.app import load_app_wording, serve
+        from aida.arms.health.review_ui import load_ui_settings
+
+        serve(
+            lambda: _app_build(args),
+            settings=load_ui_settings(),
+            wording=load_app_wording(),
+        )
+        return 0
+
     if args.consultation:
         if not args.audio or not args.history:
             print("aida: error: --consultation requiere --audio y --history", file=sys.stderr)
@@ -709,7 +768,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         from aida.arms.health.capture import build_local_capture
         from aida.engine.ontology import AgentId
 
-        stt, ocr = build_local_capture()
+        try:
+            stt, ocr = build_local_capture()
+        except ImportError:
+            print(
+                "aida: error: falta el extra de captura: uv sync --extra capture",
+                file=sys.stderr,
+            )
+            return 1
         consultation = _build_consultation(
             args,
             stt=stt,
@@ -738,35 +804,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if args.ui:
                         from datetime import datetime
 
-                        from aida.arms.health.review import review_items
+                        from aida.arms.health.app import close_from_screen, draft_for_screen
                         from aida.arms.health.review_ui import (
                             ReviewAbandoned,
                             collect_review,
                             history_view,
                             load_ui_settings,
-                            reviewer_from,
                         )
-                        from aida.arms.health.wording import default_summary_wording
 
-                        wording = default_summary_wording()
-                        assert prepared.grouped_sections is not None
-                        assert prepared.encounter is not None
-                        nota = consultation.render_note(prepared)
-                        items = review_items(
-                            grouped_sections=prepared.grouped_sections,
-                            encounter=prepared.encounter,
-                            matches=prepared.matches,
-                            known_code_suffix=wording.known_code_suffix,
-                            evidence_template=wording.evidence_template,
-                            negated_suffix=wording.negated_suffix,
-                            review_findings=False,
-                        )
+                        borrador = draft_for_screen(consultation, prepared)
                         ajustes_ui = load_ui_settings()
                         try:
                             envio = collect_review(
-                                items,
+                                borrador.items,
                                 matches=prepared.matches,
-                                note=nota,
+                                note=borrador.note,
                                 transcript=prepared.transcript,
                                 history=history_view(Path(args.history), prepared.history),
                                 owner=args.owner,
@@ -778,14 +830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
                             )
                             return 1
-                        result = consultation.review(
-                            prepared,
-                            reviewer=reviewer_from(envio),
-                            elapsed_seconds=envio.elapsed_seconds,
-                            review_findings=False,
-                            note=nota,
-                            note_edits=envio.note_fields,
-                        )
+                        result = close_from_screen(consultation, borrador, envio)
                     else:
                         try:
                             result = consultation.review(prepared, reviewer=_review_from_stdin)
