@@ -4191,3 +4191,183 @@ def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
     assert "_Editado por el profesional: Motivo de consulta_" in captured.out
 
 
+def test_cli_app_llama_a_serve_con_app_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 20 (§B.5): --app llama a serve con un build que es _app_build
+    y construye AppReady en un entorno válido."""
+    from aida.arms.health.app import AppReady
+    from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+
+    llamadas_serve: list[dict[str, Any]] = []
+
+    def spy_serve(build: Any, *, settings: Any, wording: Any) -> None:
+        llamadas_serve.append({"build": build, "settings": settings, "wording": wording})
+
+    monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "aida.arms.health.capture.capture_diagnosis",
+        lambda: (("tesseract", True), ("faster-whisper", True)),
+    )
+
+    class _DummySTT(LocalWhisperSTT):
+        def __init__(self) -> None:
+            super().__init__(model=object())
+
+        def transcribe_segments(self, path: Path) -> tuple[Any, ...]:
+            return ()
+
+    class _DummyOCR(LocalTesseractOCR):
+        def __init__(self) -> None:
+            super().__init__(pytesseract_module=object())
+
+        def read(self, path: Path) -> str:
+            return ""
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    codigo = main(["--app"])
+    assert codigo == 0
+    assert len(llamadas_serve) == 1
+    ready = llamadas_serve[0]["build"]()
+    assert isinstance(ready, AppReady)
+
+
+def test_cli_consultation_sin_extra_captura_falla_con_mensaje_i152(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 21 (§B.5, M10): --consultation cuando build_local_capture levanta
+    ImportError devuelve código 1 y avisa en stderr de la falta del extra de captura."""
+    def fail_capture() -> Any:
+        raise ImportError("No module named 'faster_whisper'")
+
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr("aida.arms.health.capture.build_local_capture", fail_capture)
+    audio = tmp_path / "consulta.wav"
+    audio.write_bytes(b"RIFF")
+    historia = tmp_path / "historia.txt"
+    historia.write_text("historia", encoding="utf-8")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--note",
+            "--review",
+            "--audio",
+            str(audio),
+            "--history",
+            str(historia),
+            "--owner",
+            "doc-01",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: falta el extra de captura: uv sync --extra capture" in captured.err
+
+
+def test_cli_ui_usa_draft_for_screen_y_close_from_screen(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 22 (§B.5): La rama --ui usa draft_for_screen y close_from_screen
+    en vez de orquestar la revisión por su cuenta."""
+    import aida.arms.health.app as app_mod
+    from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+    from aida.arms.health.review import Answer, ReviewItem, Verdict
+    from aida.arms.health.review_ui import ReviewSubmission
+
+    _clean_llm_env(monkeypatch)
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    class _DummySTT(LocalWhisperSTT):
+        def __init__(self) -> None:
+            super().__init__(model=object())
+
+        def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla"),)
+
+    class _DummyOCR(LocalTesseractOCR):
+        def __init__(self) -> None:
+            super().__init__(pytesseract_module=object())
+
+        def read(self, path: Path) -> str:
+            return "Historia previa."
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    draft_calls = 0
+    close_calls = 0
+    orig_draft = app_mod.draft_for_screen
+    orig_close = app_mod.close_from_screen
+
+    def spy_draft(*args: Any, **kwargs: Any) -> Any:
+        nonlocal draft_calls
+        draft_calls += 1
+        return orig_draft(*args, **kwargs)
+
+    def spy_close(*args: Any, **kwargs: Any) -> Any:
+        nonlocal close_calls
+        close_calls += 1
+        return orig_close(*args, **kwargs)
+
+    monkeypatch.setattr("aida.arms.health.app.draft_for_screen", spy_draft)
+    monkeypatch.setattr("aida.arms.health.app.close_from_screen", spy_close)
+
+    def mock_collect(
+        items: tuple[ReviewItem, ...],
+        *,
+        note: Any,
+        **kwargs: Any,
+    ) -> ReviewSubmission:
+        answers = {item.ref: Answer(Verdict.CONFIRMED) for item in items}
+        note_fields = {spec.section_id: texto for spec, texto in note.fields}
+        return ReviewSubmission(answers=answers, elapsed_seconds=2.0, note_fields=note_fields)
+
+    monkeypatch.setattr("aida.arms.health.review_ui.collect_review", mock_collect)
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(b"RIFF dummy audio")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia previa.", encoding="utf-8")
+
+    codigo = main(
+        [
+            "--consultation",
+            "--segment",
+            "--note",
+            "--review",
+            "--ui",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "doc_cli_spy",
+        ]
+    )
+    capsys.readouterr()
+    assert codigo == 0
+    assert draft_calls == 1
+    assert close_calls == 1
+
+
+

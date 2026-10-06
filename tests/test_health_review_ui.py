@@ -47,6 +47,7 @@ from aida.arms.health.review_ui import (
     collect_review,
     history_view,
     load_ui_settings,
+    parse_submission,
     reviewer_from,
 )
 from aida.arms.health.sections import SectionSpec
@@ -1053,3 +1054,197 @@ def test_collect_review_items_y_matches_no_coinciden_levanta_value_error_antes_d
             open_browser=spy_open,
         )
     assert not abierto
+
+
+def test_parse_submission_valida_y_calcula_menor_tiempo() -> None:
+    """Caso 1 y 2 (§B.1): parse_submission acepta envíos correctos y fija
+    elapsed_seconds al mínimo entre el declarado y el medido."""
+    items = _crear_codigos_prueba()
+    nota = _crear_nota_prueba()
+    payload = _payload_valido(elapsed=5.0)
+
+    # 1. Declarado menor que medido
+    sub, err = parse_submission(payload, items=items, note=nota, measured_elapsed=10.0)
+    assert err == ""
+    assert sub is not None
+    assert sub.elapsed_seconds == 5.0
+    assert set(sub.answers.keys()) == {"I10X", "E119"}
+    assert set(sub.note_fields.keys()) == {"motivo", "plan"}
+
+    # 2. Medido menor que declarado
+    sub2, err2 = parse_submission(payload, items=items, note=nota, measured_elapsed=3.0)
+    assert err2 == ""
+    assert sub2 is not None
+    assert sub2.elapsed_seconds == 3.0
+
+
+@pytest.mark.parametrize(
+    ("payload_invalido", "mensaje_esperado"),
+    [
+        (
+            {
+                "answers": "no-es-dict",
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "answers debe ser un mapeo",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "las respuestas no cubren exactamente los ítems de la revisión",
+        ),
+        (
+            {
+                "answers": {
+                    "I10X": {"verdict": "confirmed"},
+                    "E119": {"verdict": "confirmed"},
+                    "EXTRA": {"verdict": "confirmed"},
+                },
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "las respuestas no cubren exactamente los ítems de la revisión",
+        ),
+        (
+            {
+                "answers": {"I10X": "no-dict", "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "respuesta inválida para 'I10X'",
+        ),
+        (
+            {
+                "answers": {
+                    "I10X": {"verdict": "desconocido"},
+                    "E119": {"verdict": "confirmed"},
+                },
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "veredicto desconocido para 'I10X'",
+        ),
+        (
+            {
+                "answers": {
+                    "I10X": {"verdict": "edited"},
+                    "E119": {"verdict": "confirmed"},
+                },
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "veredicto 'edited' no admitido para 'I10X'",
+        ),
+        (
+            {
+                "answers": {
+                    "I10X": {"verdict": "confirmed", "text": "sobra"},
+                    "E119": {"verdict": "confirmed"},
+                },
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "texto sin edición para 'I10X'",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": "no-es-dict",
+                "elapsed_seconds": 1.0,
+            },
+            "la nota no cubre exactamente sus campos",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m"},
+                "elapsed_seconds": 1.0,
+            },
+            "la nota no cubre exactamente sus campos",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p", "sobra": "s"},
+                "elapsed_seconds": 1.0,
+            },
+            "la nota no cubre exactamente sus campos",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": 123, "plan": "p"},
+                "elapsed_seconds": 1.0,
+            },
+            "la nota no cubre exactamente sus campos",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+            },
+            "elapsed_seconds inválido",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": -0.5,
+            },
+            "elapsed_seconds inválido",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": True,
+            },
+            "elapsed_seconds inválido",
+        ),
+        (
+            {
+                "answers": {"I10X": {"verdict": "confirmed"}, "E119": {"verdict": "confirmed"}},
+                "note": {"motivo": "m", "plan": "p"},
+                "elapsed_seconds": "1.0",
+            },
+            "elapsed_seconds inválido",
+        ),
+    ],
+)
+def test_parse_submission_rechazos(
+    payload_invalido: dict[str, Any],
+    mensaje_esperado: str,
+) -> None:
+    """Caso 1 (§B.1): parse_submission rechaza respuestas incompletas, veredictos
+    no admitidos, notas que no cubren exactamente sus campos y tiempos inválidos
+    con los mismos mensajes que collect_review."""
+    items = _crear_codigos_prueba()
+    nota = _crear_nota_prueba()
+    sub, err = parse_submission(payload_invalido, items=items, note=nota, measured_elapsed=10.0)
+    assert sub is None
+    assert err == mensaje_esperado
+
+
+def test_parse_submission_edicion_sin_texto_en_item_que_la_admite() -> None:
+    """parse_submission rechaza veredicto EDITED sin texto cuando el ítem lo admite."""
+    item = ReviewItem(
+        kind=ItemKind.FINDING,
+        ref="motivo:0",
+        label="motivo",
+        text="Cefalea",
+        allowed=FINDING_VERDICTS,
+    )
+    nota = _crear_nota_prueba()
+    payload = {
+        "answers": {"motivo:0": {"verdict": "edited"}},
+        "note": {"motivo": "m", "plan": "p"},
+        "elapsed_seconds": 1.0,
+    }
+    sub, err = parse_submission(payload, items=(item,), note=nota, measured_elapsed=10.0)
+    assert sub is None
+    assert err == "edición sin texto para 'motivo:0'"
+
