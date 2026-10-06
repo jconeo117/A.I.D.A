@@ -861,14 +861,23 @@ def test_campos_nota_article_y_clase_empty() -> None:
         html_content = resp.text
 
         # Campo lleno no tiene clase empty
-        assert '<article class="field" data-field-id="lleno">' in html_content
+        assert (
+            '<article class="field" data-field-id="lleno" '
+            'data-original="Contenido del campo">' in html_content
+        )
         assert "Contenido del campo</textarea>" in html_content
 
         # Campo vacío tiene clase empty
-        assert '<article class="field empty" data-field-id="vacio">' in html_content
+        assert (
+            '<article class="field empty" data-field-id="vacio" '
+            'data-original="">' in html_content
+        )
 
         # Campo con solo espacios tiene clase empty
-        assert '<article class="field empty" data-field-id="blanco">' in html_content
+        assert (
+            '<article class="field empty" data-field-id="blanco" '
+            'data-original="   \n  ">' in html_content
+        )
     finally:
         httpx.post(
             f"{url}/guardar",

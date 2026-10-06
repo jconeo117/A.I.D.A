@@ -3747,4 +3747,86 @@ def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
     assert r.fields["motivo"] == {"confirmed": 1}
 
 
+# ---------------------------------------------------------------------------
+# Plan 77b: El análisis, una sola puerta (§B.1)
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_da_lo_mismo_que_analyze_con_transcribe(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 1 (§B.1, C.1): prepare(...) da lo mismo que analyze(transcript=transcribe(...)).
+
+    Mismos matches, grouped_sections, transcript e history.
+    """
+    segments = (
+        TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza intenso"),
+    )
+    stt = _SpyWhisperSTT(segments=segments)
+    catalog = build_index((DiagnosticCode("R51", "Cefalea", 3, "ambas"),))
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=stt,
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=EventLog(window=100),
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+    )
+    owner = AgentId("medico_77b")
+    audio = Path("/tmp/audio_77b.wav")
+    historia = "Historia previa del paciente"
+
+    preparado = consultation.prepare(owner=owner, audio_path=audio, history_text=historia)
+    transcript = consultation.transcribe(owner=owner, audio_path=audio)
+    analizado = consultation.analyze(owner=owner, transcript=transcript, history_text=historia)
+
+    assert preparado.matches == analizado.matches
+    assert preparado.grouped_sections == analizado.grouped_sections
+    assert preparado.transcript == analizado.transcript
+    assert preparado.history == analizado.history
+    assert preparado.owner == analizado.owner
+
+
+def test_analyze_con_log_aislado_no_modifica_registro_consulta(
+    sample_wording_review: SummaryWording, sample_cache: ConsultationCache
+) -> None:
+    """Caso 2 (§B.1, M1): analyze(..., log=EventLog()) no deja ningún evento en el registro
+
+    de la consulta; sin log, deja los eventos normales.
+    """
+    catalog = build_index((DiagnosticCode("R51", "Cefalea", 3, "ambas"),))
+    log_consulta = EventLog(window=100)
+    consultation = Consultation(
+        wording=sample_wording_review,
+        stt=_SpyWhisperSTT(),
+        ocr=_DummyOCR(),
+        catalog_index=catalog,
+        provider=None,
+        cache=sample_cache,
+        log=log_consulta,
+        segmenter=ClinicalSegmenter(load_sections()),
+        extractor=build_health_extractor(),
+    )
+    owner = AgentId("medico_log")
+    texto = "consulta por dolor de cabeza"
+
+    log_aislado = EventLog(window=100)
+    consultation.analyze(owner=owner, transcript=texto, history_text="", log=log_aislado)
+
+    # El registro de la consulta no se toca
+    assert len(log_consulta) == 0
+    # Pero el aislado sí recibió los eventos
+    assert len(log_aislado) > 0
+    assert any(e.kind == EventKind.INPUT_OBSERVED for e in log_aislado)
+
+    # Sin log, emite en el registro de la consulta
+    consultation.analyze(owner=owner, transcript=texto, history_text="")
+    assert len(log_consulta) > 0
+    assert any(e.kind == EventKind.INPUT_OBSERVED for e in log_consulta)
+
+
+
 

@@ -29,8 +29,10 @@ from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
+import numpy as np
 import pytest
 import yaml
 from cryptography.fernet import Fernet
@@ -40,6 +42,8 @@ from aida.arms.health.app import (
     AppProblem,
     AppReady,
     AppWording,
+    ReviewDraft,
+    _keep_mine,
     close_from_screen,
     draft_for_screen,
     load_app_wording,
@@ -52,10 +56,13 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT, Transcr
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation
 from aida.arms.health.extract import build_health_extractor
+from aida.arms.health.live import LiveTranscriber
 from aida.arms.health.match import build_index
-from aida.arms.health.note import load_note_settings
+from aida.arms.health.metrics import ReviewMetricsStore
+from aida.arms.health.note import RenderedNote, load_note_settings
 from aida.arms.health.review import Answer, ItemKind, Verdict
 from aida.arms.health.review_ui import ReviewSubmission, UISettings, load_ui_settings
+from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import build_health_segmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
@@ -102,7 +109,13 @@ def _crear_wav_minimo() -> bytes:
     return buf.getvalue()
 
 
-def _crear_app_ready(tmp_path: Path, *, fail_stt: bool = False) -> AppReady:
+def _crear_app_ready(
+    tmp_path: Path,
+    *,
+    fail_stt: bool = False,
+    store: ReviewMetricsStore | None = None,
+    live_stt: LiveTranscriber | None = None,
+) -> AppReady:
     log = EventLog()
     consultation = Consultation(
         wording=default_summary_wording(),
@@ -115,6 +128,7 @@ def _crear_app_ready(tmp_path: Path, *, fail_stt: bool = False) -> AppReady:
         segmenter=build_health_segmenter(),
         extractor=build_health_extractor(),
         note_settings=load_note_settings(),
+        review_metrics=store,
     )
     return AppReady(
         consultation=consultation,
@@ -122,7 +136,12 @@ def _crear_app_ready(tmp_path: Path, *, fail_stt: bool = False) -> AppReady:
         log=log,
         cloud=True,
         writer="modelo-prueba",
+        live_stt=live_stt,
     )
+
+
+def _dummy_vad(audio: np.ndarray) -> np.ndarray:
+    return np.zeros(1, dtype=np.float32)
 
 
 def _lanzar_servidor_app(
@@ -130,6 +149,7 @@ def _lanzar_servidor_app(
     *,
     settings: UISettings | None = None,
     wording: AppWording | None = None,
+    **extra_serve_kwargs: Any,
 ) -> tuple[str, str, int, threading.Thread, dict[str, Any]]:
     ajustes = settings if settings is not None else load_ui_settings()
     palabras = wording if wording is not None else load_app_wording()
@@ -140,10 +160,17 @@ def _lanzar_servidor_app(
         info["url"] = url
         listo.set()
 
+    serve_kwargs = {
+        "settings": ajustes,
+        "wording": palabras,
+        "open_browser": _abrir,
+        "vad_factory": lambda: _dummy_vad,
+        **extra_serve_kwargs,
+    }
     hilo = threading.Thread(
         target=serve,
         args=(build_fn,),
-        kwargs={"settings": ajustes, "wording": palabras, "open_browser": _abrir},
+        kwargs=serve_kwargs,
         daemon=True,
     )
     hilo.start()
@@ -593,3 +620,330 @@ def test_servidor_escapa_todo_html(tmp_path: Path) -> None:
     finally:
         httpx.post(f"{url}/salir", timeout=5.0)
         hilo.join(timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Plan 77b: La consulta en vivo y la revisión (§B.4)
+# ---------------------------------------------------------------------------
+
+
+def test_servidor_empezar_modo_vivo_validaciones(tmp_path: Path) -> None:
+    """Caso 14 (§B.4): /empezar con recorded y consent -> estado live;
+
+    sin consent -> 400; sin documento -> 400.
+    """
+    ready = _crear_app_ready(tmp_path)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
+    try:
+        # 1. Sin documento ni consent -> 400
+        r1 = httpx.post(
+            f"{url}/empezar",
+            json={"owner": "HC-01", "recorded": True, "consent": False},
+        )
+        assert r1.status_code == 400
+
+        # 2. Sin documento pero con consent -> 400
+        r2 = httpx.post(
+            f"{url}/empezar",
+            json={"owner": "HC-01", "recorded": True, "consent": True},
+        )
+        assert r2.status_code == 400
+
+        # Subir documento
+        httpx.post(
+            f"{url}/documento",
+            content=b"%PDF-1.4 dummy",
+            headers={"X-Name": "doc.pdf"},
+            timeout=5.0,
+        )
+
+        # 3. Con documento pero sin consent -> 400
+        r3 = httpx.post(
+            f"{url}/empezar",
+            json={"owner": "HC-01", "recorded": True, "consent": False},
+        )
+        assert r3.status_code == 400
+
+        # 4. Con documento y con consent -> 200, pasa a estado live
+        r4 = httpx.post(
+            f"{url}/empezar",
+            json={"owner": "HC-01", "recorded": True, "consent": True},
+        )
+        assert r4.status_code == 200
+        estado = httpx.get(f"{url}/estado").json()
+        assert estado.get("state") == "live"
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_rutas_vivo_fuera_de_live_y_campo_desconocido(tmp_path: Path) -> None:
+    """Caso 15 (§B.4, M13): /pcm, /campo, /codigo, /pausa fuera de live -> 409;
+
+    /campo con un id desconocido en live -> 400.
+    """
+    ready = _crear_app_ready(tmp_path)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
+    try:
+        # En estado start (fuera de live): todos devuelven 409
+        r_pcm = httpx.post(f"{url}/pcm", content=b"\x00\x00" * 512)
+        assert r_pcm.status_code == 409
+
+        r_campo = httpx.post(f"{url}/campo", json={"id": "motivo_consulta", "text": "t"})
+        assert r_campo.status_code == 409
+
+        r_cod = httpx.post(f"{url}/codigo", json={"code": "I10X", "included": False})
+        assert r_cod.status_code == 409
+
+        r_pau = httpx.post(f"{url}/pausa", json={"paused": True})
+        assert r_pau.status_code == 409
+
+        # Pasamos a live
+        httpx.post(
+            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
+        )
+        r_emp = httpx.post(
+            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
+        )
+        assert r_emp.status_code == 200
+
+        # En live: /campo con id desconocido -> 400
+        r_desc = httpx.post(f"{url}/campo", json={"id": "id_inexistente", "text": "t"})
+        assert r_desc.status_code == 400
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_ruta_vivo_desde_n_y_tipos_linea(tmp_path: Path) -> None:
+    """Caso 16 (§B.4): /vivo?desde=N devuelve solo las líneas desde N,
+
+    con kind 'q', 'a' o 'pause'.
+    """
+    class _MockLiveSTT:
+        def __init__(self) -> None:
+            self._frases = ["¿Tiene dolor de cabeza?", "Sí, me duele mucho."]
+
+        def transcribe_segments(
+            self, path: Path, *, context: str = ""
+        ) -> tuple[TranscriptSegment, ...]:
+            if self._frases:
+                return (TranscriptSegment(0.0, 1.0, self._frases.pop(0)),)
+            return ()
+
+    def _vad(audio: np.ndarray) -> np.ndarray:
+        chunk = audio[-512:] if audio.size >= 512 else audio
+        prob = 0.9 if np.max(np.abs(chunk)) > 0.05 else 0.0
+        return np.array([prob], dtype=np.float32)
+
+    ready = _crear_app_ready(tmp_path, live_stt=_MockLiveSTT())
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(
+        lambda: ready,
+        vad_factory=lambda: _vad,
+    )
+    try:
+        httpx.post(
+            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
+        )
+        httpx.post(
+            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
+        )
+
+        speech = (np.ones(512 * 5, dtype=np.int16) * 10000).tobytes()
+        silence = np.zeros(512 * 26, dtype=np.int16).tobytes()
+
+        # 1. Pregunta
+        httpx.post(f"{url}/pcm", content=speech)
+        httpx.post(f"{url}/pcm", content=silence)
+
+        deadline = time.monotonic() + 3.0
+        r_vivo = httpx.get(f"{url}/vivo?desde=0").json()
+        while time.monotonic() < deadline and not r_vivo.get("lines"):
+            time.sleep(0.05)
+            r_vivo = httpx.get(f"{url}/vivo?desde=0").json()
+
+        # 2. Pausa y reanudación
+        httpx.post(f"{url}/pausa", json={"paused": True})
+        httpx.post(f"{url}/pausa", json={"paused": False})
+
+        # 3. Respuesta
+        httpx.post(f"{url}/pcm", content=speech)
+        httpx.post(f"{url}/pcm", content=silence)
+
+        deadline = time.monotonic() + 3.0
+        r_vivo = httpx.get(f"{url}/vivo?desde=0").json()
+        while time.monotonic() < deadline and len(r_vivo.get("lines", [])) < 3:
+            time.sleep(0.05)
+            r_vivo = httpx.get(f"{url}/vivo?desde=0").json()
+
+        lineas0 = r_vivo.get("lines", [])
+        assert len(lineas0) == 3
+        assert [lin["kind"] for lin in lineas0] == ["q", "pause", "a"]
+
+        # desde=1 devuelve 2 líneas
+        r1 = httpx.get(f"{url}/vivo?desde=1").json()
+        lineas1 = r1.get("lines", [])
+        assert len(lineas1) == 2
+        assert [lin["kind"] for lin in lineas1] == ["pause", "a"]
+
+        # desde=2 devuelve 1 línea
+        r2 = httpx.get(f"{url}/vivo?desde=2").json()
+        lineas2 = r2.get("lines", [])
+        assert len(lineas2) == 1
+        assert [lin["kind"] for lin in lineas2] == ["a"]
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_terminar_a_review_con_edicion_y_rechazo_vivo(tmp_path: Path) -> None:
+    """Caso 17 (§B.4, M9, M10, M11): /terminar pasa de live a review; el campo
+
+    editado en vivo lleva clase 'edited', su texto y data-original con lo del
+    modelo; el código quitado lleva clase 'off' y aria-checked='false'.
+    """
+    pytest.importorskip("av", reason="requiere el extra de captura (av)")
+    store = ReviewMetricsStore(tmp_path / "metrics.jsonl")
+    ready = _crear_app_ready(tmp_path, store=store)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
+    try:
+        httpx.post(
+            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
+        )
+        httpx.post(
+            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
+        )
+
+        # Médico edita un campo y quita un código en vivo
+        r_ed = httpx.post(
+            f"{url}/campo",
+            json={"id": "motivo_consulta", "text": "Cefalea frontal propia del médico"},
+        )
+        assert r_ed.status_code == 200
+
+        r_cod = httpx.post(f"{url}/codigo", json={"code": "I10X", "included": False})
+        assert r_cod.status_code == 200
+
+        # Mandamos algo de audio PCM para que el WAV exista
+        httpx.post(f"{url}/pcm", content=_crear_wav_minimo())
+
+        # Terminar la sesión en vivo
+        r_fin = httpx.post(f"{url}/terminar")
+        assert r_fin.status_code == 200
+
+        # Esperar a que pase de working a review
+        deadline = time.monotonic() + 5.0
+        est = httpx.get(f"{url}/estado").json()
+        while time.monotonic() < deadline and est.get("state") != "review":
+            time.sleep(0.05)
+            est = httpx.get(f"{url}/estado").json()
+        assert est.get("state") == "review"
+
+        # Comprobar la página de revisión
+        r_rev = httpx.get(url, timeout=5.0)
+        assert r_rev.status_code == 200
+        html = r_rev.text
+
+        # El campo editado tiene clase 'edited', su texto y data-original
+        assert '<article class="field edited" data-field-id="motivo_consulta"' in html
+        assert "Cefalea frontal propia del médico</textarea>" in html
+        assert 'data-original="Motivo de consulta: cefalea frontal pulsátil."' in html
+
+        # El código quitado tiene clase 'off' y aria-checked='false'
+        assert '<article class="code off" data-ref="I10X"' in html
+        assert 'aria-checked="false"' in html
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_guardar_revision_sin_cambios_registra_metricas(tmp_path: Path) -> None:
+    """Caso 18 (§B.4, M11): Guardar la revisión sin tocar nada registra el campo
+
+    como 'edited' y el código como 'rejected' en la métrica.
+    """
+    pytest.importorskip("av", reason="requiere el extra de captura (av)")
+    store = ReviewMetricsStore(tmp_path / "metrics.jsonl")
+    ready = _crear_app_ready(tmp_path, store=store)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
+    try:
+        httpx.post(
+            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
+        )
+        httpx.post(
+            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
+        )
+
+        httpx.post(
+            f"{url}/campo",
+            json={"id": "motivo_consulta", "text": "Cefalea frontal propia del médico"},
+        )
+        httpx.post(f"{url}/codigo", json={"code": "I10X", "included": False})
+        httpx.post(f"{url}/pcm", content=_crear_wav_minimo())
+
+        r_fin = httpx.post(f"{url}/terminar")
+        assert r_fin.status_code == 200
+
+        deadline = time.monotonic() + 5.0
+        est = httpx.get(f"{url}/estado").json()
+        while time.monotonic() < deadline and est.get("state") != "review":
+            time.sleep(0.05)
+            est = httpx.get(f"{url}/estado").json()
+        assert est.get("state") == "review"
+
+        # Guardar tal como vino (sin tocar nada en la interfaz de revisión)
+        r_save = httpx.post(
+            f"{url}/guardar",
+            json={
+                "answers": {"I10X": {"verdict": "rejected"}},
+                "note": {
+                    "motivo_consulta": "Cefalea frontal propia del médico",
+                    "medicamentos": "Plan de manejo: paracetamol cada 8 horas.",
+                },
+                "elapsed_seconds": 2.0,
+            },
+            timeout=5.0,
+        )
+        assert r_save.status_code == 200
+
+        records = store.read()
+        assert len(records) == 1
+        r = records[0]
+        assert r.fields.get("motivo_consulta") == {"edited": 1}
+        assert r.codes.get("rejected") == 1
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_keep_mine_anade_campos_faltantes_vacios() -> None:
+    """Caso 19 (§B.4, M12): _keep_mine añade campos de 'mine' que el análisis
+
+    final no trajo, vacíos del lado del modelo para que la nota los conserve.
+    """
+    spec_motivo = SectionSpec("motivo", "Motivo", (), codable=True, in_note=True)
+    spec_extra = SectionSpec("extra", "Apartado Extra", (), codable=True, in_note=True)
+    nota_inicial = RenderedNote(
+        fields=((spec_motivo, "Cefalea del modelo"),),
+        redacted=True,
+    )
+    draft_obj = ReviewDraft(
+        prepared=MagicMock(),
+        note=nota_inicial,
+        items=(),
+    )
+
+    # 1. Campo en mine que falta en el análisis
+    mine = {"motivo": "Cefalea editada", "extra": "Texto solo del médico"}
+    secciones = (spec_motivo, spec_extra)
+
+    nuevo_draft = _keep_mine(draft_obj, mine, secciones)
+    campos = dict((spec.section_id, texto) for spec, texto in nuevo_draft.note.fields)
+    assert "extra" in campos
+    assert campos["extra"] == ""
+    assert campos["motivo"] == "Cefalea del modelo"
+
+    # 2. Si todos los campos de mine ya están en la nota, devuelve el borrador intacto
+    draft_sin_faltantes = _keep_mine(draft_obj, {"motivo": "Cefalea"}, secciones)
+    assert draft_sin_faltantes is draft_obj
+

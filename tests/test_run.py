@@ -4370,4 +4370,48 @@ def test_cli_ui_usa_draft_for_screen_y_close_from_screen(
     assert close_calls == 1
 
 
+# ---------------------------------------------------------------------------
+# Plan 77b: Transcriptor del vivo en CLI (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_live_transcriber_configuracion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 13 (§B.3, M8): _live_transcriber() es None sin AIDA_STT_API_KEY o con
+
+    provider: local; con provider: cloud y clave, devuelve CloudWhisperSTT
+    construido por _cloud_stt.
+    """
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcription import CloudWhisperSTT
+    from aida.run import _live_transcriber
+
+    # 1. Sin clave (incluso con provider: cloud) -> None
+    monkeypatch.delenv("AIDA_STT_API_KEY", raising=False)
+    aj_cloud = replace(load_capture_settings(), provider="cloud")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj_cloud)
+    assert _live_transcriber() is None
+
+    # 2. Con clave pero provider: local -> None
+    monkeypatch.setenv("AIDA_STT_API_KEY", "test-api-key")
+    aj_local = replace(load_capture_settings(), provider="local")
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj_local)
+    assert _live_transcriber() is None
+
+    # 3. Con provider: cloud y clave -> CloudWhisperSTT construido por _cloud_stt (espía)
+    monkeypatch.setattr("aida.arms.health.capture.load_capture_settings", lambda: aj_cloud)
+    spy_calls: list[tuple[Any, str]] = []
+    mock_stt = MagicMock(spec=CloudWhisperSTT)
+
+    def spy_cloud_stt(ajustes: Any, key: str) -> CloudWhisperSTT:
+        spy_calls.append((ajustes, key))
+        return mock_stt
+
+    monkeypatch.setattr("aida.run._cloud_stt", spy_cloud_stt)
+    res = _live_transcriber()
+    assert res is mock_stt
+    assert len(spy_calls) == 1
+    assert spy_calls[0][1] == "test-api-key"
+
+
+
 

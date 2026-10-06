@@ -632,3 +632,42 @@ def test_cloud_whisper_abreviatura_del_pack_no_parte_frase(tmp_path: Path) -> No
     assert len(segmentos) == 2
     assert segmentos[0].text == "El Dr. Juan Pérez evaluó la tensión."
     assert segmentos[1].text == "Recomendó control semanal."
+
+
+# ---------------------------------------------------------------------------
+# Plan 77b: Contexto en transcripción de nube (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_whisper_transcribe_segments_contexto(tmp_path: Path) -> None:
+    """Caso 12 (§B.3, M7): transcribe_segments con context='X' concatena ' X' al prompt
+
+    del pack; sin context envía el prompt base sin modificar.
+    """
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"RIFF dummy")
+    peticiones: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        peticiones.append(request)
+        return httpx.Response(
+            200,
+            json={"segments": [{"start": 0.0, "end": 1.0, "text": "Ok"}]},
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.openai.com"
+    )
+    stt = CloudWhisperSTT(client, model="m", language="es", prompt="Prompt pack")
+
+    # 1. Con context="X": manda "Prompt pack X"
+    stt.transcribe_segments(audio, context="X")
+    assert len(peticiones) == 1
+    assert b'name="prompt"\r\n\r\nPrompt pack X' in peticiones[0].content
+
+    # 2. Sin context: manda "Prompt pack"
+    stt.transcribe_segments(audio)
+    assert len(peticiones) == 2
+    assert b'name="prompt"\r\n\r\nPrompt pack' in peticiones[1].content
+    assert b'name="prompt"\r\n\r\nPrompt pack X' not in peticiones[1].content
+
