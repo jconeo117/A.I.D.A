@@ -16,9 +16,10 @@ from pathlib import Path
 import yaml
 
 from aida.arms.health.codes import DiagnosticCode
+from aida.resources import data_root
 from aida.textmatch import cosine, fold, tokenize, vectorize
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _COTEJO_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "matching.yaml"
 
 

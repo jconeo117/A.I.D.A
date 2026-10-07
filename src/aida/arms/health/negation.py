@@ -19,9 +19,10 @@ from pathlib import Path
 
 import yaml
 
+from aida.resources import data_root
 from aida.textmatch import fold, token_spans
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _EXTRACCION_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "extraction.yaml"
 
 

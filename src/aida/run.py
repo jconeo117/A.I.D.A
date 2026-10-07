@@ -26,9 +26,11 @@ from aida.engine.explain import explain_deliberation
 from aida.engine.loop import Loop
 from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
+from aida.keys import cloud_key
+from aida.resources import data_root, user_dir
 
 if TYPE_CHECKING:
-    from aida.arms.health.app import AppProblem, AppReady
+    from aida.arms.health.app import AppProblem, AppReady, AppTools
     from aida.arms.health.capture import CaptureSettings
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.note import NoteSettings
@@ -39,7 +41,7 @@ if TYPE_CHECKING:
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
 
-_RAIZ = Path(__file__).resolve().parents[2]
+_RAIZ = data_root()
 
 
 def _construir_parser() -> argparse.ArgumentParser:
@@ -184,12 +186,14 @@ def _construir_parser() -> argparse.ArgumentParser:
 
 
 def _check_consult_cache_key() -> str | None:
-    key = os.environ.get("AIDA_CONSULT_CACHE_KEY")
+    """La clave de la caché: la variable de entorno si existe; si no, la guardada; y si
+    no hay ninguna, se crea y se guarda (`aida.keys`). Solo falla si la que hay no es
+    una clave Fernet: inventar otra entonces dejaría ilegible lo ya cifrado."""
+    from aida.keys import cache_key
+
+    key = cache_key()
     if not key:
-        print(
-            "aida: error: falta AIDA_CONSULT_CACHE_KEY (clave Fernet del caché cifrado)",
-            file=sys.stderr,
-        )
+        print("aida: error: no se pudo obtener la clave de la caché cifrada", file=sys.stderr)
         return None
 
     from cryptography.fernet import Fernet
@@ -197,20 +201,22 @@ def _check_consult_cache_key() -> str | None:
     try:
         Fernet(key.encode())
     except ValueError:
-        print(
-            "aida: error: AIDA_CONSULT_CACHE_KEY no es una clave Fernet válida",
-            file=sys.stderr,
+        origen = (
+            "AIDA_CONSULT_CACHE_KEY"
+            if os.environ.get("AIDA_CONSULT_CACHE_KEY")
+            else str(user_dir("config") / "cache.key")
         )
+        print(f"aida: error: {origen} no es una clave Fernet válida", file=sys.stderr)
         return None
     return key
 
 
 def _review_metrics_path() -> Path:
     """Un solo sitio para la ruta: la escribe --review y la lee --review-stats."""
-    return Path.home() / ".local" / "share" / "aida" / "revisiones.jsonl"
+    return user_dir("data") / "revisiones.jsonl"
 
 
-def _transcription(stt: object, key: str) -> object:
+def _transcription(stt: object | None, key: str) -> object:
     """El transcriptor que verá la consulta: la nube si el pack la declara, con
     el modelo local de respaldo, y **una caché por camino**.
 
@@ -229,7 +235,6 @@ def _transcription(stt: object, key: str) -> object:
     Si falta la credencial, no se avisa a medias ni se falla: se usa el local y
     se dice. Un consultorio sin clave tiene que poder trabajar.
     """
-    import os
 
     from aida.arms.health.capture import load_capture_settings
     from aida.arms.health.transcription import FallbackTranscription
@@ -237,27 +242,32 @@ def _transcription(stt: object, key: str) -> object:
 
     ajustes = load_capture_settings()
     cache = TranscriptCache(
-        Path.home() / ".cache" / "aida" / "transcripciones", key=key.encode()
+        user_dir("cache") / "transcripciones", key=key.encode()
     )
     cache.purge_expired()
     prompt = hashlib.blake2b(
         ajustes.transcription_prompt.encode("utf-8"), digest_size=8
     ).hexdigest()
 
-    local = CachedSTT(
-        stt,
-        cache,
-        model=f"local:{ajustes.model}:{ajustes.device}:{ajustes.compute_type}:{prompt}",
-        no_speech_threshold=ajustes.no_speech_threshold,
+    local = (
+        CachedSTT(
+            stt,
+            cache,
+            model=f"local:{ajustes.model}:{ajustes.device}:{ajustes.compute_type}:{prompt}",
+            no_speech_threshold=ajustes.no_speech_threshold,
+        )
+        if stt is not None
+        else None
     )
     if ajustes.provider != "cloud":
+        if local is None:
+            raise ValueError("el pack declara transcripción local y no hay modelo local")
         return local
-    api_key = os.environ.get("AIDA_STT_API_KEY")
+    api_key = cloud_key()
     if not api_key:
-        print(
-            "aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local",
-            file=sys.stderr,
-        )
+        if local is None:
+            raise ValueError("sin modelo local y sin clave de nube no hay con qué transcribir")
+        print("aida: aviso: falta AIDA_STT_API_KEY; se transcribe en local", file=sys.stderr)
         return local
 
     nube = CachedSTT(
@@ -266,6 +276,11 @@ def _transcription(stt: object, key: str) -> object:
         model=f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:{prompt}",
         no_speech_threshold=ajustes.no_speech_threshold,
     )
+
+    if local is None:
+        # Sin modelo local (plan 78: arrancar solo con la nube). Si la nube falla,
+        # la consulta lo dice; no hay respaldo que finja otra cosa.
+        return nube
 
     def aviso(notice: object) -> None:
         print(
@@ -313,7 +328,7 @@ def _live_transcriber() -> CloudWhisperSTT | None:
     from aida.arms.health.capture import load_capture_settings
 
     ajustes = load_capture_settings()
-    api_key = os.environ.get("AIDA_STT_API_KEY")
+    api_key = cloud_key()
     if ajustes.provider != "cloud" or not api_key:
         return None
     return _cloud_stt(ajustes, api_key)
@@ -442,7 +457,7 @@ def _build_consultation(
         match_top_n=cotejo.top_n,
         provider=cast(Any, _cognition(args, ajustes_nota)),
         cache=ConsultationCache(
-            Path.home() / ".cache" / "aida" / "consultas", key=key.encode()
+            user_dir("cache") / "consultas", key=key.encode()
         ),
         log=log if log is not None else EventLog(),
         diarizer=cast(Any, diarizer),
@@ -465,18 +480,30 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
     abrirla y cada vez que se pulsa «Reintentar»: así un extra instalado o una clave
     puesta después se notan sin cerrar nada (`I-152`)."""
     from aida.arms.health.app import AppProblem, AppReady
-    from aida.arms.health.capture import build_local_capture, capture_diagnosis
+    from aida.arms.health.capture import (
+        build_document_reader,
+        build_local_capture,
+        capture_diagnosis,
+        local_model_available,
+    )
     from aida.arms.health.extract import build_health_extractor
     from aida.arms.health.note import load_note_settings
     from aida.arms.health.segment import build_health_segmenter
     from aida.engine.events import EventLog
 
-    if not all(correcto for _texto, correcto in capture_diagnosis()):
+    comprobado = capture_diagnosis(need_microphone=False, need_model=False)
+    if not all(correcto for _texto, correcto in comprobado):
         return AppProblem("capture")
     key = _check_consult_cache_key()
     if key is None:
         return AppProblem("cache_key")
-    stt, ocr = build_local_capture()
+    # Sin modelo local se trabaja con la nube (plan 78); sin ninguno de los dos no hay
+    # con qué transcribir, y la aplicación ofrece descargarlo.
+    local = local_model_available()
+    if not local and cloud_key() is None:
+        return AppProblem("model")
+    stt = build_local_capture()[0] if local else None
+    ocr = build_document_reader()
     log = EventLog()
     consultation = _build_consultation(
         args,
@@ -495,9 +522,43 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
         consultation=consultation,
         reader=ocr,
         log=log,
-        cloud=bool(os.environ.get("AIDA_STT_API_KEY")),
+        cloud=cloud_key() is not None,
         writer=escritor,
         live_stt=_live_transcriber(),
+        local_model=local,
+    )
+
+
+def _app_tools() -> AppTools:
+    """Lo que Ajustes necesita, montado sobre `aida.keys` y la captura. Aquí y no en
+    la aplicación: dónde se guardan las claves es decisión de quien la lanza."""
+    from aida.arms.health.app import AppTools
+    from aida.arms.health.capture import (
+        document_reader_version,
+        download_local_model,
+        load_capture_settings,
+        local_model_available,
+        local_model_bytes,
+    )
+    from aida.keys import (
+        cache_key_created,
+        check_cloud_key,
+        cloud_key_source,
+        save_cloud_key,
+    )
+
+    ajustes = load_capture_settings()
+    return AppTools(
+        cloud_key_source=cloud_key_source,
+        check_cloud_key=lambda clave: check_cloud_key(clave, base_url=ajustes.cloud_base_url),
+        save_cloud_key=save_cloud_key,
+        model_name=ajustes.model,
+        model_total_mb=ajustes.model_download_mb,
+        model_available=lambda: local_model_available(ajustes),
+        model_bytes=lambda: local_model_bytes(ajustes),
+        download_model=lambda: download_local_model(ajustes),
+        reader_version=document_reader_version,
+        cache_key_since=cache_key_created,
     )
 
 
@@ -669,7 +730,12 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _construir_parser()
-    args = parser.parse_args(argv)
+    entrada = sys.argv[1:] if argv is None else list(argv)
+    # Empaquetada (plan 78b), AIDA se abre con un icono y sin argumentos: eso es la
+    # aplicación. Desde la terminal, sin argumentos, sigue mostrando el uso.
+    if not entrada and getattr(sys, "frozen", False):
+        entrada = ["--app"]
+    args = parser.parse_args(entrada)
 
     if args.version:
         print(f"aida {__version__}")
@@ -727,6 +793,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             lambda: _app_build(args),
             settings=load_ui_settings(),
             wording=load_app_wording(),
+            tools=_app_tools(),
         )
         return 0
 

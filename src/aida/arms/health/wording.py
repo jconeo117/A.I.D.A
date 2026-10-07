@@ -11,8 +11,9 @@ from pathlib import Path
 import yaml
 
 from aida.arms.health.consultation import SummaryWording
+from aida.resources import data_root
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _WORDING_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "wording.yaml"
 
 

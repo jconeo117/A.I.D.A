@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from aida.resources import data_root
 from aida.sentences import split_sentences
 from aida.voice.diarize import TranscriptSegment
 
@@ -35,7 +36,7 @@ class ModelUnavailableError(RuntimeError):
     el dispositivo declarado no sirve en esta máquina."""
 
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _CAPTURA_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "capture.yaml"
 
 
@@ -59,6 +60,8 @@ class CaptureSettings:
     cloud_formats: tuple[str, ...]
     transcription_prompt: str
     cloud_timestamps: bool
+    # Opcional: la batería construye ajustes a mano y no lo necesita.
+    model_download_mb: int = 0
 
 
 def load_capture_settings(path: Path | None = None) -> CaptureSettings:
@@ -140,6 +143,7 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
         cloud_formats=tuple(str(f).lower().strip() for f in formatos),
         transcription_prompt=str(prompt),
         cloud_timestamps=timestamps,
+        model_download_mb=int(raw.get("model_download_mb", 0)),
     )
 
 
@@ -306,7 +310,6 @@ def build_local_capture(
     coincidía (I-127). Y el modelo se carga solo de la copia local: por defecto,
     cargarlo consulta Hugging Face en cada ejecución y se cuelga si la red no
     responde (I-129) — «local, sin nube» tiene que valer también al arrancar."""
-    import pytesseract
     from faster_whisper import WhisperModel
 
     ajustes = settings if settings is not None else load_capture_settings()
@@ -330,11 +333,91 @@ def build_local_capture(
             abbreviations=frozenset(ajustes.abbreviations),
             prompt=ajustes.transcription_prompt,
         ),
-        LocalTesseractOCR(pytesseract),
+        build_document_reader(),
     )
 
 
-def capture_diagnosis() -> tuple[tuple[str, bool], ...]:
+def build_document_reader() -> LocalTesseractOCR:
+    """El lector de documentos, separado del modelo de transcripción: AIDA puede
+    arrancar sin modelo local, solo con la nube (plan 78), pero sin leer la historia
+    no hay códigos que ya constaban.
+
+    `AIDA_TESSERACT` apunta al ejecutable cuando no está en el PATH: en Windows el
+    instalador lo deja en su propia carpeta (plan 78b)."""
+    import os
+
+    import pytesseract
+
+    ruta = os.environ.get("AIDA_TESSERACT")
+    if ruta:
+        pytesseract.pytesseract.tesseract_cmd = ruta
+    return LocalTesseractOCR(pytesseract)
+
+
+def document_reader_version() -> str | None:
+    """La versión del lector si está y lee español; `None` si le falta el español.
+    Revienta si no está: quien llama decide cómo decirlo."""
+    import pytesseract
+
+    build_document_reader()  # fija la ruta declarada en AIDA_TESSERACT
+    if "spa" not in pytesseract.get_languages():
+        return None
+    return str(pytesseract.get_tesseract_version())
+
+
+def _model_repo(model: str) -> str:
+    from faster_whisper import utils
+
+    modelos = getattr(utils, "_MODELS", {})
+    return str(modelos.get(model, model))
+
+
+def local_model_available(settings: CaptureSettings | None = None) -> bool:
+    """Si la copia del modelo local está en disco, sin cargarlo (cargar tarda) y sin
+    salir a la red."""
+    from faster_whisper.utils import download_model
+
+    ajustes = settings if settings is not None else load_capture_settings()
+    try:
+        download_model(ajustes.model, local_files_only=True)
+    except Exception:
+        return False
+    return True
+
+
+def local_model_bytes(settings: CaptureSettings | None = None) -> int:
+    """Cuánto del modelo hay ya en disco: la descarga no informa de su progreso, así
+    que la pantalla lo lee del tamaño de su carpeta en la caché de Hugging Face."""
+    from huggingface_hub import constants
+
+    ajustes = settings if settings is not None else load_capture_settings()
+    repo = _model_repo(ajustes.model).replace("/", "--")
+    carpeta = Path(constants.HF_HUB_CACHE) / f"models--{repo}"
+    if not carpeta.is_dir():
+        return 0
+    archivos = sorted(carpeta.rglob("*"))
+    return sum(f.stat().st_size for f in archivos if f.is_file() and not f.is_symlink())
+
+
+def download_local_model(settings: CaptureSettings | None = None) -> None:
+    """Descarga el modelo local una vez. Es lo único de AIDA que sale a la red sin
+    ser la nube de transcripción: lo pide el usuario con un botón (plan 78).
+
+    Sin el transporte `xet`: con él, el archivo grande no aparece en disco hasta el
+    final —la barra se quedaba en cero— y en la prueba de la 78 no avanzó en seis
+    minutos. La descarga clásica escribe a medida que llega, y es lo que mide
+    `local_model_bytes`. Se lee en cada llamada, así que basta con fijarlo aquí."""
+    from faster_whisper.utils import download_model
+    from huggingface_hub import constants
+
+    constants.HF_HUB_DISABLE_XET = True
+    ajustes = settings if settings is not None else load_capture_settings()
+    download_model(ajustes.model)
+
+
+def capture_diagnosis(
+    *, need_microphone: bool = True, need_model: bool = True
+) -> tuple[tuple[str, bool], ...]:
     """Qué hay y qué falta para poder capturar. Devuelve datos —texto y si está
     bien—, no imprime: quien llama decide el formato y el código de salida.
 
@@ -342,11 +425,16 @@ def capture_diagnosis() -> tuple[tuple[str, bool], ...]:
     primer error obliga a ejecutarlo cuatro veces para enterarse de cuatro
     cosas.
 
-    Vive aquí y no en `run.py` por la misma razón que `build_local_capture`."""
+    Vive aquí y no en `run.py` por la misma razón que `build_local_capture`.
+
+    La aplicación pide `need_microphone=False` —graba con el navegador, no con
+    `sounddevice`— y `need_model=False`: el modelo local se comprueba aparte, porque
+    sin él se puede trabajar con la nube (plan 78)."""
     import importlib.util
 
     lineas: list[tuple[str, bool]] = []
-    for nombre in ("faster_whisper", "sounddevice", "pytesseract"):
+    modulos = ("faster_whisper", "sounddevice", "pytesseract")
+    for nombre in modulos if need_microphone else ("faster_whisper", "pytesseract"):
         lineas.append((f"módulo {nombre}", importlib.util.find_spec(nombre) is not None))
 
     try:
@@ -357,7 +445,7 @@ def capture_diagnosis() -> tuple[tuple[str, bool], ...]:
         etiqueta = f"ajustes de captura: {exc}"
     if ajustes is None:
         lineas.append((etiqueta, False))
-    else:
+    elif need_model:
         try:
             build_local_capture(ajustes)
             lineas.append((etiqueta, True))
@@ -365,13 +453,13 @@ def capture_diagnosis() -> tuple[tuple[str, bool], ...]:
             lineas.append((f"{etiqueta}: {exc}", False))
 
     try:
-        import pytesseract
-
-        version = pytesseract.get_tesseract_version()
-        lineas.append((f"tesseract {version}, español", "spa" in pytesseract.get_languages()))
+        version = document_reader_version()
+        lineas.append((f"tesseract {version}, español", version is not None))
     except Exception as exc:
         lineas.append((f"tesseract: {exc}", False))
 
+    if not need_microphone:
+        return tuple(lineas)
     try:
         import sounddevice
 

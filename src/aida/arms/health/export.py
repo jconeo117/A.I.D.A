@@ -22,12 +22,13 @@ from pathlib import Path
 from aida.arms.health.consultation import ConsultationResult
 from aida.arms.health.note import RenderedNote, load_note_settings
 from aida.engine.ontology import AgentId
+from aida.resources import user_dir
 
 
 def default_export_dir() -> Path:
     """Visible y fuera de directorios ocultos: el archivo existe para que una
     persona lo abra y lo copie."""
-    return Path.home() / "Documentos" / "aida" / "consultas"
+    return user_dir("documents") / "consultas"
 
 
 def export_name(owner: AgentId, moment: datetime) -> str:

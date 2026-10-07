@@ -17,8 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aida.arms.health.sections import SectionSpec
 from aida.engine.ports import CognitionProvider
+from aida.resources import data_root
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _NOTE_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "note.yaml"
 
 _CLAVES_OBLIGATORIAS = (

@@ -10,7 +10,9 @@ from pathlib import Path
 
 import yaml
 
-_RAIZ = Path(__file__).resolve().parents[4]
+from aida.resources import data_root
+
+_RAIZ = data_root()
 _SECTIONS_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "sections.yaml"
 
 

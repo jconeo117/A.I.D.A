@@ -32,8 +32,9 @@ from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import Answer, ItemKind, Reviewer, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import is_interrogative
+from aida.resources import data_root
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _UI_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "ui.yaml"
 
 _CLAVES_OBLIGATORIAS = (

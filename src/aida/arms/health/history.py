@@ -18,7 +18,9 @@ from pathlib import Path
 
 import yaml
 
-_RAIZ = Path(__file__).resolve().parents[4]
+from aida.resources import data_root
+
+_RAIZ = data_root()
 _HISTORIA_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "history.yaml"
 
 

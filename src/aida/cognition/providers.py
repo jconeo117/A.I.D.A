@@ -265,7 +265,9 @@ def build_provider(
         return OllamaProvider(client) if model is None else OllamaProvider(client, model=model)
 
     if name == "openai":
-        key = os.environ.get("AIDA_STT_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        from aida.keys import cloud_key
+
+        key = cloud_key()
         if not key:
             return None
         # La clave en cabecera, nunca en la URL (I-065): httpx registra la URL

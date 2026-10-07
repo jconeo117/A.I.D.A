@@ -68,6 +68,9 @@ cloud_formats:
   - ".webm"
 
 model: small
+# Lo que pesa la descarga del modelo, para la barra de progreso del primer arranque
+# (plan 78): la descarga no informa de su tamaño. Medido: faster-whisper-small, 464 MB.
+model_download_mb: 464
 device: cpu
 no_speech_threshold: 0.6
 

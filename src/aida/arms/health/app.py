@@ -54,8 +54,9 @@ from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
+from aida.resources import data_root
 
-_RAIZ = Path(__file__).resolve().parents[4]
+_RAIZ = data_root()
 _UI_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "ui.yaml"
 
 _OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -149,6 +150,44 @@ _CLAVES_APP = (
     "pause_mark",
     "new_label",
     "new_count",
+    "settings_label",
+    "title_settings",
+    "settings_lead",
+    "key_title",
+    "key_text",
+    "key_status_file",
+    "key_status_env",
+    "key_status_none",
+    "key_status_bad",
+    "key_test",
+    "key_save",
+    "key_ok",
+    "key_fail",
+    "key_saved",
+    "key_env_note",
+    "model_title",
+    "model_text",
+    "model_ok",
+    "model_missing",
+    "model_download",
+    "model_downloading",
+    "model_progress",
+    "model_failed",
+    "model_keep_open",
+    "model_lead",
+    "model_to_settings",
+    "reader_title",
+    "reader_text",
+    "reader_ok",
+    "reader_missing",
+    "cipher_title",
+    "cipher_text",
+    "cipher_env",
+    "cipher_ok",
+    "check_no_local",
+    "title_first_run",
+    "pill_preparing",
+    "problem_model_title",
 )
 
 _CSS_EXTRA = """.mode {
@@ -318,6 +357,72 @@ _ICONS_EXTRA = """  <symbol id="i-audio" viewBox="0 0 24 24">
 
 _ICONS_APP = _ICONS.replace("</defs></svg>", _ICONS_EXTRA + "\n</defs></svg>")
 
+_CSS_SETTINGS = """/* La 78: ajustes y primer arranque */
+.head-link {
+  display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .75rem;
+  border-radius: 999px; font-size: .8rem; color: var(--head-ink);
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
+}
+.head-link svg { width: 15px; height: 15px; }
+.settings { display: flex; flex-direction: column; gap: 1rem; margin-top: 1.25rem; }
+.setting {
+  border: 1px solid var(--line); border-radius: var(--r); padding: 1rem 1.15rem;
+  background: var(--surface);
+}
+.setting-head { display: flex; align-items: center; gap: .6rem; }
+.setting-head h3 { margin: 0; font-size: .95rem; font-weight: 650; }
+.setting-head svg { width: 18px; height: 18px; color: var(--brand); }
+.setting p { margin: .35rem 0 0; color: var(--muted); font-size: .85rem; }
+.status {
+  margin-left: auto; display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem;
+  font-weight: 600; padding: .15rem .6rem; border-radius: 999px;
+}
+.status.ok { background: var(--ok-soft, #e6f4ec); color: #1a7f4b; }
+.status.warn { background: var(--warn-soft); color: var(--warn); }
+.status.fail { background: var(--off-soft); color: var(--off); }
+.key-row { display: flex; gap: .6rem; margin-top: .8rem; }
+.key-row .input {
+  flex: 1; font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  font-size: .9rem;
+}
+.result { display: flex; align-items: center; gap: .45rem; margin-top: .6rem; font-size: .85rem; }
+.result svg { width: 15px; height: 15px; }
+.result.ok { color: #1a7f4b; }
+.result.fail { color: var(--off); }
+.result[hidden] { display: none; }
+.download-bar {
+  height: 8px; border-radius: 999px; background: var(--line); overflow: hidden;
+  margin: 1rem 0 .4rem;
+}
+.download-bar span {
+  display: block; height: 100%; background: linear-gradient(90deg, #14b8a6, var(--brand));
+}
+.download-meta {
+  display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}"""
+
+_ICONS_SETTINGS_EXTRA = """  <symbol id="i-gear" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3"/>
+    <path d="M15 19.4a1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5"/>
+    <path d="M8.9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8"/>
+    <path d="M4.6 15a1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1"/>
+    <path d="M4.6 8.9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3"/>
+    <path d="M9 4.6a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5"/>
+    <path d="M15.1 4.6a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8"/>
+    <path d="M19.4 9a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1"/>
+  </symbol>
+  <symbol id="i-key" viewBox="0 0 24 24">
+    <circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M14 9l2 2"/>
+  </symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>"""
+
+_ICONS_SETTINGS = _ICONS_APP.replace(
+    "</defs></svg>", _ICONS_SETTINGS_EXTRA + "\n</defs></svg>"
+)
+
 _CSS_LIVE = """/* La 77b: la consulta en vivo */
 .field-state {
   display: inline-flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--faint);
@@ -452,6 +557,31 @@ class AppReady:
     live_stt: LiveTranscriber | None = None
     """El transcriptor del vivo (plan 77b): solo la nube. `None` sin clave de nube, y
     entonces grabar sigue funcionando, pero sin vivo: todo se procesa al terminar."""
+    local_model: bool = True
+    """Si hay modelo local de respaldo (plan 78). Sin él se trabaja con la nube, y el
+    inicio lo avisa: una consulta sin conexión no se podría transcribir."""
+
+
+@dataclass(frozen=True, slots=True)
+class AppTools:
+    """Lo que Ajustes consulta y cambia en el equipo (plan 78). Inyectado, como
+    `build`: la aplicación no sabe dónde se guardan las claves ni cómo se descarga el
+    modelo, y la batería lo sustituye sin red ni disco."""
+
+    cloud_key_source: Callable[[], str | None]
+    """`env`, `file` o `None`."""
+    check_cloud_key: Callable[[str], tuple[bool, str]]
+    save_cloud_key: Callable[[str], None]
+    model_name: str
+    model_total_mb: int
+    model_available: Callable[[], bool]
+    model_bytes: Callable[[], int]
+    download_model: Callable[[], None]
+    reader_version: Callable[[], str | None]
+    """La versión del lector de documentos, o `None` si no lee español. Puede
+    reventar si el lector no está."""
+    cache_key_since: Callable[[], float | None]
+    """Cuándo se creó la clave de la caché; `None` si viene del entorno."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +663,10 @@ class _Session:
     live: LiveSession | None = None
     mine: Mapping[str, str] = field(default_factory=dict)
     excluded: frozenset[str] = frozenset()
+    download: str = "idle"
+    """`idle`, `running`, `done` o `failed`: la descarga del modelo sobrevive a cambiar
+    de pantalla, y `clean` no la toca."""
+    download_detail: str = ""
 
     def clean(self) -> None:
         """Lo subido o grabado no se queda en disco: el audio en claro es lo más
@@ -567,6 +701,7 @@ def serve(
     now: Callable[[], datetime] = datetime.now,
     vad_factory: Callable[[], Callable[[Any], Any]] | None = None,
     note_sections: Sequence[SectionSpec] | None = None,
+    tools: AppTools | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
@@ -589,6 +724,30 @@ def serve(
     if isinstance(session.ready, AppProblem):
         session.state = "problem"
         session.problem = session.ready
+
+    def reconstruir() -> None:
+        """Con el candado tomado. Vuelve a montar todo: una clave guardada o un modelo
+        descargado se notan sin cerrar AIDA (`I-152`)."""
+        session.clean()
+        session.ready = build()
+        if isinstance(session.ready, AppProblem):
+            session.state = "problem"
+            session.problem = session.ready
+        else:
+            session.state = "start"
+            session.problem = None
+
+    def descargar(herramientas: AppTools) -> None:
+        try:
+            herramientas.download_model()
+        except Exception as exc:  # frontera: una descarga fallida no tumba el http_server
+            with lock:
+                session.download = "failed"
+                session.download_detail = f"{type(exc).__name__}: {exc}"
+            return
+        with lock:
+            session.download = "done"
+            session.download_detail = ""
 
     def procesar(
         ready: AppReady,
@@ -654,10 +813,16 @@ def serve(
             )
         if session.state == "working":
             return _working_page(wording, marca, token, session.owner, momento)
+        if session.state == "settings" and tools is not None:
+            return _settings_page(wording, marca, token, tools, momento, session.download)
         if session.state == "problem" and session.problem is not None:
+            if session.problem.kind == "model" and tools is not None:
+                return _model_page(wording, marca, token, tools, momento, session.download)
             return _problem_page(wording, marca, token, session.problem, momento)
         if isinstance(session.ready, AppReady):
-            return _start_page(wording, marca, token, session.ready, momento)
+            return _start_page(
+                wording, marca, token, session.ready, momento, settings=tools is not None
+            )
         return _problem_page(wording, marca, token, AppProblem("processing"), momento)
 
     class Handler(BaseHTTPRequestHandler):
@@ -699,6 +864,14 @@ def serve(
                 if self.path.startswith(f"/{token}/vivo"):
                     self._json(200, _live_status(session, self.path))
                     return
+                if self.path == f"/{token}/modelo" and tools is not None:
+                    self._json(200, {
+                        "state": session.download,
+                        "bytes": tools.model_bytes(),
+                        "total": tools.model_total_mb * 1024 * 1024,
+                        "detail": session.download_detail,
+                    })
+                    return
                 vista = session.view
                 if (
                     self.path == f"/{token}/historia"
@@ -726,23 +899,21 @@ def serve(
                 self._live(accion)
             elif accion == "terminar":
                 self._finish()
+            elif accion in ("ajustes", "clave-probar", "clave-guardar", "modelo") and tools:
+                self._settings(accion, tools)
             elif accion == "volver":
                 with lock:
-                    session.clean()
-                    if isinstance(session.ready, AppReady):
-                        session.state = "start"
-                        session.problem = None
+                    if session.state == "settings":
+                        reconstruir()
+                    else:
+                        session.clean()
+                        if isinstance(session.ready, AppReady):
+                            session.state = "start"
+                            session.problem = None
                 self._json(200, {"ok": True})
             elif accion == "reintentar":
                 with lock:
-                    session.clean()
-                    session.ready = build()
-                    if isinstance(session.ready, AppProblem):
-                        session.state = "problem"
-                        session.problem = session.ready
-                    else:
-                        session.state = "start"
-                        session.problem = None
+                    reconstruir()
                 self._json(200, {"ok": True})
             elif accion == "salir":
                 with lock:
@@ -752,6 +923,42 @@ def serve(
                 threading.Thread(target=http_server.shutdown, daemon=True).start()
             else:
                 self._404()
+
+        def _settings(self, accion: str, herramientas: AppTools) -> None:
+            """Ajustes solo se abre desde el inicio o desde un problema: nunca con una
+            consulta a medias, que se perdería al reconstruir."""
+            if accion == "ajustes":
+                with lock:
+                    if session.state not in ("start", "problem"):
+                        self._json(409, {"ok": False})
+                        return
+                    session.clean()
+                    session.state = "settings"
+                self._json(200, {"ok": True})
+                return
+            if accion == "modelo":
+                with lock:
+                    if session.download == "running":
+                        self._json(200, {"ok": True})
+                        return
+                    session.download = "running"
+                    session.download_detail = ""
+                threading.Thread(target=descargar, args=(herramientas,), daemon=True).start()
+                self._json(200, {"ok": True})
+                return
+            datos = self._body()
+            try:
+                clave = str(json.loads(datos or b"{}").get("key", "")).strip()
+            except (ValueError, AttributeError):
+                clave = ""
+            if not clave:
+                self._json(400, {"ok": False, "reason": ""})
+                return
+            # Sin el candado: probar la clave sale a la red y puede tardar segundos.
+            sirve, motivo = herramientas.check_cloud_key(clave)
+            if accion == "clave-guardar" and sirve:
+                herramientas.save_cloud_key(clave)
+            self._json(200, {"ok": sirve, "reason": motivo})
 
         def _live(self, accion: str) -> None:
             datos = self._body()
@@ -943,10 +1150,15 @@ def _page(
     body: str,
     script: str,
     live: bool = False,
+    head_link: str = "",
 ) -> str:
     e = html.escape
-    estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}" if live else f"{_CSS}\n{_CSS_EXTRA}"
-    iconos = _ICONS_LIVE if live else _ICONS_APP
+    if live:
+        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}"
+        iconos = _ICONS_LIVE
+    else:
+        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}"
+        iconos = _ICONS_SETTINGS
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -963,7 +1175,7 @@ def _page(
   <div class="sep"></div>
   <div class="title"><strong>{e(title)}</strong>
     <span>{e(place)} · {moment.strftime("%d/%m/%Y")}</span></div>
-  <div class="head-right">
+  <div class="head-right">{head_link}
     <span class="{pill_class}" id="head-pill"><span class="dot"></span>
       <span id="pill-text">{e(pill)}</span></span>
   </div>
@@ -978,12 +1190,18 @@ def _page(
 
 
 def _start_page(
-    w: AppWording, brand: str, token: str, ready: AppReady, moment: datetime
+    w: AppWording,
+    brand: str,
+    token: str,
+    ready: AppReady,
+    moment: datetime,
+    *,
+    settings: bool = False,
 ) -> str:
     e = html.escape
     chips = (
         (w["check_cloud"] if ready.cloud else w["check_local_only"], ready.cloud),
-        (w["check_local"], True),
+        (w["check_local"] if ready.local_model else w["check_no_local"], ready.local_model),
         (w["check_cache"], True),
         (
             w["check_writer"].format(ready.writer) if ready.writer else w["check_no_writer"],
@@ -1048,9 +1266,16 @@ def _start_page(
     )
     textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
     script = f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_START}"
+    enlace = ""
+    if settings:
+        enlace = (
+            f'\n    <button type="button" class="head-link" id="to-settings">'
+            f'<svg><use href="#i-gear"/></svg>{e(w["settings_label"])}</button>'
+        )
+        script += _JS_TO_SETTINGS
     return _page(
         brand=brand, title=w["title_start"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
+        pill=w["pill_ready"], pill_class="pill", body=body, script=script, head_link=enlace,
     )
 
 
@@ -1247,6 +1472,222 @@ async function poll() {
 }
 poll();
 """
+
+def _settings_page(
+    w: AppWording, brand: str, token: str, tools: AppTools, moment: datetime, download: str
+) -> str:
+    """Cada tarjeta se consulta al abrir: es una pantalla que se visita poco, y lo que
+    enseña tiene que ser lo que hay ahora, no lo que había al arrancar."""
+    e = html.escape
+    origen = tools.cloud_key_source()
+    estado_clave = {
+        "env": ("ok", w["key_status_env"]),
+        "file": ("ok", w["key_status_file"]),
+    }.get(origen or "", ("warn", w["key_status_none"]))
+    nota_entorno = f'<p>{e(w["key_env_note"])}</p>' if origen == "env" else ""
+
+    modelo_ok = tools.model_available()
+    if modelo_ok:
+        instalado = w["model_ok"].format(tools.model_name)
+        estado_modelo = f'<span class="status ok">{e(instalado)}</span>'
+        descarga = ""
+    else:
+        estado_modelo = f'<span class="status warn">{e(w["model_missing"])}</span>'
+        descarga = _download_block(w, download)
+
+    try:
+        version = tools.reader_version()
+        lector = (
+            ("ok", w["reader_ok"].format(version)) if version else ("fail", w["reader_missing"])
+        )
+    except Exception:
+        lector = ("fail", w["reader_missing"])
+
+    desde = tools.cache_key_since()
+    cifrado = (
+        w["cipher_text"].format(datetime.fromtimestamp(desde).strftime("%d/%m/%Y"))
+        if desde is not None
+        else w["cipher_env"]
+    )
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <h2>{e(w["title_settings"])}</h2>
+      <p class="lead">{e(w["settings_lead"])}</p>
+      <div class="settings">
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["key_title"])}</h3>
+            <span class="status {estado_clave[0]}" id="key-status">{e(estado_clave[1])}</span></div>
+          <p>{e(w["key_text"])}</p>
+          {nota_entorno}
+          <div class="key-row">
+            <input class="input" id="key-input" type="password" autocomplete="off">
+            <button type="button" class="btn" id="key-test">{e(w["key_test"])}</button>
+            <button type="button" class="btn btn-primary" id="key-save">{e(w["key_save"])}</button>
+          </div>
+          <div class="result ok" id="key-ok" hidden><svg><use href="#i-check"/></svg>
+            <span></span></div>
+          <div class="result fail" id="key-fail" hidden><svg><use href="#i-alert"/></svg>
+            <span></span></div>
+        </div>
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-download"/></svg>
+            <h3>{e(w["model_title"])}</h3>{estado_modelo}</div>
+          <p>{e(w["model_text"])}</p>
+          {descarga}
+        </div>
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-doc"/></svg><h3>{e(w["reader_title"])}</h3>
+            <span class="status {lector[0]}">{e(lector[1])}</span></div>
+          <p>{e(w["reader_text"])}</p>
+        </div>
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
+            <span class="status ok">{e(w["cipher_ok"])}</span></div>
+          <p>{e(cifrado)}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="back">
+      <svg><use href="#i-back"/></svg>{e(w["back_label"])}</button>
+  </footer>
+</section>"""
+    return _page(
+        brand=brand, title=w["title_settings"], place=w["header_place"], moment=moment,
+        pill=w["pill_ready"], pill_class="pill", body=body,
+        script=_settings_script(w, token, tools),
+    )
+
+
+def _download_block(w: AppWording, download: str) -> str:
+    e = html.escape
+    corriendo = download == "running"
+    boton = w["model_downloading"] if corriendo else w["model_download"]
+    return f"""<div class="download-bar"><span id="dl-bar" style="width: 0%"></span></div>
+          <div class="download-meta"><span id="dl-text"></span>
+            <span>{e(w["model_keep_open"])}</span></div>
+          <div class="key-row"><button type="button" class="btn btn-primary" id="dl-button"
+            {"disabled" if corriendo else ""}><svg><use href="#i-download"/></svg>
+            <span>{e(boton)}</span></button></div>"""
+
+
+def _settings_script(w: AppWording, token: str, tools: AppTools) -> str:
+    claves = (
+        "key_ok", "key_fail", "key_saved", "key_status_bad", "key_status_file",
+        "model_progress", "model_downloading", "model_download", "model_failed",
+    )
+    textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
+    return f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_SETTINGS}"
+
+
+def _model_page(
+    w: AppWording, brand: str, token: str, tools: AppTools, moment: datetime, download: str
+) -> str:
+    """El primer arranque sin modelo y sin clave de nube: no hay con qué transcribir.
+    Dos salidas, descargar o ir a poner la clave; ninguna obliga a la otra."""
+    e = html.escape
+    corriendo = download == "running"
+    boton = w["model_downloading"] if corriendo else w["model_download"]
+    entrada = w["model_lead"].format(tools.model_total_mb)
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <div class="alert-head">
+        <span class="alert-icon warn"><svg><use href="#i-download"/></svg></span>
+        <div><h2>{e(w["problem_model_title"])}</h2>
+        <p class="lead" style="margin:.2rem 0 0">{e(entrada)}</p></div>
+      </div>
+      <div class="download-bar"><span id="dl-bar" style="width: 0%"></span></div>
+      <div class="download-meta"><span id="dl-text"></span>
+        <span>{e(w["model_keep_open"])}</span></div>
+      <p class="hint">{e(w["model_text"])}</p>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="to-settings">
+      {e(w["model_to_settings"])}</button>
+    <button type="button" class="btn btn-primary" id="dl-button" {"disabled" if corriendo else ""}>
+      <svg><use href="#i-download"/></svg><span>{e(boton)}</span></button>
+  </footer>
+</section>"""
+    return _page(
+        brand=brand, title=w["title_first_run"], place=w["header_place"], moment=moment,
+        pill=w["pill_preparing"], pill_class="pill", body=body,
+        script=_settings_script(w, token, tools) + _JS_TO_SETTINGS,
+    )
+
+
+_JS_TO_SETTINGS = """
+document.getElementById('to-settings').addEventListener('click', async () => {
+  await fetch('/' + TOKEN + '/ajustes', { method: 'POST', body: '' });
+  location.reload();
+});
+"""
+
+_JS_SETTINGS = """
+function post(path, body) {
+  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
+}
+const back = document.getElementById('back');
+if (back) {
+  back.addEventListener('click', async () => { await post('/volver'); location.reload(); });
+}
+function show(ok, text) {
+  const good = document.getElementById('key-ok');
+  const bad = document.getElementById('key-fail');
+  good.hidden = !ok; bad.hidden = ok;
+  (ok ? good : bad).querySelector('span').textContent = text;
+}
+async function key(path) {
+  const value = document.getElementById('key-input').value.trim();
+  if (!value) return;
+  const r = await (await post(path, JSON.stringify({ key: value }))).json();
+  const status = document.getElementById('key-status');
+  if (r.ok) {
+    show(true, path === '/clave-guardar' ? W.key_saved : W.key_ok);
+    if (path === '/clave-guardar') {
+      status.className = 'status ok'; status.textContent = W.key_status_file;
+    }
+  } else {
+    show(false, W.key_fail.replace('{0}', r.reason));
+    status.className = 'status fail'; status.textContent = W.key_status_bad;
+  }
+}
+const test = document.getElementById('key-test');
+if (test) {
+  test.addEventListener('click', () => key('/clave-probar'));
+  document.getElementById('key-save').addEventListener('click', () => key('/clave-guardar'));
+}
+const dl = document.getElementById('dl-button');
+async function poll() {
+  const r = await (await fetch('/' + TOKEN + '/modelo')).json();
+  const mb = (n) => Math.round(n / 1048576);
+  const bar = document.getElementById('dl-bar');
+  const text = document.getElementById('dl-text');
+  if (r.total > 0) bar.style.width = Math.min(100, 100 * r.bytes / r.total) + '%';
+  if (r.state === 'running') {
+    text.textContent = W.model_progress.replace('{0}', mb(r.bytes)).replace('{1}', mb(r.total));
+    setTimeout(poll, 1000);
+  } else if (r.state === 'done') {
+    await post('/reintentar');
+    location.reload();
+  } else if (r.state === 'failed') {
+    text.textContent = W.model_failed.replace('{0}', r.detail);
+    dl.disabled = false; dl.querySelector('span').textContent = W.model_download;
+  }
+}
+if (dl) {
+  dl.addEventListener('click', async () => {
+    dl.disabled = true; dl.querySelector('span').textContent = W.model_downloading;
+    await post('/modelo');
+    poll();
+  });
+  if (dl.disabled) poll();
+}
+"""
+
 
 _JS_PROBLEM = """
 function post(path) { return fetch('/' + TOKEN + path, { method: 'POST', body: '' }); }

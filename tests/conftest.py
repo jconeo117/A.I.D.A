@@ -25,3 +25,14 @@ def _sin_red(monkeypatch: pytest.MonkeyPatch) -> None:
         raise httpx.ConnectError(f"la batería no sale a la red: {request.url}", request=request)
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _rechazar)
+
+
+@pytest.fixture(autouse=True)
+def _sin_claves_del_equipo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """La batería no lee las claves de quien la corre (plan 78). Desde que AIDA las
+    guarda en `~/.config/aida`, un equipo con `stt.key` hacía que los tests que
+    esperan «sin clave de nube» la encontraran; y sin clave de caché, AIDA la
+    crearía en la carpeta real."""
+    monkeypatch.setenv("AIDA_CONFIG_DIR", str(tmp_path_factory.mktemp("config-aida")))
