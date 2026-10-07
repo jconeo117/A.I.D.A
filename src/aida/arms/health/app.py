@@ -897,6 +897,14 @@ def serve(
         if session.state != "locked":
             session.last_activity = ahora
 
+    def actor() -> Professional:
+        """Con el candado tomado y en un estado identificado: quien firma lo que se
+        registra. Una sola puerta para estrechar el tipo (`I-156`); si alguna vez falta,
+        revienta en vez de escribir un registro sin autor."""
+        if session.professional is None:
+            raise IdentityError("no_actor", "no hay profesional en la sesión")
+        return session.professional
+
     def identificado() -> bool:
         return session.professional is not None and session.state not in (
             "who", "first_profile", "locked",
@@ -965,7 +973,7 @@ def serve(
             # guardada): qué códigos y qué campos con contenido.
             auditoria.record(
                 "draft_generated",
-                actor=session.professional,
+                actor=actor(),
                 owner=owner,
                 data={
                     "codes": ",".join(sorted(m.diagnostic.code for m in prepared.matches)),
@@ -1092,7 +1100,7 @@ def serve(
                     if not session.history_seen:
                         session.history_seen = True
                         auditoria.record(
-                            "history_viewed", actor=session.professional, owner=session.owner
+                            "history_viewed", actor=actor(), owner=session.owner
                         )
                     self._send(200, vista.data, vista.content_type)
                     return
@@ -1230,7 +1238,7 @@ def serve(
             )
             auditoria.record(
                 "profile_created",
-                actor=session.professional if not primero else nuevo,
+                actor=nuevo if primero else actor(),
                 data={"profile": nuevo.id, "name": nuevo.label()},
             )
             if primero:
@@ -1385,7 +1393,7 @@ def serve(
                 registro = ready.consultation.record_consent(
                     owner=AgentId(owner),
                     mode="recorded" if grabando else "uploaded",
-                    actor=session.professional,
+                    actor=actor(),
                 )
                 session.consent = registro
                 if grabando and session.workdir is not None:
@@ -1445,7 +1453,7 @@ def serve(
                     self._json(400, {"error": error})
                     return
                 close_from_screen(
-                    ready.consultation, borrador, envio, actor=session.professional
+                    ready.consultation, borrador, envio, actor=actor()
                 )
                 session.clean()
                 session.state = "start"

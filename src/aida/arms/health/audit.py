@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
-from aida.arms.health.identity import Professional
+from aida.arms.health.identity import IdentityError, Professional
 from aida.ledger import ChainedLog
 
 KINDS = (
@@ -61,14 +61,20 @@ class AuditLog:
         self,
         kind: str,
         *,
-        actor: Professional | None,
+        actor: Professional,
         owner: str = "",
         data: Mapping[str, str] | None = None,
         texts: Mapping[str, object] | None = None,
     ) -> dict[str, str]:
         """Añade un hecho. `texts` se cifra aparte y la línea lleva su huella; sin
         clave o sin carpeta de textos, no se guardan (y la línea lo dice con `blob`
-        vacío)."""
+        vacío).
+
+        Todo hecho tiene autor (`I-156`, regla del usuario: «no pueden haber registros
+        sin dueño»). El tipo ya lo pide, y se comprueba igual en ejecución: quien llama
+        sin tipos, o con un `Optional` mal estrechado, no pasa por mypy."""
+        if actor is None:
+            raise IdentityError("no_actor", "todo hecho de auditoría tiene autor")
         if kind not in KINDS:
             raise ValueError(f"clase de hecho de auditoría desconocida: {kind!r}")
         blob = self._store(texts) if texts else ""
@@ -76,8 +82,8 @@ class AuditLog:
             {
                 "at": self._now().isoformat(timespec="seconds"),
                 "kind": kind,
-                "actor": actor.id if actor else "",
-                "actor_name": actor.label() if actor else "",
+                "actor": actor.id,
+                "actor_name": actor.label(),
                 "workstation": self._workstation(),
                 "owner": owner,
                 "data": json.dumps(dict(data or {}), ensure_ascii=False, sort_keys=True),

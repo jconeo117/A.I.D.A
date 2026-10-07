@@ -185,13 +185,16 @@ class Consultation:
         return self._audit
 
     def record_consent(
-        self, *, owner: AgentId, mode: str, actor: Professional | None = None
+        self, *, owner: AgentId, mode: str, actor: Professional
     ) -> ConsentRecord:
         """Registra que `owner` autorizó, con el texto vigente del pack, y lo deja en
         el journal y en la auditoría. Es lo que abre `transcribe` para ese dueño.
 
-        Con `actor`, quien la recogió es el profesional identificado, con el equipo
-        (plan 83); sin él, solo el equipo, como en la 82: la CLI sin `--as`."""
+        Quien la recogió es siempre un profesional identificado, con el equipo
+        (`I-156`): antes de escribir nada, porque una autorización sin autor no se
+        puede deshacer de una cadena."""
+        if actor is None:
+            raise IdentityError("no_actor", "una autorización sin autor no se registra")
         if mode not in MODES:
             raise ValueError(f"modo de autorización desconocido: {mode!r}")
         if self._consent_texts is None:
@@ -202,7 +205,7 @@ class Consultation:
             mode=mode,
             version=textos.version,
             text=textos.modes[mode].text,
-            workstation=f"{actor.label()} @ {self._operator()}" if actor else self._operator(),
+            workstation=f"{actor.label()} @ {self._operator()}",
             at=self._now().isoformat(timespec="seconds"),
         )
         self._audit.record(

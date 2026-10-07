@@ -157,8 +157,8 @@ def _construir_parser() -> argparse.ArgumentParser:
         "--as",
         dest="actor_profile",
         metavar="PERFIL",
-        help="quién revisa (plan 83): el identificador o el registro profesional del "
-        "perfil; pide el PIN. Obligatorio con --review",
+        help="quién actúa (planes 83 y 83b): el identificador o el registro profesional "
+        "del perfil; pide el PIN. Obligatorio con --consultation y --mic --history",
     )
     parser.add_argument(
         "--audit",
@@ -296,6 +296,15 @@ def _identify(profile: str) -> Professional | None:
     except IdentityError as exc:
         print(f"aida: error: no se pudo identificar ({exc.code})", file=sys.stderr)
         return None
+
+
+def _require_actor(args: argparse.Namespace) -> Professional | None:
+    """`--as` es obligatoria para todo lo que registra (`I-156`). `None` tras decir por
+    qué, si falta o no se pudo identificar."""
+    if not args.actor_profile:
+        print("aida: error: falta --as PERFIL: todo registro tiene autor", file=sys.stderr)
+        return None
+    return _identify(args.actor_profile)
 
 
 def _list_audit() -> int:
@@ -809,6 +818,7 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
     }
 
     consultation = None
+    profesional_voz: Professional | None = None
     history_text = ""
     if args.history:
         history_path = Path(args.history)
@@ -820,6 +830,10 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
 
         if not args.consent:
             print(_FALTA_CONSENT, file=sys.stderr)
+            return 1
+        # Lo que se registre en esta sesión de voz tiene autor (`I-156`).
+        profesional_voz = _require_actor(args)
+        if profesional_voz is None:
             return 1
         stt, ocr = build_local_capture()
         consultation = _build_consultation(args, stt=stt, ocr=ocr)
@@ -848,7 +862,11 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
                 command = commands.recognize(utterance)
                 if command is OperatorCommand.EXIT:
                     return 0
-                if command is OperatorCommand.SWITCH_MODE and consultation is not None:
+                if (
+                    command is OperatorCommand.SWITCH_MODE
+                    and consultation is not None
+                    and profesional_voz is not None
+                ):
                     print("(modo consulta: escuchando)")
                     consulted_audio = listener.listen(
                         silence_seconds=args.silence_seconds, max_seconds=args.max_seconds
@@ -867,7 +885,9 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
                             audio_path=write_wav(consulted_audio, tmp / "consultado.wav"),
                             history_text=history_text,
                             consent=consultation.record_consent(
-                                owner=AgentId(args.owner), mode="recorded"
+                                owner=AgentId(args.owner),
+                                mode="recorded",
+                                actor=profesional_voz,
                             ),
                         )
                     except (TranscriptionError, ModelUnavailableError) as exc:
@@ -1051,15 +1071,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.consent:
             print(_FALTA_CONSENT, file=sys.stderr)
             return 1
-        # Revisar es confirmar códigos: sin profesional identificado, no (plan 83).
-        profesional = None
-        if args.review:
-            if not args.actor_profile:
-                print("aida: error: --review requiere --as PERFIL", file=sys.stderr)
-                return 1
-            profesional = _identify(args.actor_profile)
-            if profesional is None:
-                return 1
+        # Todo lo que esta ejecución registre tiene un mismo autor (`I-156`): la
+        # autorización, la revisión y el export.
+        profesional = _require_actor(args)
+        if profesional is None:
+            return 1
         autorizacion = consultation.record_consent(
             owner=AgentId(args.owner), mode="uploaded", actor=profesional
         )
