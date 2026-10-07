@@ -50,6 +50,7 @@ from aida.arms.health.app import (
     AppProblem,
     AppReady,
     AppTools,
+    _Session,
     load_app_wording,
     serve,
 )
@@ -69,7 +70,7 @@ from aida.arms.health.identity import (
 from aida.arms.health.match import build_index
 from aida.arms.health.note import load_note_settings
 from aida.arms.health.review import Answer, Verdict
-from aida.arms.health.review_ui import load_ui_settings
+from aida.arms.health.review_ui import HistoryView, load_ui_settings
 from aida.arms.health.segment import build_health_segmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import EventKind, EventLog
@@ -486,11 +487,12 @@ def test_consultation_review_sin_actor_lanza_identity_error_y_no_audita(tmp_path
     y NO emite ITEM_REVIEWED, no guarda en caché ni escribe en auditoría."""
     consultation, event_log, audit_log = _crear_consultation(tmp_path)
     owner = AgentId("paciente_puerta")
+    actor = Professional(id="c1", name="Dr. Consent", registry="111")
     prepared = consultation.prepare(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
-        consent=consultation.record_consent(owner=owner, mode="uploaded"),
+        consent=consultation.record_consent(owner=owner, mode="uploaded", actor=actor),
     )
 
     with pytest.raises(IdentityError) as exc:
@@ -590,14 +592,15 @@ def test_audit_show_con_blob_alterado_lanza_value_error(tmp_path: Path) -> None:
 
 def test_audit_record_sin_clave_o_sin_blobs_escribe_blob_vacio(tmp_path: Path) -> None:
     """Caso 16 (§B.4): Sin clave o sin carpeta de textos, record escribe la línea con blob vacío."""
+    actor = Professional(id="p1", name="Dr. Uno", registry="1")
     # Sin clave ni carpeta
     audit1 = AuditLog(tmp_path / "audit1.jsonl", blobs=None, key=None)
-    l1 = audit1.record("review_saved", actor=None, texts={"draft": "algo"})
+    l1 = audit1.record("review_saved", actor=actor, texts={"draft": "algo"})
     assert l1["blob"] == ""
 
     # Sin clave pero con carpeta
     audit2 = AuditLog(tmp_path / "audit2.jsonl", blobs=tmp_path / "b", key=None)
-    l2 = audit2.record("review_saved", actor=None, texts={"draft": "algo"})
+    l2 = audit2.record("review_saved", actor=actor, texts={"draft": "algo"})
     assert l2["blob"] == ""
 
 
@@ -625,10 +628,11 @@ def test_record_consent_con_actor_incluye_label_en_workstation_y_audita(tmp_path
 
 def test_audit_record_con_clase_fuera_de_kinds_lanza_value_error(tmp_path: Path) -> None:
     """Caso 18 (§B.4): AuditLog.record con una clase no declarada en KINDS lanza ValueError."""
+    actor = Professional(id="p1", name="Dr. Uno", registry="1")
     audit = AuditLog(tmp_path / "audit.jsonl")
     assert "review_saved" in KINDS
     with pytest.raises(ValueError, match="clase de hecho de auditoría desconocida"):
-        audit.record("evento_inventado", actor=None)
+        audit.record("evento_inventado", actor=actor)
 
 
 # ---------------------------------------------------------------------------
@@ -1066,7 +1070,7 @@ def test_cli_as_y_audit_comandos(
     )
     cap1 = capsys.readouterr()
     assert cod1 == 1
-    assert "aida: error: --review requiere --as PERFIL" in cap1.err
+    assert "aida: error: falta --as PERFIL: todo registro tiene autor" in cap1.err
 
     # 2. --as desconocido => 1
     store = ProfileStore(user_dir("config") / "profiles.json")
@@ -1140,3 +1144,287 @@ def test_cli_as_y_audit_comandos(
     cap4 = capsys.readouterr()
     assert cod4 == 1
     assert "aida: error: esa huella no identifica una sola línea" in cap4.err
+
+
+# ---------------------------------------------------------------------------
+# Plan 83b: Todo registro tiene autor (I-156) (§B.2)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_record_sin_actor_lanza_identity_error_y_no_anade_linea(tmp_path: Path) -> None:
+    """Caso 4 (§B.2, M1): AuditLog.record con actor=None lanza IdentityError('no_actor')
+    y no añade línea nueva a la cadena."""
+    audit_file = tmp_path / "audit.jsonl"
+    audit = AuditLog(audit_file)
+    with pytest.raises(IdentityError) as exc:
+        audit.record("session_opened", actor=None)  # type: ignore[arg-type]
+    assert exc.value.code == "no_actor"
+    assert not audit_file.exists() or len(list(audit.lines())) == 0
+
+
+def test_record_consent_sin_actor_lanza_identity_error_sin_linea_ni_evento(tmp_path: Path) -> None:
+    """Caso 5 (§B.2, M2): record_consent con actor=None lanza IdentityError('no_actor')
+    y no escribe en consents ni emite CONSENT_RECORDED."""
+    consultation, event_log, _ = _crear_consultation(tmp_path)
+    owner = AgentId("doc_no_actor")
+    with pytest.raises(IdentityError) as exc:
+        consultation.record_consent(owner=owner, mode="uploaded", actor=None)  # type: ignore[arg-type]
+    assert exc.value.code == "no_actor"
+    assert len(consultation._consents.records()) == 0
+    assert not any(e.kind == EventKind.CONSENT_RECORDED for e in event_log)
+
+
+def test_cli_consultation_sin_as_devuelve_uno_sin_llamar_stt(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 6 (§B.2, M3): CLI --consultation sin --as sale con 1, mensaje de error y
+    el STT simulado no recibe llamadas."""
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(_crear_wav_minimo())
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica.")
+
+    stt_calls = 0
+
+    class _CountingSTT:
+        def transcribe(self, *args: Any, **kwargs: Any) -> Any:
+            nonlocal stt_calls
+            stt_calls += 1
+            return []
+
+        def transcribe_segments(self, *args: Any, **kwargs: Any) -> Any:
+            nonlocal stt_calls
+            stt_calls += 1
+            return ()
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_CountingSTT(), _DummyOCR()),
+    )
+
+    codigo = main(
+        [
+            "--consultation",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "pac_cli_sin_as",
+            "--consent",
+        ]
+    )
+    cap = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: falta --as PERFIL: todo registro tiene autor" in cap.err
+    assert stt_calls == 0
+
+
+def test_cli_mic_history_sin_as_devuelve_uno_antes_de_abrir_microfono(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 6 (§B.2, M4): CLI --mic --history sin --as sale con 1 antes de abrir el micrófono."""
+    pytest.importorskip("sounddevice", reason="requiere el extra 'capture' (sounddevice)")
+    from tests.test_run import _pack_yaml_valido
+
+    pack_file = tmp_path / "pack.yaml"
+    pack_file.write_text(_pack_yaml_valido(), encoding="utf-8")
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica.")
+
+    mic_opened = False
+
+    class _SpyMic:
+        def __enter__(self) -> Any:
+            nonlocal mic_opened
+            mic_opened = True
+            raise AssertionError("no debió abrir el micrófono")
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    monkeypatch.setattr("aida.voice.listen.MicrophoneSource", _SpyMic)
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    codigo = main(
+        [
+            "--pack",
+            str(pack_file),
+            "--converse",
+            "--mic",
+            "--history",
+            str(hist_path),
+            "--owner",
+            "pac_mic_sin_as",
+            "--consent",
+        ]
+    )
+    cap = capsys.readouterr()
+    assert codigo == 1
+    assert "aida: error: falta --as PERFIL: todo registro tiene autor" in cap.err
+    assert not mic_opened
+
+
+def test_cli_as_con_export_auditoria_y_autorizacion_mismo_profesional(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 7 (§B.2): CLI con --as y --export registra la línea 'exported' y
+    la autorización con el mismo profesional."""
+    _audit.cache_clear()
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    store = ProfileStore(user_dir("config") / "profiles.json")
+    prof = store.create(name="Dra. Laura Gómez", registry="52.341.889", pin="1234")
+    monkeypatch.setattr("getpass.getpass", lambda *args, **kwargs: "1234")
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.build_local_capture",
+        lambda: (_DummySTT(), _DummyOCR()),
+    )
+
+    audio_path = tmp_path / "consulta.wav"
+    audio_path.write_bytes(_crear_wav_minimo())
+    hist_path = tmp_path / "historia.txt"
+    hist_path.write_text("Historia clínica previa.")
+    export_path = tmp_path / "salida.md"
+
+    codigo = main(
+        [
+            "--consultation",
+            "--as",
+            prof.registry,
+            "--segment",
+            "--audio",
+            str(audio_path),
+            "--history",
+            str(hist_path),
+            "--owner",
+            "pac_cli_export_mismo_prof",
+            "--export",
+            str(export_path),
+            "--llm",
+            "ninguno",
+            "--consent",
+        ]
+    )
+    assert codigo == 0
+
+    consents_file = user_dir("data") / "autorizaciones.jsonl"
+    assert consents_file.exists()
+    consent_lines = [
+        json.loads(line)
+        for line in consents_file.read_text(encoding="utf-8").strip().splitlines()
+        if line.strip()
+    ]
+    assert len(consent_lines) > 0
+    last_consent = consent_lines[-1]
+    assert prof.label() in last_consent["workstation"]
+
+    audit_file = user_dir("data") / "auditoria.jsonl"
+    assert audit_file.exists()
+    audit_lines = [
+        json.loads(line)
+        for line in audit_file.read_text(encoding="utf-8").strip().splitlines()
+        if line.strip()
+    ]
+    exported_lines = [line for line in audit_lines if line.get("kind") == "exported"]
+    assert len(exported_lines) == 1
+    exp = exported_lines[0]
+    assert exp["actor"] == prof.id
+    assert exp["actor_name"] == prof.label()
+
+    assert exp["actor_name"] in last_consent["workstation"]
+
+
+def test_app_actor_sin_profesional_en_estado_que_registra_falla_sin_auditar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 8 (§B.2, M5): actor() de serve con session.professional a None en un estado
+    que registra (forzado en el test), la petición falla sin escribir en la auditoría."""
+    profiles = ProfileStore(tmp_path / "profiles.json")
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    ready = AppReady(
+        consultation=_crear_consultation(tmp_path, audit=audit)[0],
+        reader=_DummyOCR(),
+        log=EventLog(),
+        cloud=True,
+        writer="modelo-prueba",
+    )
+
+    captured_sessions: list[_Session] = []
+    orig_init = _Session.__init__
+
+    def spy_init(self: _Session, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        captured_sessions.append(self)
+
+    monkeypatch.setattr(_Session, "__init__", spy_init)
+
+    record_calls: list[Any] = []
+    orig_record = audit.record
+
+    def spy_record(*args: Any, **kwargs: Any) -> Any:
+        record_calls.append(kwargs)
+        return orig_record(*args, **kwargs)
+
+    monkeypatch.setattr(audit, "record", spy_record)
+
+    url, _, _, _, _ = _lanzar_servidor_identity(
+        lambda: ready,
+        profiles=profiles,
+        audit=audit,
+        identificar=True,
+    )
+
+    assert len(captured_sessions) >= 1
+    session = captured_sessions[0]
+    prof_real = session.professional
+    # Forzar session.professional = None en un estado que registra (review)
+    session.state = "review"
+    session.view = HistoryView(
+        content_type="text/plain", data=b"historia original", text="historia original"
+    )
+    session.history_seen = False
+
+    class _FlapProf:
+        def __init__(self, real: Any) -> None:
+            self.real = real
+
+        def __get__(self, obj: Any, objtype: Any = None) -> Any:
+            import traceback
+
+            for frame in traceback.extract_stack():
+                if frame.name == "actor":
+                    return None
+            return self.real
+
+        def __set__(self, obj: Any, val: Any) -> None:
+            pass
+
+    _Session.professional = _FlapProf(prof_real)  # type: ignore[assignment]
+
+    audit_lines_before = len(list(audit.lines()))
+    record_calls.clear()
+
+    # Petición a /historia que audita history_viewed llamando a actor()
+    # Con IdentityError en actor(), el servidor cierra la conexión y httpx lanza error
+    with pytest.raises(httpx.HTTPError):
+        httpx.get(f"{url}/historia", timeout=5.0)
+
+    # auditoria.record no debe haber sido llamado
+    assert len(record_calls) == 0
+    # No se escribe nada en la auditoría
+    assert len(list(audit.lines())) == audit_lines_before
+

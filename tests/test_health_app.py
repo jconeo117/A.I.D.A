@@ -291,7 +291,8 @@ def test_draft_for_screen_y_close_from_screen(tmp_path: Path) -> None:
     doc.write_text("Historia previa", encoding="utf-8")
 
     owner = AgentId("HC-01")
-    consent = ready.consultation.record_consent(owner=owner, mode="uploaded")
+    actor = Professional(id="t", name="Prueba", registry="0")
+    consent = ready.consultation.record_consent(owner=owner, mode="uploaded", actor=actor)
     prepared = ready.consultation.prepare(
         owner=owner,
         audio_path=audio,
@@ -309,7 +310,6 @@ def test_draft_for_screen_y_close_from_screen(tmp_path: Path) -> None:
         note_fields={spec.section_id: texto for spec, texto in draft.note.fields},
     )
 
-    actor = Professional(id="t", name="Prueba", registry="0")
     close_from_screen(ready.consultation, draft, submission, actor=actor)
     eventos_rev = [e for e in ready.log if e.kind is EventKind.ITEM_REVIEWED]
     assert len(eventos_rev) == len(draft.items) + len(draft.note.fields)

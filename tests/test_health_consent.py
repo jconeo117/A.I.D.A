@@ -73,7 +73,7 @@ from aida.arms.health.consultation import (
     ConsultationResult,
 )
 from aida.arms.health.export import export_consultation
-from aida.arms.health.identity import ProfileStore
+from aida.arms.health.identity import Professional, ProfileStore
 from aida.arms.health.live import LiveSession, LiveTranscriber
 from aida.arms.health.match import build_index
 from aida.arms.health.note import RenderedNote, load_note_settings
@@ -91,6 +91,8 @@ from aida.engine.ontology import AgentId
 from aida.run import main
 from aida.voice.diarize import TranscriptSegment
 from tests.conftest import _ORIGINAL_HANDLE_REQUEST
+
+_ACTOR = Professional(id="t", name="Prueba", registry="0")
 
 
 @pytest.fixture(autouse=True)
@@ -266,7 +268,7 @@ def test_consent_otro_dueno_lanza_consent_missing_error_cero_llamadas_stt(
     audio = tmp_path / "audio.wav"
     audio.write_bytes(_crear_wav_minimo())
 
-    consent = c.record_consent(owner=owner_bueno, mode="uploaded")
+    consent = c.record_consent(owner=owner_bueno, mode="uploaded", actor=_ACTOR)
 
     with pytest.raises(ConsentMissingError):
         c.transcribe(owner=owner_ajeno, audio_path=audio, consent=consent)
@@ -308,7 +310,7 @@ def test_consent_valido_transcribe_llama_stt_una_vez(tmp_path: Path) -> None:
     audio = tmp_path / "audio.wav"
     audio.write_bytes(_crear_wav_minimo())
 
-    consent = c.record_consent(owner=owner, mode="uploaded")
+    consent = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     res = c.transcribe(owner=owner, audio_path=audio, consent=consent)
 
     assert "cefalea" in res
@@ -348,7 +350,7 @@ def test_record_consent_modo_desconocido_lanza_value_error_sin_linea_ni_evento(
     owner = AgentId("doc_modo")
 
     with pytest.raises(ValueError, match="modo de autorización desconocido"):
-        c.record_consent(owner=owner, mode="inventado")
+        c.record_consent(owner=owner, mode="inventado", actor=_ACTOR)
 
     assert len(list(log)) == 0
     assert len(c._consents.records()) == 0
@@ -558,7 +560,7 @@ def test_record_consent_emite_consent_recorded_sin_content(tmp_path: Path) -> No
     c = _build_consultation(tmp_path, log=log)
     owner = AgentId("doc_audit")
 
-    rec = c.record_consent(owner=owner, mode="uploaded")
+    rec = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
 
     eventos = [e for e in log if e.kind == EventKind.CONSENT_RECORDED]
     assert len(eventos) == 1

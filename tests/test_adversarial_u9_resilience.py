@@ -39,10 +39,13 @@ from aida.arms.health.capture import (
 )
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, SummaryWording
+from aida.arms.health.identity import Professional
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ports import CognitionProvider
+
+_ACTOR = Professional(id="t", name="Prueba", registry="0")
 
 Image = pytest.importorskip(
     "PIL.Image",
@@ -496,7 +499,7 @@ def test_consultation_run_event_emission_order_and_payload(
     )
 
     owner = ontology.AgentId("paciente_auditoria")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -565,7 +568,7 @@ def test_consultation_run_empty_catalog_matches_emits_empty_data_dict(
     )
 
     owner = ontology.AgentId("paciente_sin_matches")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -609,7 +612,7 @@ def test_consultation_run_failure_in_stt_stops_pipeline_before_emitting_events(
     )
 
     owner = ontology.AgentId("p_fail_stt")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     with pytest.raises(TranscriptionError):
         consultation.run(
             owner=owner,
@@ -652,7 +655,7 @@ def test_consultation_run_failure_in_ocr_preserves_only_stt_event(
     )
 
     owner = ontology.AgentId("p_fail_ocr")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     with pytest.raises(OCRError):
         consultation.run(
             owner=owner,
@@ -692,7 +695,7 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_none = c_none.record_consent(owner=owner, mode="uploaded")
+    consent_none = c_none.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_none.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_none
     ).summary_markdown
@@ -722,7 +725,7 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
             cache=cache,
             log=EventLog(window=100),
         )
-        consent = c.record_consent(owner=owner, mode="uploaded")
+        consent = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
         res = c.run(
             owner=owner,
             audio_path=audio_path,
@@ -761,7 +764,7 @@ def test_consultation_run_provider_exception_currently_escapes_uncaught(
     )
 
     owner = ontology.AgentId("paciente_proveedor_caido")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
 
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
@@ -812,7 +815,7 @@ def test_consultation_run_with_neutral_wording_has_no_medical_domain_literals(
     )
 
     owner = ontology.AgentId("agente_agnostico")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -871,7 +874,7 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_ref = c_reference.record_consent(owner=owner, mode="uploaded")
+    consent_ref = c_reference.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_reference.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_ref
     ).summary_markdown
@@ -893,7 +896,7 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         log=EventLog(window=100),
     )
 
-    consent_adv = c_adversarial.record_consent(owner=owner, mode="uploaded")
+    consent_adv = c_adversarial.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = c_adversarial.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_adv
     )
@@ -933,7 +936,7 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_base = c_baseline.record_consent(owner=owner, mode="uploaded")
+    consent_base = c_baseline.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_baseline.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_base
     ).summary_markdown
@@ -1013,7 +1016,7 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        consent_p = consultation.record_consent(owner=owner, mode="uploaded")
+        consent_p = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
         res = consultation.run(
             owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_p
         )
@@ -1049,7 +1052,7 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        consent_e = consultation.record_consent(owner=owner, mode="uploaded")
+        consent_e = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
         res = consultation.run(
             owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_e
         )
@@ -1090,7 +1093,7 @@ def test_consultation_run_with_history_does_not_call_ocr(
 
     owner = ontology.AgentId("paciente_precargado")
     history_precargada = "Historia clínica precargada en memoria sin OCR"
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run_with_history(
         owner=owner,
         audio_path=audio_path,
@@ -1137,7 +1140,7 @@ def test_consultation_run_calls_ocr_exactly_once(
     )
 
     owner = ontology.AgentId("paciente_con_ocr")
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,
@@ -1199,7 +1202,7 @@ def test_consultation_run_delegates_to_run_with_history(
 
     monkeypatch.setattr(consultation, "run_with_history", mock_run_with_history)
 
-    consent = consultation.record_consent(owner=owner, mode="uploaded")
+    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,

@@ -645,9 +645,19 @@ def test_consultation_sin_cache_key_crea_clave_y_falla_por_audio(
     from aida.resources import user_dir
 
     monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+    perfil = _crear_perfil_cli(monkeypatch)
 
     with pytest.raises(FileNotFoundError):
-        main(["--consultation", "--audio", "audio.wav", "--history", "historia.png", "--consent"])
+        main([
+            "--consultation",
+            "--as",
+            perfil,
+            "--audio",
+            "audio.wav",
+            "--history",
+            "historia.png",
+            "--consent",
+        ])
 
     captured = capsys.readouterr()
     assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
@@ -829,10 +839,12 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
     img_path = tmp_path / "historia.png"
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
-
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -909,10 +921,13 @@ def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -985,10 +1000,13 @@ def test_consultation_cli_segment_print_model(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
+            "--as",
+            perfil,
             "--print-model",
             "--audio",
             str(audio_path),
@@ -1084,9 +1102,12 @@ def test_consultation_cli_print_model_sin_segment_avisa_stderr(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
+            "--as",
+            perfil,
             "--print-model",
             "--audio",
             str(audio_path),
@@ -1179,11 +1200,14 @@ def test_consultation_cli_segment_extract_print_model(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--extract",
+            "--as",
+            perfil,
             "--print-model",
             "--audio",
             str(audio_path),
@@ -1280,9 +1304,12 @@ def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -1400,9 +1427,12 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -1695,12 +1725,15 @@ def test_converse_mic_modo_consulta_delega_en_consultation_no_en_session_turn(
 
     monkeypatch.setattr("aida.cognition.session.Session.turn", spy_turn)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--pack",
             str(pack_file),
             "--converse",
             "--mic",
+            "--as",
+            perfil,
             "--history",
             str(historia_path),
             "--owner",
@@ -2163,9 +2196,12 @@ def test_consultation_cli_audio_sin_voz_devuelve_uno_sin_traza(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -2233,12 +2269,15 @@ def test_converse_mic_modo_consulta_audio_sin_voz_imprime_error_y_sigue_en_bucle
         lambda *args, **kwargs: "Historia clínica previa.",
     )
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--pack",
             str(pack_file),
             "--converse",
             "--mic",
+            "--as",
+            perfil,
             "--history",
             str(historia_path),
             "--owner",
@@ -2530,10 +2569,13 @@ def test_cli_sin_review_no_mide(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -2567,6 +2609,7 @@ def _preparar_entorno_consultation_cli(
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _crear_perfil_cli(monkeypatch)
 
     class _MockWhisperBackend:
         def transcribe(self, *args: Any, **kwargs: Any) -> tuple[list[Any], None]:
@@ -2607,6 +2650,8 @@ def test_cli_consultation_export_con_ruta_escribe_resumen_y_aviso_en_stderr(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -2641,6 +2686,8 @@ def test_cli_consultation_export_sin_ruta_escribe_en_carpeta_por_defecto(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -2675,6 +2722,8 @@ def test_cli_consultation_sin_export_no_escribe_en_carpeta_por_defecto(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -2706,6 +2755,8 @@ def test_cli_consultation_export_con_print_model_escribe_json_al_lado(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -2776,8 +2827,11 @@ def test_consultation_cli_cached_stt_segunda_ejecucion_no_llama_modelo(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     cmd = [
         "--consultation",
+        "--as",
+        perfil,
         "--audio",
         str(audio_path),
         "--history",
@@ -2843,8 +2897,11 @@ def test_consultation_cli_cached_stt_clave_distinta_vuelve_a_transcribir(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     cmd = [
         "--consultation",
+        "--as",
+        perfil,
         "--audio",
         str(audio_path),
         "--history",
@@ -3759,6 +3816,7 @@ def _preparar_entorno_consulta_sin_capture(
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _crear_perfil_cli(monkeypatch)
 
     class _DummySTT:
         def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
@@ -3811,6 +3869,8 @@ def test_consultation_cli_segment_note_imprime_nota(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -3844,6 +3904,8 @@ def test_consultation_cli_export_incluye_nota_antes_del_resumen(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -3883,6 +3945,8 @@ def test_consultation_cli_export_respaldo_literal_lleva_fallback_notice(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
@@ -4099,6 +4163,8 @@ def test_consultation_cli_salida_estandar_usa_render_note_markdown(
     codigo = main(
         [
             "--consultation",
+            "--as",
+            "52.341.889",
             "--segment",
             "--audio",
             str(audio_path),
