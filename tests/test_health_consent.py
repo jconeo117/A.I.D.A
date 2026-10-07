@@ -35,6 +35,7 @@ import inspect
 import io
 import json
 import stat
+import tempfile
 import threading
 import time
 import wave
@@ -72,6 +73,7 @@ from aida.arms.health.consultation import (
     ConsultationResult,
 )
 from aida.arms.health.export import export_consultation
+from aida.arms.health.identity import ProfileStore
 from aida.arms.health.live import LiveSession, LiveTranscriber
 from aida.arms.health.match import build_index
 from aida.arms.health.note import RenderedNote, load_note_settings
@@ -198,6 +200,8 @@ def _lanzar_servidor(
         "vad_factory": lambda: lambda audio: np.zeros(1, dtype=np.float32),
         **kwargs,
     }
+    if "profiles" not in serve_kwargs:
+        serve_kwargs["profiles"] = ProfileStore(Path(tempfile.mkdtemp()) / "profiles.json")
     hilo = threading.Thread(
         target=serve,
         args=(build_fn,),
@@ -208,6 +212,11 @@ def _lanzar_servidor(
     assert listo.wait(timeout=5.0)
     url = info["url"]
     partes = url.rsplit("/", 1)
+    httpx.post(
+        f"{url}/perfil",
+        json={"name": "Dra. Laura Gómez", "registry": "52.341.889", "pin": "1234", "pin2": "1234"},
+        timeout=5.0,
+    )
     return url, partes[1], int(partes[0].split(":")[-1]), hilo
 
 

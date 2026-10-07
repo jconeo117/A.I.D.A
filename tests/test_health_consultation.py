@@ -27,6 +27,7 @@ from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.history import HistoryLayout, HistorySection
+from aida.arms.health.identity import Professional
 from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, CodableText, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
@@ -51,6 +52,8 @@ from aida.voice.diarize import (
     SpeakerTurn,
     TranscriptSegment,
 )
+
+_ACTOR = Professional(id="t", name="Prueba", registry="0")
 
 
 def _codables(*textos: str) -> tuple[CodableText, ...]:
@@ -1554,7 +1557,7 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
             return Answer(Verdict.REJECTED)
         return Answer(Verdict.CONFIRMED)
 
-    result_a = c_a.review(prepared_a, reviewer=reviewer_a)
+    result_a = c_a.review(prepared_a, reviewer=reviewer_a, actor=_ACTOR)
     assert spy_provider_a.think_calls == 0
     assert result_a.matched_codes == ("I10",)
     assert (
@@ -1594,7 +1597,7 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
             return Answer(Verdict.REJECTED)
         return Answer(Verdict.CONFIRMED)
 
-    result_b = c_b.review(prepared_b, reviewer=reviewer_b)
+    result_b = c_b.review(prepared_b, reviewer=reviewer_b, actor=_ACTOR)
     assert spy_provider_b.think_calls == 0
     assert result_b.matched_codes == ()
     assert "El profesional no confirmó ningún código." in result_b.summary_markdown
@@ -1664,7 +1667,7 @@ def test_consultation_review_wording_incompleto_falla_antes_de_preguntar(
         return Answer(Verdict.CONFIRMED)
 
     with pytest.raises(ValueError, match="confirmed_template"):
-        c_bad.review(prepared, reviewer=reviewer_spy)
+        c_bad.review(prepared, reviewer=reviewer_spy, actor=_ACTOR)
 
     assert calls == 0
 
@@ -1713,7 +1716,7 @@ def test_consultation_review_cortada_propaga_y_no_guarda_en_cache(
         raise EOFError("corte inesperado")
 
     with pytest.raises(EOFError):
-        consultation.review(prepared, reviewer=cut_reviewer)
+        consultation.review(prepared, reviewer=cut_reviewer, actor=_ACTOR)
 
     assert sample_cache.load(owner=owner) is None
 
@@ -1819,6 +1822,7 @@ def test_consultation_review_sin_segmentador_lanza_value_error(
         consultation.review(
             prepared_sin_encounter,
             reviewer=lambda item: Answer(Verdict.CONFIRMED),
+            actor=_ACTOR,
         )
 
 
@@ -1918,7 +1922,7 @@ def test_consultation_review_completa_registra_metricas_con_reloj_inyectado(
     def sample_reviewer(item: ReviewItem) -> Answer:
         return Answer(Verdict.CONFIRMED)
 
-    consultation.review(prepared, reviewer=sample_reviewer)
+    consultation.review(prepared, reviewer=sample_reviewer, actor=_ACTOR)
 
     records = store.read()
     assert len(records) == 1
@@ -1993,7 +1997,7 @@ def test_consultation_review_cortada_con_eof_error_registra_incompleta_y_no_cach
         return Answer(Verdict.CONFIRMED)
 
     with pytest.raises(EOFError, match="corte en tercer ítem"):
-        consultation.review(prepared, reviewer=cut_reviewer)
+        consultation.review(prepared, reviewer=cut_reviewer, actor=_ACTOR)
 
     assert sample_cache.load(owner=owner) is None
 
@@ -2062,7 +2066,7 @@ def test_consultation_review_cortada_con_keyboard_interrupt_registra_incompleta_
         return Answer(Verdict.CONFIRMED)
 
     with pytest.raises(KeyboardInterrupt):
-        consultation.review(prepared, reviewer=cut_reviewer)
+        consultation.review(prepared, reviewer=cut_reviewer, actor=_ACTOR)
 
     assert sample_cache.load(owner=owner) is None
 
@@ -2110,7 +2114,7 @@ def test_consultation_review_wording_incompleto_no_crea_archivo_ni_abre_medicion
     )
 
     with pytest.raises(ValueError, match="confirmed_template"):
-        consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+        consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR)
 
     assert not metrics_path.exists()
     assert store.read() == ()
@@ -2161,7 +2165,7 @@ def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado
         history_text="Historia con hipertensión esencial",
         consent=consultation.record_consent(owner=owner1, mode="uploaded"),
     )
-    consultation.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+    consultation.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR)
 
     # Segunda consulta
     owner2 = AgentId("doc_seq_2")
@@ -2171,7 +2175,7 @@ def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado
         history_text="Historia con hipertensión esencial",
         consent=consultation.record_consent(owner=owner2, mode="uploaded"),
     )
-    consultation.review(prep2, reviewer=lambda item: Answer(Verdict.REJECTED))
+    consultation.review(prep2, reviewer=lambda item: Answer(Verdict.REJECTED), actor=_ACTOR)
 
     records = store.read()
     assert len(records) == 2
@@ -2228,7 +2232,7 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
         history_text="Historia con hipertensión esencial",
         consent=c_a.record_consent(owner=owner, mode="uploaded"),
     )
-    c_a.review(p_a, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+    c_a.review(p_a, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR)
 
     # Ejecución B: sin store (review_metrics=None)
     log_b = EventLog(window=100)
@@ -2251,7 +2255,7 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
         history_text="Historia con hipertensión esencial",
         consent=c_b.record_consent(owner=owner, mode="uploaded"),
     )
-    c_b.review(p_b, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+    c_b.review(p_b, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR)
 
     assert not (tmp_path / "sin_store_file.jsonl").exists()
     assert list(log_a.to_jsonl()) == list(log_b.to_jsonl())
@@ -2474,7 +2478,7 @@ def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
         history_text="hipertensión esencial\ndiabetes mellitus",
         consent=c1.record_consent(owner=owner1, mode="uploaded"),
     )
-    res1 = c1.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+    res1 = c1.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR)
 
     assert "Códigos confirmados por el profesional: " in res1.summary_markdown
     assert "Códigos que ya constaban en la historia: " in res1.summary_markdown
@@ -2524,7 +2528,7 @@ def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
             return Answer(Verdict.REJECTED)
         return Answer(Verdict.CONFIRMED)
 
-    res2 = c2.review(prep2, reviewer=rechaza_codigos)
+    res2 = c2.review(prep2, reviewer=rechaza_codigos, actor=_ACTOR)
     assert "El profesional no confirmó ningún código." in res2.summary_markdown
     assert "Códigos confirmados por el profesional:" not in res2.summary_markdown
     assert "Códigos que ya constaban en la historia:" not in res2.summary_markdown
@@ -2702,7 +2706,9 @@ Madre con infarto
         history_text=historia_entera,
         consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
-    result = consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED))
+    result = consultation.review(
+        prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED), actor=_ACTOR
+    )
 
     # El extracto de historia y el resumen final deben contener la historia completa
     assert result.history_excerpt == historia_entera
@@ -2895,7 +2901,7 @@ def test_consultation_evidencia_en_review_item(
         items_con.append(item)
         return Answer(Verdict.CONFIRMED)
 
-    c_con.review(prep_con, reviewer=_rev_con)
+    c_con.review(prep_con, reviewer=_rev_con, actor=_ACTOR)
     item_cod_con = next(it for it in items_con if it.kind == ItemKind.CODE)
     assert "dicho: «consulta hoy por dolor toracico pero no fiebre»" in item_cod_con.text
 
@@ -2926,7 +2932,7 @@ def test_consultation_evidencia_en_review_item(
         items_sin.append(item)
         return Answer(Verdict.CONFIRMED)
 
-    c_sin.review(prep_sin, reviewer=_rev_sin)
+    c_sin.review(prep_sin, reviewer=_rev_sin, actor=_ACTOR)
     item_cod_sin = next(it for it in items_sin if it.kind == ItemKind.CODE)
     assert item_cod_sin.text == "dolor toracico"
 
@@ -2966,7 +2972,7 @@ def test_consultation_hallazgo_enteramente_negado_marcado_mixto_no(
         items.append(item)
         return Answer(Verdict.CONFIRMED)
 
-    c.review(prep, reviewer=_rev)
+    c.review(prep, reviewer=_rev, actor=_ACTOR)
     find_items = [it for it in items if it.kind == ItemKind.FINDING]
 
     item_fiebre = next(it for it in find_items if "No refiere fiebre" in it.text)
@@ -3409,7 +3415,7 @@ def test_consultation_review_elapsed_seconds_externo_registra_tiempo_pasado(
     def sample_reviewer(item: ReviewItem) -> Answer:
         return Answer(Verdict.CONFIRMED)
 
-    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=42.5)
+    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=42.5, actor=_ACTOR)
 
     records = store.read()
     assert len(records) == 1
@@ -3467,7 +3473,7 @@ def test_consultation_review_sin_elapsed_seconds_mide_con_reloj_del_bucle(
     def sample_reviewer(item: ReviewItem) -> Answer:
         return Answer(Verdict.CONFIRMED)
 
-    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=None)
+    consultation.review(prepared, reviewer=sample_reviewer, elapsed_seconds=None, actor=_ACTOR)
 
     records = store.read()
     assert len(records) == 1
@@ -3525,7 +3531,7 @@ def test_consultation_review_cortada_registra_elapsed_seconds(
         raise KeyboardInterrupt()
 
     with pytest.raises(KeyboardInterrupt):
-        consultation.review(prepared, reviewer=failing_reviewer, elapsed_seconds=77.5)
+        consultation.review(prepared, reviewer=failing_reviewer, elapsed_seconds=77.5, actor=_ACTOR)
 
     records = store.read()
     assert len(records) == 1
@@ -3792,13 +3798,21 @@ def test_consultation_review_note_y_edits_van_juntos(
     with pytest.raises(
         ValueError, match="la nota y sus ediciones van juntas, o ninguna de las dos"
     ):
-        consultation.review(prepared, reviewer=dummy_reviewer, note=note, note_edits=None)
+        consultation.review(
+            prepared, reviewer=dummy_reviewer, note=note, note_edits=None, actor=_ACTOR
+        )
 
     # Con note_edits pero sin note
     with pytest.raises(
         ValueError, match="la nota y sus ediciones van juntas, o ninguna de las dos"
     ):
-        consultation.review(prepared, reviewer=dummy_reviewer, note=None, note_edits={"a": "uno"})
+        consultation.review(
+            prepared,
+            reviewer=dummy_reviewer,
+            note=None,
+            note_edits={"a": "uno"},
+            actor=_ACTOR,
+        )
 
 
 def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
@@ -3847,6 +3861,7 @@ def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
         review_findings=False,
         note=note,
         note_edits={"motivo": "Cefalea", "plan": "Ibuprofeno 400mg"},
+        actor=_ACTOR,
     )
 
     assert result.note is not None

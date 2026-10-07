@@ -48,6 +48,16 @@ def test_version_imprime_la_version_declarada_y_devuelve_cero(
     assert salida == f"aida {__version__}\n"
 
 
+def _crear_perfil_cli(monkeypatch: pytest.MonkeyPatch, pin: str = "1234") -> str:
+    from aida.arms.health.identity import ProfileStore
+    from aida.resources import user_dir
+
+    store = ProfileStore(user_dir("config") / "profiles.json")
+    store.create(name="Dra. Laura Gómez", registry="52.341.889", pin=pin)
+    monkeypatch.setattr("getpass.getpass", lambda *args, **kwargs: pin)
+    return "52.341.889"
+
+
 def test_sin_argumentos_imprime_algo_y_devuelve_cero(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1929,12 +1939,15 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
 
     monkeypatch.setattr("builtins.input", mock_input)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--extract",
             "--review",
+            "--as",
+            perfil,
             "--print-model",
             "--audio",
             str(audio_path),
@@ -2037,12 +2050,15 @@ def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
     monkeypatch.setattr("builtins.input", mock_input)
 
     owner = "paciente_cli_review_eof"
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--extract",
             "--review",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -2281,11 +2297,14 @@ def test_consultation_cli_review_registra_completed_true(
 
     monkeypatch.setattr("builtins.input", lambda prompt: "c")
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--review",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -2352,11 +2371,14 @@ def test_consultation_cli_review_cortado_registra_completed_false_y_sale_con_uno
 
     monkeypatch.setattr("builtins.input", mock_input_eof)
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--review",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -3490,12 +3512,15 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
     hist_path = tmp_path / "historia.txt"
     hist_path.write_text("Historia clínica previa.")
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--note",
             "--review",
+            "--as",
+            perfil,
             "--ui",
             "--audio",
             str(audio_path),
@@ -3561,12 +3586,15 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
     export_dir.mkdir()
 
     owner = "doc_cli_ui_abandoned"
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--note",
             "--review",
+            "--as",
+            perfil,
             "--ui",
             "--export",
             str(export_dir),
@@ -3630,11 +3658,14 @@ def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
     hist_path.write_text("Historia clínica previa.")
 
     owner = "doc_cli_stdin_review"
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--review",
+            "--as",
+            perfil,
             "--audio",
             str(audio_path),
             "--history",
@@ -4194,12 +4225,15 @@ def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
     hist_path = tmp_path / "historia.txt"
     hist_path.write_text("Sin antecedentes.")
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--note",
             "--review",
+            "--as",
+            perfil,
             "--ui",
             "--audio",
             str(audio_path),
@@ -4234,13 +4268,24 @@ def test_cli_app_llama_a_serve_con_app_build(
 
     llamadas_serve: list[dict[str, Any]] = []
 
-    def spy_serve(build: Any, *, settings: Any, wording: Any, tools: Any = None) -> None:
+    def spy_serve(
+        build: Any,
+        *,
+        settings: Any,
+        wording: Any,
+        tools: Any = None,
+        profiles: Any = None,
+        audit: Any = None,
+        **kwargs: Any,
+    ) -> None:
         llamadas_serve.append(
             {
                 "build": build,
                 "settings": settings,
                 "wording": wording,
                 "tools": tools,
+                "profiles": profiles,
+                "audit": audit,
             }
         )
 
@@ -4281,6 +4326,11 @@ def test_cli_app_llama_a_serve_con_app_build(
     assert codigo == 0
     assert len(llamadas_serve) == 1
     assert isinstance(llamadas_serve[0]["tools"], AppTools)
+    from aida.arms.health.audit import AuditLog
+    from aida.arms.health.identity import ProfileStore
+
+    assert isinstance(llamadas_serve[0]["profiles"], ProfileStore)
+    assert isinstance(llamadas_serve[0]["audit"], AuditLog)
     ready = llamadas_serve[0]["build"]()
     assert isinstance(ready, AppReady)
 
@@ -4394,12 +4444,15 @@ def test_cli_ui_usa_draft_for_screen_y_close_from_screen(
     hist_path = tmp_path / "historia.txt"
     hist_path.write_text("Historia previa.", encoding="utf-8")
 
+    perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
             "--consultation",
             "--segment",
             "--note",
             "--review",
+            "--as",
+            perfil,
             "--ui",
             "--audio",
             str(audio_path),

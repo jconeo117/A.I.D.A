@@ -57,6 +57,7 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT, Transcr
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation
 from aida.arms.health.extract import build_health_extractor
+from aida.arms.health.identity import Professional, ProfileStore
 from aida.arms.health.live import LiveTranscriber
 from aida.arms.health.match import build_index
 from aida.arms.health.metrics import ReviewMetricsStore
@@ -150,6 +151,7 @@ def _lanzar_servidor_app(
     *,
     settings: UISettings | None = None,
     wording: AppWording | None = None,
+    identificar: bool = True,
     **extra_serve_kwargs: Any,
 ) -> tuple[str, str, int, threading.Thread, dict[str, Any]]:
     ajustes = settings if settings is not None else load_ui_settings()
@@ -168,6 +170,8 @@ def _lanzar_servidor_app(
         "vad_factory": lambda: _dummy_vad,
         **extra_serve_kwargs,
     }
+    if "profiles" not in serve_kwargs:
+        serve_kwargs["profiles"] = ProfileStore(Path(tempfile.mkdtemp()) / "profiles.json")
     hilo = threading.Thread(
         target=serve,
         args=(build_fn,),
@@ -180,6 +184,17 @@ def _lanzar_servidor_app(
     partes = url.rsplit("/", 1)
     token = partes[1]
     puerto = int(partes[0].split(":")[-1])
+    if identificar:
+        httpx.post(
+            f"{url}/perfil",
+            json={
+                "name": "Dra. Laura Gómez",
+                "registry": "52.341.889",
+                "pin": "1234",
+                "pin2": "1234",
+            },
+            timeout=5.0,
+        )
     return url, token, puerto, hilo, info
 
 
@@ -294,7 +309,8 @@ def test_draft_for_screen_y_close_from_screen(tmp_path: Path) -> None:
         note_fields={spec.section_id: texto for spec, texto in draft.note.fields},
     )
 
-    close_from_screen(ready.consultation, draft, submission)
+    actor = Professional(id="t", name="Prueba", registry="0")
+    close_from_screen(ready.consultation, draft, submission, actor=actor)
     eventos_rev = [e for e in ready.log if e.kind is EventKind.ITEM_REVIEWED]
     assert len(eventos_rev) == len(draft.items) + len(draft.note.fields)
     assert all(e.data.get("item") in ("code", "field") for e in eventos_rev)
