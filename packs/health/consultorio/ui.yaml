@@ -56,7 +56,6 @@ app:
   mic_title: "Micrófono del equipo"
   mic_hint: "El navegador pedirá permiso la primera vez."
   mic_denied: "No se pudo usar el micrófono: revise el permiso del navegador."
-  consent_label: "El paciente ha autorizado que se grabe la consulta."
   check_cloud: "Transcripción en la nube"
   check_local_only: "Sin clave de nube: se transcribe en el equipo"
   check_local: "Respaldo local listo"
@@ -66,7 +65,9 @@ app:
   missing_owner: "Falta el identificador del paciente"
   missing_audio: "Falta el audio de la consulta"
   missing_document: "Falta la historia clínica"
-  missing_consent: "Falta la autorización del paciente para grabar"
+  missing_consent: "Falta la autorización del paciente"
+  # La versión del texto de autorización (consent.yaml), a la vista: plan 82.
+  consent_version: "Texto {}"
   ready: "Todo listo"
   start_button: "Empezar la consulta"
   record_button: "Empezar a grabar"

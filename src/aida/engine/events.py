@@ -170,6 +170,12 @@ class EventKind(StrEnum):
     justo antes como `INPUT_OBSERVED`, que es donde el journal guarda lo que
     llega de fuera."""
 
+    CONSENT_RECORDED = "consent_recorded"
+    """Quien es grabado autorizó, y la autorización quedó en su registro.
+    `data={"mode": ..., "version": ..., "digest": ...}`: cómo se obtuvo, con qué
+    versión del texto y la huella de la línea del registro, que es donde vive la
+    evidencia. Nunca el texto ni quién: eso está en el registro, no en el journal."""
+
     REPLY_GIVEN = "reply_given"
     """La voz produjo una respuesta para quien habla. `data={"mode":
     "operativo"|"libre"}` — qué clase de turno fue, nunca el texto: el

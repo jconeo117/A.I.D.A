@@ -75,6 +75,7 @@ def export_consultation(
     destination: Path,
     moment: datetime,
     include_model: bool,
+    consent_line: str | None = None,
 ) -> ExportedFiles:
     """Escribe el resumen y, si se pide, el modelo. `destination` puede ser un
     archivo concreto o un directorio: si es directorio, el nombre lo pone
@@ -92,6 +93,10 @@ def export_consultation(
     contenido = result.summary_markdown
     if result.note is not None:
         contenido = render_note_markdown(result.note) + "\n\n" + contenido
+    if consent_line:
+        # Con qué autorización se obtuvo lo que se archiva (plan 82): quien guarde
+        # este archivo guarda también la referencia a la evidencia.
+        contenido = contenido + "\n\n" + consent_line
     summary_path.write_text(contenido + "\n", encoding="utf-8")
 
     model_path = None

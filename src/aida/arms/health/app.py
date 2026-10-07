@@ -31,6 +31,7 @@ import yaml
 
 from aida.arms.health.audio import to_wav
 from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
+from aida.arms.health.consent import ConsentRecord, ConsentTexts, load_consent_texts
 from aida.arms.health.consultation import (
     Consultation,
     ConsultationResult,
@@ -42,6 +43,7 @@ from aida.arms.health.review import ReviewItem, review_items
 from aida.arms.health.review_ui import (
     _CSS,
     _ICONS,
+    _ICONS_CONSENT,
     HistoryView,
     ReviewSubmission,
     UISettings,
@@ -92,7 +94,6 @@ _CLAVES_APP = (
     "mic_title",
     "mic_hint",
     "mic_denied",
-    "consent_label",
     "check_cloud",
     "check_local_only",
     "check_local",
@@ -103,6 +104,7 @@ _CLAVES_APP = (
     "missing_audio",
     "missing_document",
     "missing_consent",
+    "consent_version",
     "ready",
     "start_button",
     "record_button",
@@ -423,6 +425,25 @@ _ICONS_SETTINGS = _ICONS_APP.replace(
     "</defs></svg>", _ICONS_SETTINGS_EXTRA + "\n</defs></svg>"
 )
 
+_CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
+.consent-card {
+  margin-top: 1.25rem; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--surface-2); padding: .9rem 1.1rem 1rem;
+}
+.consent-head { display: flex; align-items: center; gap: .55rem; }
+.consent-head svg { width: 18px; height: 18px; color: var(--brand); }
+.consent-head strong { font-size: .9rem; }
+.consent-head .version { margin-left: auto; font-size: .75rem; color: var(--muted); }
+.consent-text {
+  margin: .6rem 0 .2rem; padding: .7rem .9rem; border-left: 3px solid var(--brand);
+  background: var(--surface); border-radius: 0 8px 8px 0; font-size: .88rem;
+  line-height: 1.55; color: var(--ink-2);
+}
+.consent-card .consent { margin-top: .75rem; font-weight: 600; color: var(--ink); }
+.consent-card.done { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }"""
+
+_ICONS_PAGES = _ICONS_SETTINGS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
+
 _CSS_LIVE = """/* La 77b: la consulta en vivo */
 .field-state {
   display: inline-flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--faint);
@@ -663,6 +684,8 @@ class _Session:
     live: LiveSession | None = None
     mine: Mapping[str, str] = field(default_factory=dict)
     excluded: frozenset[str] = frozenset()
+    consent: ConsentRecord | None = None
+    """La autorización de la sesión en curso (plan 82): la revisión la enseña."""
     download: str = "idle"
     """`idle`, `running`, `done` o `failed`: la descarga del modelo sobrevive a cambiar
     de pantalla, y `clean` no la toca."""
@@ -676,6 +699,7 @@ class _Session:
         self.live = None
         self.mine = {}
         self.excluded = frozenset()
+        self.consent = None
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)
         self.workdir = None
@@ -702,6 +726,7 @@ def serve(
     vad_factory: Callable[[], Callable[[Any], Any]] | None = None,
     note_sections: Sequence[SectionSpec] | None = None,
     tools: AppTools | None = None,
+    consent_texts: ConsentTexts | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
@@ -718,6 +743,7 @@ def serve(
         crear_vad: Callable[[], Callable[[Any], Any]] = vad_from_faster_whisper
     else:
         crear_vad = vad_factory
+    textos = consent_texts if consent_texts is not None else load_consent_texts()
     token = token_urlsafe(16)
     lock = threading.Lock()
     session = _Session(ready=build())
@@ -754,6 +780,7 @@ def serve(
         owner: str,
         audio: Path,
         document: Path,
+        consent: ConsentRecord | None,
         mine: Mapping[str, str] | None = None,
         excluded: frozenset[str] = frozenset(),
     ) -> None:
@@ -764,6 +791,7 @@ def serve(
                 owner=AgentId(owner),
                 audio_path=wav,
                 history_text=lambda: ready.reader.read(document),
+                consent=consent,
             )
             draft = _keep_mine(
                 draft_for_screen(ready.consultation, prepared), mine or {}, secciones
@@ -805,6 +833,7 @@ def serve(
                 token,
                 overrides=session.mine,
                 excluded=session.excluded,
+                consent_line=textos.line(session.consent) if session.consent else None,
             )
         marca = settings.wording.brand
         if session.state == "live" and session.live is not None:
@@ -821,7 +850,8 @@ def serve(
             return _problem_page(wording, marca, token, session.problem, momento)
         if isinstance(session.ready, AppReady):
             return _start_page(
-                wording, marca, token, session.ready, momento, settings=tools is not None
+                wording, marca, token, session.ready, momento,
+                settings=tools is not None, consent=textos,
             )
         return _problem_page(wording, marca, token, AppProblem("processing"), momento)
 
@@ -1014,7 +1044,7 @@ def serve(
                 session.live = None
             threading.Thread(
                 target=procesar,
-                args=(ready, session.owner, audio, document, mine, excluded),
+                args=(ready, session.owner, audio, document, vivo.consent, mine, excluded),
                 daemon=True,
             ).start()
             self._json(200, {"ok": True})
@@ -1057,14 +1087,20 @@ def serve(
                 if not isinstance(owner, str) or not valid_owner(owner):
                     self._json(400, {"error": wording["owner_invalid"]})
                     return
-                if pedido.get("recorded") is True and pedido.get("consent") is not True:
-                    self._json(400, {"error": wording["missing_consent"]})
-                    return
                 grabando = pedido.get("recorded") is True
                 if session.document is None or (session.audio is None and not grabando):
                     self._json(400, {"error": wording["missing_document"]})
                     return
+                # Al grabar y al subir (plan 82): sin autorización no se procesa nada. En
+                # el mismo orden que la pantalla, que la pide después de los archivos.
+                if pedido.get("consent") is not True:
+                    self._json(400, {"error": wording["missing_consent"]})
+                    return
                 session.owner = owner
+                registro = ready.consultation.record_consent(
+                    owner=AgentId(owner), mode="recorded" if grabando else "uploaded"
+                )
+                session.consent = registro
                 if grabando and session.workdir is not None:
                     documento = session.document
                     session.live = LiveSession(
@@ -1075,6 +1111,7 @@ def serve(
                         workdir=session.workdir,
                         transcriber=ready.live_stt,
                         vad=crear_vad(),
+                        consent=registro,
                         clock=clock,
                     )
                     session.live.start()
@@ -1088,7 +1125,7 @@ def serve(
                 audio, document = session.audio, session.document
                 assert audio is not None and document is not None
             threading.Thread(
-                target=procesar, args=(ready, owner, audio, document), daemon=True
+                target=procesar, args=(ready, owner, audio, document, registro), daemon=True
             ).start()
             self._json(200, {"ok": True})
 
@@ -1157,8 +1194,8 @@ def _page(
         estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}"
         iconos = _ICONS_LIVE
     else:
-        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}"
-        iconos = _ICONS_SETTINGS
+        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}"
+        iconos = _ICONS_PAGES
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1197,8 +1234,10 @@ def _start_page(
     moment: datetime,
     *,
     settings: bool = False,
+    consent: ConsentTexts | None = None,
 ) -> str:
     e = html.escape
+    textos = consent if consent is not None else load_consent_texts()
     chips = (
         (w["check_cloud"] if ready.cloud else w["check_local_only"], ready.cloud),
         (w["check_local"] if ready.local_model else w["check_no_local"], ready.local_model),
@@ -1245,8 +1284,14 @@ def _start_page(
           <input type="file" id="file-doc" accept="application/pdf,image/*">
         </label>
       </div>
-      <label class="consent" id="consent-box" hidden>
-        <input type="checkbox" id="consent">{e(w["consent_label"])}</label>
+      <div class="consent-card" id="consent-box">
+        <div class="consent-head"><svg><use href="#i-shield"/></svg>
+          <strong id="consent-title"></strong>
+          <span class="version">{e(w["consent_version"].format(textos.version))}</span></div>
+        <p class="consent-text" id="consent-text"></p>
+        <label class="consent"><input type="checkbox" id="consent">
+          <span id="consent-check"></span></label>
+      </div>
       <div class="checks">{checks}</div>
     </div>
   </div>
@@ -1264,8 +1309,20 @@ def _start_page(
         "missing_owner", "missing_audio", "missing_document", "missing_consent", "ready",
         "start_button", "record_button", "closed_text",
     )
-    textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
-    script = f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_START}"
+    palabras = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
+    # Los dos textos van a la página y el modo elige cuál se ve: el que se lee al
+    # paciente sale del pack, nunca del código.
+    autorizaciones = json.dumps(
+        {
+            modo: {"title": t.title, "text": t.text, "check": t.check}
+            for modo, t in sorted(textos.modes.items())
+        },
+        ensure_ascii=False,
+    )
+    script = (
+        f"const TOKEN = {json.dumps(token)};\nconst W = {palabras};\n"
+        f"const CONSENT = {autorizaciones};\n{_JS_START}"
+    )
     enlace = ""
     if settings:
         enlace = (
@@ -1385,7 +1442,7 @@ function missing() {
   if (!ownerOk.test(value)) { return W.owner_invalid; }
   if (mode === 'upload' && !audioFile) { return W.missing_audio; }
   if (!docFile) { return W.missing_document; }
-  if (mode === 'record' && !document.getElementById('consent').checked) {
+  if (!document.getElementById('consent').checked) {
     return W.missing_consent;
   }
   return '';
@@ -1397,7 +1454,11 @@ function update() {
   document.getElementById('go').disabled = text !== '';
 }
 owner.addEventListener('input', update);
-document.getElementById('consent').addEventListener('change', update);
+document.getElementById('consent').addEventListener('change', () => {
+  document.getElementById('consent-box').classList.toggle(
+    'done', document.getElementById('consent').checked);
+  update();
+});
 
 function setMode(next) {
   mode = next;
@@ -1405,7 +1466,13 @@ function setMode(next) {
   document.getElementById('mode-record').setAttribute('aria-pressed', String(mode === 'record'));
   document.getElementById('drop-audio').hidden = mode !== 'upload';
   document.getElementById('mic-box').hidden = mode !== 'record';
-  document.getElementById('consent-box').hidden = mode !== 'record';
+  // Otro modo es otro texto: lo marcado para uno no vale para el otro.
+  const texto = CONSENT[mode === 'record' ? 'recorded' : 'uploaded'];
+  document.getElementById('consent-title').textContent = texto.title;
+  document.getElementById('consent-text').textContent = texto.text;
+  document.getElementById('consent-check').textContent = texto.check;
+  document.getElementById('consent').checked = false;
+  document.getElementById('consent-box').classList.remove('done');
   document.getElementById('lead').textContent = mode === 'upload' ? W.lead_upload : W.lead_record;
   document.querySelector('#go span').textContent =
     mode === 'upload' ? W.start_button : W.record_button;

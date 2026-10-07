@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from aida.arms.health.consent import ConsentRecord
 from aida.arms.health.consultation import Consultation, PreparedConsultation
 from aida.arms.health.match import CodeOrigin
 from aida.arms.health.sections import SectionSpec
@@ -74,8 +75,12 @@ class LiveSession:
         workdir: Path,
         transcriber: LiveTranscriber | None,
         vad: Callable[[np.ndarray], np.ndarray],
+        consent: ConsentRecord | None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Antes de abrir el WAV: sin autorización no se graba ni un trozo (plan 82).
+        consultation.require_consent(AgentId(owner), consent)
+        self._consent = consent
         self._consultation = consultation
         self._owner = AgentId(owner)
         self._history_text = history_text
@@ -111,6 +116,12 @@ class LiveSession:
     @property
     def audio_path(self) -> Path:
         return self._workdir / "audio.wav"
+
+    @property
+    def consent(self) -> ConsentRecord | None:
+        """La autorización con la que se abrió: el análisis final del audio completo
+        la necesita para pasar por la misma puerta."""
+        return self._consent
 
     def start(self) -> None:
         for objetivo in (self._read_history, self._listen, self._watch):

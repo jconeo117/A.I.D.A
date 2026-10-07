@@ -145,6 +145,18 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="escribe la consulta revisada en un archivo (sin RUTA, en la carpeta por defecto)",
     )
     parser.add_argument(
+        "--consent",
+        action="store_true",
+        help="declara que quien es grabado autorizó la grabación y su tratamiento (plan 82); "
+        "sin ella --consultation y --mic --history no transcriben",
+    )
+    parser.add_argument(
+        "--consents",
+        action="store_true",
+        help="lista las autorizaciones registradas, comprueba que la cadena está íntegra "
+        "y termina",
+    )
+    parser.add_argument(
         "--check-capture",
         action="store_true",
         help="comprueba modelo, dispositivo, OCR y entrada de audio, y termina",
@@ -209,6 +221,36 @@ def _check_consult_cache_key() -> str | None:
         print(f"aida: error: {origen} no es una clave Fernet válida", file=sys.stderr)
         return None
     return key
+
+
+_FALTA_CONSENT = (
+    "aida: error: falta --consent: sin la autorización de quien es grabado no se "
+    "transcribe "
+    "(el texto está en packs/health/consultorio/consent.yaml)"
+)
+
+
+def _consents_path() -> Path:
+    """Un solo sitio para la ruta: la escriben la aplicación y la CLI, y la lee
+    --consents."""
+    return user_dir("data") / "autorizaciones.jsonl"
+
+
+def _list_consents() -> int:
+    """Lista y verifica. Devuelve 1 si la cadena está rota: un auditor que lo lance
+    desde un guion tiene que poder distinguirlo sin leer la salida."""
+    from aida.arms.health.consent import ConsentLedger
+
+    registro = ConsentLedger(_consents_path())
+    for r in registro.records():
+        print(f"{r.at} · {r.mode} · {r.version} · {r.owner} · {r.workstation} · {r.digest[:12]}")
+    problemas = registro.verify()
+    for problema in problemas:
+        print(f"aida: error: {problema}", file=sys.stderr)
+    if problemas:
+        return 1
+    print(f"aida: {len(registro.records())} autorizaciones, cadena íntegra", file=sys.stderr)
+    return 0
 
 
 def _review_metrics_path() -> Path:
@@ -423,6 +465,7 @@ def _build_consultation(
     from aida.arms.health.cache import ConsultationCache
     from aida.arms.health.capture import LocalTesseractOCR
     from aida.arms.health.codes import load_catalog, load_reference_catalog
+    from aida.arms.health.consent import ConsentLedger, load_consent_texts
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.history import load_history_layout
     from aida.arms.health.lexicon import load_lexicon
@@ -472,6 +515,8 @@ def _build_consultation(
         note_settings=ajustes_nota,
         note_providers=cast(Any, _cognition_candidates(args, ajustes_nota)),
         note_on_fallback=aviso_nota,
+        consents=ConsentLedger(_consents_path()),
+        consent_texts=load_consent_texts(),
     )
 
 
@@ -670,6 +715,9 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
 
         from aida.arms.health.wording import switch_to_consult_phrases
 
+        if not args.consent:
+            print(_FALTA_CONSENT, file=sys.stderr)
+            return 1
         stt, ocr = build_local_capture()
         consultation = _build_consultation(args, stt=stt, ocr=ocr)
         if consultation is None:
@@ -715,6 +763,9 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
                             owner=AgentId(args.owner),
                             audio_path=write_wav(consulted_audio, tmp / "consultado.wav"),
                             history_text=history_text,
+                            consent=consultation.record_consent(
+                                owner=AgentId(args.owner), mode="recorded"
+                            ),
                         )
                     except (TranscriptionError, ModelUnavailableError) as exc:
                         print(f"aida: error: {exc}", file=sys.stderr)
@@ -796,6 +847,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             tools=_app_tools(),
         )
         return 0
+
+    if args.consents:
+        return _list_consents()
 
     if args.consultation:
         if not args.audio or not args.history:
@@ -881,6 +935,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
 
         from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
+        from aida.arms.health.consent import load_consent_texts
+
+        # Registrada antes de tocar el audio, y la misma para todo lo que sigue. Se
+        # comprueba aquí, después de las demás banderas: un error de uso se dice antes.
+        if not args.consent:
+            print(_FALTA_CONSENT, file=sys.stderr)
+            return 1
+        autorizacion = consultation.record_consent(owner=AgentId(args.owner), mode="uploaded")
+        linea_autorizacion = load_consent_texts().line(autorizacion)
 
         try:
             if args.review or args.note:
@@ -891,6 +954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     owner=AgentId(args.owner),
                     audio_path=Path(args.audio),
                     history_text=lambda: ocr.read(Path(args.history)),
+                    consent=autorizacion,
                 )
                 if args.review:
                     if args.ui:
@@ -916,6 +980,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 owner=args.owner,
                                 moment=datetime.now(),
                                 settings=ajustes_ui,
+                                consent_line=linea_autorizacion,
                             )
                         except ReviewAbandoned:
                             print(
@@ -942,6 +1007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     owner=AgentId(args.owner),
                     audio_path=Path(args.audio),
                     history_path=Path(args.history),
+                    consent=autorizacion,
                 )
         except (TranscriptionError, ModelUnavailableError) as exc:
             print(f"aida: error: {exc}", file=sys.stderr)
@@ -964,6 +1030,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 destination=destino,
                 moment=datetime.now(),
                 include_model=bool(args.print_model),
+                consent_line=linea_autorizacion,
             )
             print(f"aida: consulta escrita en {escritos.summary}", file=sys.stderr)
             if escritos.model is not None:

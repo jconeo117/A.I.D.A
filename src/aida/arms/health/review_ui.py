@@ -208,6 +208,7 @@ def _render_page(
     *,
     overrides: Mapping[str, str] | None = None,
     excluded: frozenset[str] = frozenset(),
+    consent_line: str | None = None,
 ) -> str:
     """La nota al centro, que es lo que se copia; a la derecha, en pestañas, lo que
     se consulta para corregirla. Cada código empieza incluido: el profesional quita
@@ -287,6 +288,14 @@ def _render_page(
     )
     marca = wording.brand[:1]
 
+    # Con qué autorización se grabó (plan 82): a la vista de quien revisa, que es quien
+    # firma. Sin autorización no se llega aquí desde la aplicación ni desde la CLI.
+    autorizacion = (
+        f'\n  <span class="stat consent-stat"><svg><use href="#i-shield"/></svg>'
+        f"{e(consent_line)}</span>"
+        if consent_line
+        else ""
+    )
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -294,10 +303,11 @@ def _render_page(
 <title>{e(wording.title)}</title>
 <style>
 {_CSS}
+{_CSS_CONSENT_STAT}
 </style>
 </head>
 <body>
-{_ICONS}
+{_ICONS_REVIEW}
 <header class="top">
   <div class="mark"><i>{e(marca)}</i>{e(wording.brand)}</div>
   <div class="sep"></div>
@@ -347,7 +357,7 @@ def _render_page(
 <div class="done-panel" id="save-ok" hidden>{e(wording.saved_text)}</div>
 <footer class="bar">
   <span class="stat" id="stat-edited"></span>
-  <span class="stat" id="stat-codes"></span>
+  <span class="stat" id="stat-codes"></span>{autorizacion}
   <span class="error" id="save-error" hidden></span>
   <button type="button" class="btn btn-primary" id="save">
     <svg><use href="#i-save"/></svg>{e(wording.save_label)}
@@ -634,6 +644,16 @@ _ICONS = """<svg style="display:none"><defs>
   <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
 </defs></svg>"""
 
+_CSS_CONSENT_STAT = """/* La 82: la autorización, a la vista en la revisión */
+.stat.consent-stat { color: var(--muted); }
+.stat.consent-stat svg { width: 15px; height: 15px; color: var(--brand); align-self: center; }"""
+
+_ICONS_CONSENT = """  <symbol id="i-shield" viewBox="0 0 24 24">
+    <path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6Z"/><path d="m9 12 2 2 4-4"/>
+  </symbol>"""
+
+_ICONS_REVIEW = _ICONS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
+
 _JS = """
 const grow = t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; };
 
@@ -833,6 +853,7 @@ def collect_review(
     settings: UISettings,
     open_browser: Callable[[str], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
+    consent_line: str | None = None,
 ) -> ReviewSubmission:
     """Levanta la pantalla, espera a que se guarde y devuelve lo contestado.
 
@@ -851,7 +872,10 @@ def collect_review(
     outcome = _Outcome()
     done = threading.Event()
     started = clock()
-    page = _render_page(matches, note, transcript, history, owner, moment, wording, token)
+    page = _render_page(
+        matches, note, transcript, history, owner, moment, wording, token,
+        consent_line=consent_line,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:

@@ -8,10 +8,20 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
+from aida.arms.health.consent import (
+    MODES,
+    ConsentLedger,
+    ConsentMissingError,
+    ConsentRecord,
+    ConsentTexts,
+    load_consent_texts,
+    workstation,
+)
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.history import HistoryLayout, codable_history_lines
 from aida.arms.health.lexicon import Lexicon, clinical_terms
@@ -128,6 +138,10 @@ class Consultation:
         note_providers: tuple[tuple[str, CognitionProvider], ...] = (),
         note_on_fallback: Callable[[str, str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        consents: ConsentLedger | None = None,
+        consent_texts: ConsentTexts | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
+        operator: Callable[[], str] = workstation,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -151,21 +165,78 @@ class Consultation:
         self._note_providers = note_providers
         self._note_on_fallback = note_on_fallback
         self._clock = clock
+        # Sin registro declarado, uno en memoria: la puerta no se abre por omisión.
+        # Hay que registrar la autorización igual; solo no queda archivo.
+        self._consents = consents if consents is not None else ConsentLedger()
+        self._consent_texts = consent_texts
+        self._now = now
+        self._operator = operator
 
-    def run(self, *, owner: AgentId, audio_path: Path, history_path: Path) -> ConsultationResult:
+    def record_consent(self, *, owner: AgentId, mode: str) -> ConsentRecord:
+        """Registra que `owner` autorizó, con el texto vigente del pack, y lo deja en
+        el journal. Es lo que abre `transcribe` para ese dueño."""
+        if mode not in MODES:
+            raise ValueError(f"modo de autorización desconocido: {mode!r}")
+        if self._consent_texts is None:
+            self._consent_texts = load_consent_texts()
+        textos = self._consent_texts
+        record = self._consents.append(
+            owner=owner,
+            mode=mode,
+            version=textos.version,
+            text=textos.modes[mode].text,
+            workstation=self._operator(),
+            at=self._now().isoformat(timespec="seconds"),
+        )
+        self._log.emit(
+            tick=0,
+            kind=EventKind.CONSENT_RECORDED,
+            owner=owner,
+            data={"mode": mode, "version": record.version, "digest": record.digest},
+        )
+        return record
+
+    def require_consent(self, owner: AgentId, consent: ConsentRecord | None) -> None:
+        """La puerta, y la única: la llaman `transcribe` y el vivo antes de tocar el
+        audio. Una autorización de otro dueño, o que no esté en el registro, no vale."""
+        if consent is None:
+            raise ConsentMissingError("no hay autorización registrada para transcribir")
+        if consent.owner != owner:
+            raise ConsentMissingError("la autorización es de otro dueño")
+        if not self._consents.contains(consent):
+            raise ConsentMissingError("la autorización no está en el registro")
+
+    def run(
+        self,
+        *,
+        owner: AgentId,
+        audio_path: Path,
+        history_path: Path,
+        consent: ConsentRecord | None,
+    ) -> ConsultationResult:
         """Lee la historia y delega. Es el camino por archivos (plan 31)."""
         return self.run_with_history(
-            owner=owner, audio_path=audio_path, history_text=lambda: self._ocr.read(history_path)
+            owner=owner,
+            audio_path=audio_path,
+            history_text=lambda: self._ocr.read(history_path),
+            consent=consent,
         )
 
     def run_with_history(
-        self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
+        self,
+        *,
+        owner: AgentId,
+        audio_path: Path,
+        history_text: str | Callable[[], str],
+        consent: ConsentRecord | None,
     ) -> ConsultationResult:
         """La historia ya leída. Es el camino cuando la HC se cargó al
         arrancar — hoy a mano; mañana la traerá quien sepa qué paciente
         sigue (Ruta B). Es `prepare` más el borrador: los eventos salen
         igual que antes de existir `prepare`."""
-        prepared = self.prepare(owner=owner, audio_path=audio_path, history_text=history_text)
+        prepared = self.prepare(
+            owner=owner, audio_path=audio_path, history_text=history_text, consent=consent
+        )
         return self.finish(prepared)
 
     def finish(self, prepared: PreparedConsultation) -> ConsultationResult:
@@ -206,7 +277,12 @@ class Consultation:
         )
 
     def prepare(
-        self, *, owner: AgentId, audio_path: Path, history_text: str | Callable[[], str]
+        self,
+        *,
+        owner: AgentId,
+        audio_path: Path,
+        history_text: str | Callable[[], str],
+        consent: ConsentRecord | None,
     ) -> PreparedConsultation:
         """Transcribe, segmenta, extrae, lee la historia y coteja — y se para
         ahí: ni modelo ni caché. Es la composición de `transcribe` y `analyze`:
@@ -214,10 +290,16 @@ class Consultation:
         exactamente el mismo análisis."""
         if self._extractor is not None and self._segmenter is None:
             raise ValueError("extracción activa pero no hay segmentador configurado")
-        transcript = self.transcribe(owner=owner, audio_path=audio_path)
+        transcript = self.transcribe(owner=owner, audio_path=audio_path, consent=consent)
         return self.analyze(owner=owner, transcript=transcript, history_text=history_text)
 
-    def transcribe(self, *, owner: AgentId, audio_path: Path) -> str:
+    def transcribe(
+        self, *, owner: AgentId, audio_path: Path, consent: ConsentRecord | None
+    ) -> str:
+        """Todo audio que se convierte en texto pasa por aquí (plan 82): la subida, el
+        final de una grabación y la CLI. Por eso la puerta está aquí y no en la
+        interfaz."""
+        self.require_consent(owner, consent)
         if self._diarizer is not None:
             return self._diarize_and_label(owner, audio_path)
         if self._segmenter is not None:
