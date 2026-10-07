@@ -496,29 +496,35 @@ def test_consultation_run_event_emission_order_and_payload(
     )
 
     owner = ontology.AgentId("paciente_auditoria")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
 
     events = list(log)
-    assert len(events) == 3
+    assert len(events) == 4
+
+    # Evento 0: Autorización registrada
+    ev0 = events[0]
+    assert ev0.kind == EventKind.CONSENT_RECORDED
+    assert ev0.owner == owner
 
     # Evento 1: Transcripción
-    ev1 = events[0]
+    ev1 = events[1]
     assert ev1.tick == 0
     assert ev1.kind == EventKind.INPUT_OBSERVED
     assert ev1.owner == owner
     assert ev1.content == "Dolor de cabeza"
 
     # Evento 2: Historia
-    ev2 = events[1]
+    ev2 = events[2]
     assert ev2.tick == 0
     assert ev2.kind == EventKind.INPUT_OBSERVED
     assert ev2.owner == owner
     assert ev2.content == "Antecedentes de cefalea"
 
     # Evento 3: Códigos cotejados
-    ev3 = events[2]
+    ev3 = events[3]
     assert ev3.tick == 0
     assert ev3.kind == EventKind.CATALOG_MATCHED
     assert ev3.owner == owner
@@ -559,11 +565,12 @@ def test_consultation_run_empty_catalog_matches_emits_empty_data_dict(
     )
 
     owner = ontology.AgentId("paciente_sin_matches")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
 
-    events = list(log)
+    events = [e for e in log if e.kind != EventKind.CONSENT_RECORDED]
     assert len(events) == 3
     assert events[2].kind == EventKind.CATALOG_MATCHED
     assert events[2].data == {}
@@ -601,14 +608,17 @@ def test_consultation_run_failure_in_stt_stops_pipeline_before_emitting_events(
         log=log,
     )
 
+    owner = ontology.AgentId("p_fail_stt")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     with pytest.raises(TranscriptionError):
         consultation.run(
-            owner=ontology.AgentId("p_fail_stt"),
+            owner=owner,
             audio_path=audio_path,
             history_path=history_path,
+            consent=consent,
         )
 
-    assert len(list(log)) == 0
+    assert [e for e in log if e.kind != EventKind.CONSENT_RECORDED] == []
     mock_ocr_backend.image_to_string.assert_not_called()
 
 
@@ -641,14 +651,17 @@ def test_consultation_run_failure_in_ocr_preserves_only_stt_event(
         log=log,
     )
 
+    owner = ontology.AgentId("p_fail_ocr")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     with pytest.raises(OCRError):
         consultation.run(
-            owner=ontology.AgentId("p_fail_ocr"),
+            owner=owner,
             audio_path=audio_path,
             history_path=history_path,
+            consent=consent,
         )
 
-    events = list(log)
+    events = [e for e in log if e.kind != EventKind.CONSENT_RECORDED]
     assert len(events) == 1
     assert events[0].kind == EventKind.INPUT_OBSERVED
     assert events[0].content == "Audio procesado"
@@ -679,8 +692,9 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
         cache=cache,
         log=EventLog(window=100),
     )
+    consent_none = c_none.record_consent(owner=owner, mode="uploaded")
     expected_fallback = c_none.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_none
     ).summary_markdown
 
     class ForeignObjectWithText:
@@ -708,7 +722,13 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
             cache=cache,
             log=EventLog(window=100),
         )
-        res = c.run(owner=owner, audio_path=audio_path, history_path=history_path)
+        consent = c.record_consent(owner=owner, mode="uploaded")
+        res = c.run(
+            owner=owner,
+            audio_path=audio_path,
+            history_path=history_path,
+            consent=consent,
+        )
         assert res.summary_markdown == expected_fallback, (
             f"Fallo en degradación con payload: {type(payload)}"
         )
@@ -741,9 +761,10 @@ def test_consultation_run_provider_exception_currently_escapes_uncaught(
     )
 
     owner = ontology.AgentId("paciente_proveedor_caido")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
 
     result = consultation.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
 
     # Verifica que se generó el resumen de respaldo determinista
@@ -791,8 +812,9 @@ def test_consultation_run_with_neutral_wording_has_no_medical_domain_literals(
     )
 
     owner = ontology.AgentId("agente_agnostico")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
 
     # Verifica que los textos inyectados están presentes
@@ -849,8 +871,9 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         cache=cache,
         log=EventLog(window=100),
     )
+    consent_ref = c_reference.record_consent(owner=owner, mode="uploaded")
     expected_fallback = c_reference.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_ref
     ).summary_markdown
 
     class ForeignObjectWithText:
@@ -870,8 +893,9 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         log=EventLog(window=100),
     )
 
+    consent_adv = c_adversarial.record_consent(owner=owner, mode="uploaded")
     result = c_adversarial.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_adv
     )
 
     # El texto del objeto ajeno no debe filtrarse bajo ninguna circunstancia
@@ -909,8 +933,9 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
         cache=cache,
         log=EventLog(window=100),
     )
+    consent_base = c_baseline.record_consent(owner=owner, mode="uploaded")
     expected_fallback = c_baseline.run(
-        owner=owner, audio_path=audio_path, history_path=history_path
+        owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_base
     ).summary_markdown
 
     class StaticForeignWithText:
@@ -988,7 +1013,10 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        res = consultation.run(owner=owner, audio_path=audio_path, history_path=history_path)
+        consent_p = consultation.record_consent(owner=owner, mode="uploaded")
+        res = consultation.run(
+            owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_p
+        )
         assert res.summary_markdown == expected_fallback, (
             f"Fallo de degradación determinista con payload {type(payload)}: {res.summary_markdown}"
         )
@@ -1021,7 +1049,10 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        res = consultation.run(owner=owner, audio_path=audio_path, history_path=history_path)
+        consent_e = consultation.record_consent(owner=owner, mode="uploaded")
+        res = consultation.run(
+            owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_e
+        )
         assert res.summary_markdown == expected_fallback, (
             f"Fallo de recuperación ante excepción {type(exc)}: {res.summary_markdown}"
         )
@@ -1059,14 +1090,16 @@ def test_consultation_run_with_history_does_not_call_ocr(
 
     owner = ontology.AgentId("paciente_precargado")
     history_precargada = "Historia clínica precargada en memoria sin OCR"
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run_with_history(
         owner=owner,
         audio_path=audio_path,
         history_text=history_precargada,
+        consent=consent,
     )
 
     assert history_precargada in result.summary_markdown
-    events = list(log)
+    events = [e for e in log if e.kind != EventKind.CONSENT_RECORDED]
     assert len(events) == 3
     assert events[1].kind == EventKind.INPUT_OBSERVED
     assert events[1].content == history_precargada
@@ -1104,10 +1137,12 @@ def test_consultation_run_calls_ocr_exactly_once(
     )
 
     owner = ontology.AgentId("paciente_con_ocr")
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,
         history_path=history_path,
+        consent=consent,
     )
 
     assert ocr_calls == 1
@@ -1153,20 +1188,23 @@ def test_consultation_run_delegates_to_run_with_history(
     )
 
     def mock_run_with_history(
-        *, owner: ontology.AgentId, audio_path: Path, history_text: Any
+        *, owner: ontology.AgentId, audio_path: Path, history_text: Any, consent: Any = None
     ) -> ConsultationResult:
         ht = history_text() if callable(history_text) else history_text
         delegated_call["owner"] = owner
         delegated_call["audio_path"] = audio_path
         delegated_call["history_text"] = ht
+        delegated_call["consent"] = consent
         return dummy_result
 
     monkeypatch.setattr(consultation, "run_with_history", mock_run_with_history)
 
+    consent = consultation.record_consent(owner=owner, mode="uploaded")
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,
         history_path=history_path,
+        consent=consent,
     )
 
     assert result is dummy_result
@@ -1174,6 +1212,7 @@ def test_consultation_run_delegates_to_run_with_history(
         "owner": owner,
         "audio_path": audio_path,
         "history_text": "Historia del OCR",
+        "consent": consent,
     }
 
 

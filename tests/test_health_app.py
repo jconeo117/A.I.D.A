@@ -275,10 +275,13 @@ def test_draft_for_screen_y_close_from_screen(tmp_path: Path) -> None:
     doc = tmp_path / "doc.txt"
     doc.write_text("Historia previa", encoding="utf-8")
 
+    owner = AgentId("HC-01")
+    consent = ready.consultation.record_consent(owner=owner, mode="uploaded")
     prepared = ready.consultation.prepare(
-        owner=AgentId("HC-01"),
+        owner=owner,
         audio_path=audio,
         history_text=lambda: ready.reader.read(doc),
+        consent=consent,
     )
 
     draft = draft_for_screen(ready.consultation, prepared)
@@ -391,19 +394,10 @@ def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
         assert r1.status_code == 400
         assert r1.json()["error"] == wording["owner_invalid"]
 
-        # 2. Grabación sin consentimiento (M4)
-        r2 = httpx.post(
-            f"{url}/empezar",
-            json={"owner": "HC-01", "recorded": True, "consent": False},
-            timeout=5.0,
-        )
+        # 2. Falta de audio o documento (antes de pedir autorización)
+        r2 = httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
         assert r2.status_code == 400
-        assert r2.json()["error"] == wording["missing_consent"]
-
-        # 3. Falta de audio o documento
-        r3 = httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
-        assert r3.status_code == 400
-        assert r3.json()["error"] == wording["missing_document"]
+        assert r2.json()["error"] == wording["missing_document"]
 
         # Subir audio y documento
         wav = _crear_wav_minimo()
@@ -422,8 +416,17 @@ def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
         )
         assert r_doc.status_code == 200
 
+        # 3. Falta de autorización (tras subir archivos)
+        r3 = httpx.post(
+            f"{url}/empezar",
+            json={"owner": "HC-01", "consent": False},
+            timeout=5.0,
+        )
+        assert r3.status_code == 400
+        assert r3.json()["error"] == wording["missing_consent"]
+
         # Ahora sí, empezar con éxito
-        r4 = httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
+        r4 = httpx.post(f"{url}/empezar", json={"owner": "HC-01", "consent": True}, timeout=5.0)
         assert r4.status_code == 200
         assert r4.json() == {"ok": True}
     finally:
@@ -472,7 +475,7 @@ def test_servidor_flujo_completo_review_guardar_y_limpieza(tmp_path: Path) -> No
             headers={"X-Name": "historia.pdf"},
             timeout=5.0,
         )
-        httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
+        httpx.post(f"{url}/empezar", json={"owner": "HC-01", "consent": True}, timeout=5.0)
 
         # Esperar a que pase a review
         for _ in range(50):
@@ -560,7 +563,7 @@ def test_servidor_fallo_transcripcion_pasa_a_problem_y_limpia_workdir(tmp_path: 
         assert len(carpetas) >= 1
         sesion_dir = carpetas[0]
 
-        httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
+        httpx.post(f"{url}/empezar", json={"owner": "HC-01", "consent": True}, timeout=5.0)
 
         for _ in range(50):
             estado = httpx.get(f"{url}/estado", timeout=5.0).json()
@@ -1051,7 +1054,7 @@ def test_servidor_ajustes_en_working_devuelve_409(tmp_path: Path) -> None:
             headers={"X-Filename": "d.txt"},
             timeout=5.0,
         )
-        httpx.post(f"{url}/empezar", json={"owner": "doc_01"}, timeout=5.0)
+        httpx.post(f"{url}/empezar", json={"owner": "doc_01", "consent": True}, timeout=5.0)
         time.sleep(0.05)
 
         resp = httpx.post(f"{url}/ajustes", timeout=5.0)

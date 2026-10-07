@@ -637,12 +637,11 @@ def test_consultation_sin_cache_key_crea_clave_y_falla_por_audio(
     monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
 
     with pytest.raises(FileNotFoundError):
-        main(["--consultation", "--audio", "audio.wav", "--history", "historia.png"])
+        main(["--consultation", "--audio", "audio.wav", "--history", "historia.png", "--consent"])
 
     captured = capsys.readouterr()
     assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
     assert (user_dir("config") / "cache.key").is_file()
-
 
 
 def test_consultation_clave_invalida_falla_sin_cargar_catalogo_ni_whisper(
@@ -723,8 +722,7 @@ def test_consultation_diarize_sin_timestamps_devuelve_dos_y_explica_error(
     assert codigo == 2
     assert (
         "aida: error: --diarize necesita marcas de tiempo y "
-        "'gpt-4o-mini-transcribe' no las devuelve"
-        in captured.err
+        "'gpt-4o-mini-transcribe' no las devuelve" in captured.err
     )
     assert (
         "declara cloud_timestamps: true con un modelo que las dé, o usa provider: local"
@@ -831,6 +829,7 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
             str(img_path),
             "--owner",
             "paciente_test_cli",
+            "--consent",
         ]
     )
 
@@ -910,6 +909,7 @@ def test_consultation_segment_ejecucion_completa_muestra_secciones_en_stdout(
             str(img_path),
             "--owner",
             "paciente_test_cli_segment",
+            "--consent",
         ]
     )
 
@@ -986,6 +986,7 @@ def test_consultation_cli_segment_print_model(
             str(img_path),
             "--owner",
             "paciente_test_cli_print_model",
+            "--consent",
         ]
     )
 
@@ -1083,6 +1084,7 @@ def test_consultation_cli_print_model_sin_segment_avisa_stderr(
             str(img_path),
             "--owner",
             "paciente_test_sin_segment",
+            "--consent",
         ]
     )
 
@@ -1179,6 +1181,7 @@ def test_consultation_cli_segment_extract_print_model(
             str(img_path),
             "--owner",
             "paciente_test_cli_extract_print_model",
+            "--consent",
         ]
     )
 
@@ -1276,6 +1279,7 @@ def test_consultation_con_proveedor_de_voz_emite_resumen_del_modelo(
             str(img_path),
             "--owner",
             "paciente_test_cli",
+            "--consent",
         ]
     )
 
@@ -1395,6 +1399,7 @@ def test_consultation_con_cwd_arbitrario_ejecucion_completa_tiene_exito(
             str(img_path),
             "--owner",
             "paciente_test_cwd",
+            "--consent",
         ]
     )
 
@@ -1690,6 +1695,7 @@ def test_converse_mic_modo_consulta_delega_en_consultation_no_en_session_turn(
             str(historia_path),
             "--owner",
             "paciente_voz_01",
+            "--consent",
         ]
     )
 
@@ -1936,6 +1942,7 @@ def test_consultation_cli_review_edicion_y_rechazo_completo(
             str(img_path),
             "--owner",
             "paciente_cli_review_test",
+            "--consent",
         ]
     )
 
@@ -2042,6 +2049,7 @@ def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
             str(img_path),
             "--owner",
             owner,
+            "--consent",
         ]
     )
 
@@ -2148,6 +2156,7 @@ def test_consultation_cli_audio_sin_voz_devuelve_uno_sin_traza(
             str(img_path),
             "--owner",
             "paciente_silencio",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2218,6 +2227,7 @@ def test_converse_mic_modo_consulta_audio_sin_voz_imprime_error_y_sigue_en_bucle
             str(historia_path),
             "--owner",
             "paciente_voz_silencio",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2282,6 +2292,7 @@ def test_consultation_cli_review_registra_completed_true(
             str(img_path),
             "--owner",
             "paciente_cli_review_metrics",
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -2352,6 +2363,7 @@ def test_consultation_cli_review_cortado_registra_completed_false_y_sale_con_uno
             str(img_path),
             "--owner",
             "paciente_cli_review_cut",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2506,6 +2518,7 @@ def test_cli_sin_review_no_mide(
             str(img_path),
             "--owner",
             "paciente_cli_sin_review",
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -2581,6 +2594,7 @@ def test_cli_consultation_export_con_ruta_escribe_resumen_y_aviso_en_stderr(
             "paciente_export_ruta",
             "--export",
             str(custom_export),
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2613,6 +2627,7 @@ def test_cli_consultation_export_sin_ruta_escribe_en_carpeta_por_defecto(
             "--owner",
             "paciente_export_defecto",
             "--export",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2645,6 +2660,7 @@ def test_cli_consultation_sin_export_no_escribe_en_carpeta_por_defecto(
             str(img_path),
             "--owner",
             "paciente_sin_export",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2678,6 +2694,7 @@ def test_cli_consultation_export_con_print_model_escribe_json_al_lado(
             "--export",
             str(custom_export),
             "--print-model",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -2745,6 +2762,7 @@ def test_consultation_cli_cached_stt_segunda_ejecucion_no_llama_modelo(
         str(img_path),
         "--owner",
         "paciente_cached_stt",
+        "--consent",
     ]
 
     # Primera ejecución: transcribe
@@ -2811,6 +2829,7 @@ def test_consultation_cli_cached_stt_clave_distinta_vuelve_a_transcribir(
         str(img_path),
         "--owner",
         "paciente_diff_key",
+        "--consent",
     ]
 
     # Primera ejecución con key1
@@ -3484,6 +3503,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
             str(hist_path),
             "--owner",
             "doc_cli_ui_success",
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -3556,6 +3576,7 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
             str(hist_path),
             "--owner",
             owner,
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -3620,6 +3641,7 @@ def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
             str(hist_path),
             "--owner",
             owner,
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -3768,6 +3790,7 @@ def test_consultation_cli_segment_note_imprime_nota(
             "--note",
             "--llm",
             "ninguno",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -3802,6 +3825,7 @@ def test_consultation_cli_export_incluye_nota_antes_del_resumen(
             "ninguno",
             "--export",
             str(dest_file),
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -3840,6 +3864,7 @@ def test_consultation_cli_export_respaldo_literal_lleva_fallback_notice(
             "ninguno",
             "--export",
             str(dest_file),
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -3857,10 +3882,12 @@ def test_section_dump_escribe_archivo_y_termina_sin_consulta(
     modelo y termina con código 0 sin ejecutar consulta alguna."""
     modelo_file = tmp_path / "modelo.json"
     modelo_file.write_text(
-        json.dumps({
-            "motivo_consulta": [{"text": "dolor de cabeza"}],
-            "plan": [{"text": "paracetamol"}],
-        }),
+        json.dumps(
+            {
+                "motivo_consulta": [{"text": "dolor de cabeza"}],
+                "plan": [{"text": "paracetamol"}],
+            }
+        ),
         encoding="utf-8",
     )
     salida_file = tmp_path / "salida.csv"
@@ -3893,8 +3920,7 @@ def test_section_report_imprime_y_termina(
     captured = capsys.readouterr()
     assert codigo == 0
     assert (
-        "Total: 1 frases, 1 aciertos, 0 contaminadas, 0 perdidas, 0 sin etiquetar"
-        in captured.out
+        "Total: 1 frases, 1 aciertos, 0 contaminadas, 0 perdidas, 0 sin etiquetar" in captured.out
     )
     assert "Por apartado (correctas / contaminadas / perdidas):" in captured.out
 
@@ -4052,6 +4078,7 @@ def test_consultation_cli_salida_estandar_usa_render_note_markdown(
             "--note",
             "--llm",
             "ninguno",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -4109,9 +4136,7 @@ def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
 
     class _SpySTT:
         def transcribe_segments(self, path: Path) -> tuple[TranscriptSegment, ...]:
-            return (
-                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor de cabeza intenso"),
-            )
+            return (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor de cabeza intenso"),)
 
     class _SpyOCR:
         def read(self, path: Path) -> str:
@@ -4184,6 +4209,7 @@ def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
             "sujeto_una_redaccion",
             "--llm",
             "openai",
+            "--consent",
         ]
     )
     captured = capsys.readouterr()
@@ -4209,9 +4235,14 @@ def test_cli_app_llama_a_serve_con_app_build(
     llamadas_serve: list[dict[str, Any]] = []
 
     def spy_serve(build: Any, *, settings: Any, wording: Any, tools: Any = None) -> None:
-        llamadas_serve.append({
-            "build": build, "settings": settings, "wording": wording, "tools": tools,
-        })
+        llamadas_serve.append(
+            {
+                "build": build,
+                "settings": settings,
+                "wording": wording,
+                "tools": tools,
+            }
+        )
 
     monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
 
@@ -4254,7 +4285,6 @@ def test_cli_app_llama_a_serve_con_app_build(
     assert isinstance(ready, AppReady)
 
 
-
 def test_cli_consultation_sin_extra_captura_falla_con_mensaje_i152(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -4262,6 +4292,7 @@ def test_cli_consultation_sin_extra_captura_falla_con_mensaje_i152(
 ) -> None:
     """Caso 21 (§B.5, M10): --consultation cuando build_local_capture levanta
     ImportError devuelve código 1 y avisa en stderr de la falta del extra de captura."""
+
     def fail_capture() -> Any:
         raise ImportError("No module named 'faster_whisper'")
 
@@ -4376,6 +4407,7 @@ def test_cli_ui_usa_draft_for_screen_y_close_from_screen(
             str(hist_path),
             "--owner",
             "doc_cli_spy",
+            "--consent",
         ]
     )
     capsys.readouterr()
@@ -4500,7 +4532,6 @@ def test_app_build_llama_a_capture_diagnosis_sin_micro_ni_modelo(
     assert llamadas_diag[0] == {"need_microphone": False, "need_model": False}
 
 
-
 def test_transcription_comportamiento_segun_modelo_y_proveedor(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -4546,7 +4577,6 @@ def test_transcription_comportamiento_segun_modelo_y_proveedor(
     with pytest.raises(ValueError, match="sin modelo local y sin clave de nube"):
         _transcription(None, key)
 
-
     # 3. provider: local y con STT -> devuelve local sin aviso por stderr
     dummy_stt = MagicMock(spec=LocalWhisperSTT)
     monkeypatch.setattr(
@@ -4565,7 +4595,6 @@ def test_transcription_comportamiento_segun_modelo_y_proveedor(
             no_speech_threshold=0.6,
             abbreviations=(),
             timeout_seconds=30.0,
-
             connect_timeout_seconds=3.0,
         ),
     )
@@ -4628,7 +4657,3 @@ def test_check_consult_cache_key_invalida_en_archivo_nombra_ruta(
     captured = capsys.readouterr()
     assert str(archivo) in captured.err
     assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
-
-
-
-

@@ -224,6 +224,7 @@ def test_consultation_camino_feliz_dos_hablantes(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Paciente hipertenso conocido.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     expected_transcript = (
@@ -298,6 +299,7 @@ def test_consultation_tres_hablantes_lanza_diarization_error_y_no_emite_catalog_
             owner=owner,
             audio_path=Path("/tmp/consulta_audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation.record_consent(owner=owner, mode="uploaded"),
         )
 
     # Verificar que NO se emitió CATALOG_MATCHED ni SPEAKERS_DIARIZED
@@ -338,6 +340,7 @@ def test_consultation_sin_diarizador_comportamiento_por_defecto(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.transcript == full_audio_text
@@ -388,6 +391,7 @@ def test_consultation_wording_sin_etiquetas_con_diarizador_lanza_value_error(
             owner=AgentId("medico_general"),
             audio_path=Path("/tmp/consulta_audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation1.record_consent(owner=AgentId("medico_general"), mode="uploaded"),
         )
 
     # Solo patient_label None
@@ -417,6 +421,7 @@ def test_consultation_wording_sin_etiquetas_con_diarizador_lanza_value_error(
             owner=AgentId("medico_general"),
             audio_path=Path("/tmp/consulta_audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation2.record_consent(owner=AgentId("medico_general"), mode="uploaded"),
         )
 
 
@@ -465,6 +470,7 @@ def test_consultation_segmento_espacios_fuera_de_turno_ignorado_sin_diarization_
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert "MÉDICO: Buenos días, ¿cómo se siente?" in result.transcript
@@ -518,6 +524,7 @@ def test_consultation_segmento_texto_real_fuera_de_turno_lanza_diarization_error
             owner=owner,
             audio_path=Path("/tmp/consulta_audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation.record_consent(owner=owner, mode="uploaded"),
         )
 
     emitted_kinds = [e.kind for e in log]
@@ -563,6 +570,7 @@ def test_consultation_monologo_un_hablante_emite_speakers_diarized_uno(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Sin antecedentes previos.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     expected_transcript = (
@@ -717,6 +725,7 @@ def test_consultation_segmenter_camino_feliz_sin_diarizador(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Paciente sin antecedentes de interés.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     # Verifica llamadas a STT
@@ -790,6 +799,7 @@ def test_consultation_con_diarizador_y_segmentador_juntos(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert "MÉDICO: Buenos días, el motivo de consulta es revisión rutinaria." in result.transcript
@@ -843,6 +853,7 @@ def test_consultation_segmenter_none_por_defecto_no_llama_transcribe_segments(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert stt.transcribe_calls == 1
@@ -889,6 +900,7 @@ def test_consultation_wording_sin_section_template_con_segmentador_lanza_value_e
             owner=owner,
             audio_path=Path("/tmp/consulta_audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation.record_consent(owner=owner, mode="uploaded"),
         )
 
 
@@ -927,6 +939,7 @@ def test_consultation_evento_text_segmented_orden_y_datos(
         owner=owner,
         audio_path=Path("/tmp/consulta_audio.wav"),
         history_text="Historia previa.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     events = list(log)
@@ -1024,6 +1037,7 @@ def test_consultation_con_segmentador_arma_encounter_y_emite_model_built(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is not None
@@ -1078,6 +1092,7 @@ def test_consultation_sin_segmentador_no_arma_encounter_ni_emite_model_built(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is None
@@ -1138,6 +1153,7 @@ def test_consultation_extractor_y_segmentador_activos(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is not None
@@ -1215,6 +1231,7 @@ def test_consultation_extractor_sin_segmentador_lanza_value_error_sin_tocar_audi
             owner=owner,
             audio_path=Path("/tmp/audio.wav"),
             history_text="Sin antecedentes.",
+            consent=consultation.record_consent(owner=owner, mode="uploaded"),
         )
 
 
@@ -1258,6 +1275,7 @@ def test_consultation_sin_extractor_campos_en_none_y_sin_fields_extracted(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is not None
@@ -1311,6 +1329,7 @@ def test_consultation_sin_diarizacion_con_extractor_reported_by_none(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is not None
@@ -1367,6 +1386,7 @@ def test_consultation_extractor_sin_aciertos_emite_fields_extracted_con_data_vac
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     assert result.encounter is not None
@@ -1432,9 +1452,11 @@ def test_consultation_prepare_sin_revision_emite_mismos_eventos_sin_llm_ni_cache
         owner=owner1,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=c1.record_consent(owner=owner1, mode="uploaded"),
     )
     kinds_run = [e.kind for e in log1]
     expected_sequence = [
+        EventKind.CONSENT_RECORDED,
         EventKind.INPUT_OBSERVED,
         EventKind.TEXT_SEGMENTED,
         EventKind.MODEL_BUILT,
@@ -1466,6 +1488,7 @@ def test_consultation_prepare_sin_revision_emite_mismos_eventos_sin_llm_ni_cache
         owner=owner2,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=c2.record_consent(owner=owner2, mode="uploaded"),
     )
     kinds_prep = [e.kind for e in log2]
     assert kinds_prep == expected_sequence
@@ -1523,6 +1546,7 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
         owner=owner_a,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial y cefalea.",
+        consent=c_a.record_consent(owner=owner_a, mode="uploaded"),
     )
 
     def reviewer_a(item: ReviewItem) -> Answer:
@@ -1562,6 +1586,7 @@ def test_consultation_review_redacta_sin_modelo_con_codigos_confirmados_o_rechaz
         owner=owner_b,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial y cefalea.",
+        consent=c_b.record_consent(owner=owner_b, mode="uploaded"),
     )
 
     def reviewer_b(item: ReviewItem) -> Answer:
@@ -1614,6 +1639,7 @@ def test_consultation_review_wording_incompleto_falla_antes_de_preguntar(
         owner=AgentId("doc_incomplete"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente hipertenso conocido.",
+        consent=c_prep.record_consent(owner=AgentId("doc_incomplete"), mode="uploaded"),
     )
 
     wording_incompleto = replace(sample_wording_review, confirmed_template=None)
@@ -1680,6 +1706,7 @@ def test_consultation_review_cortada_propaga_y_no_guarda_en_cache(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente hipertenso conocido.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     def cut_reviewer(item: ReviewItem) -> Answer:
@@ -1885,6 +1912,7 @@ def test_consultation_review_completa_registra_metricas_con_reloj_inyectado(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     def sample_reviewer(item: ReviewItem) -> Answer:
@@ -1952,6 +1980,7 @@ def test_consultation_review_cortada_con_eof_error_registra_incompleta_y_no_cach
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     call_count = 0
@@ -2020,6 +2049,7 @@ def test_consultation_review_cortada_con_keyboard_interrupt_registra_incompleta_
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     call_count = 0
@@ -2076,6 +2106,7 @@ def test_consultation_review_wording_incompleto_no_crea_archivo_ni_abre_medicion
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Historia de prueba",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     with pytest.raises(ValueError, match="confirmed_template"):
@@ -2128,6 +2159,7 @@ def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado
         owner=owner1,
         audio_path=Path("/tmp/a1.wav"),
         history_text="Historia con hipertensión esencial",
+        consent=consultation.record_consent(owner=owner1, mode="uploaded"),
     )
     consultation.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
 
@@ -2137,6 +2169,7 @@ def test_consultation_dos_revisiones_seguidas_mismo_log_segundo_registro_aislado
         owner=owner2,
         audio_path=Path("/tmp/a2.wav"),
         history_text="Historia con hipertensión esencial",
+        consent=consultation.record_consent(owner=owner2, mode="uploaded"),
     )
     consultation.review(prep2, reviewer=lambda item: Answer(Verdict.REJECTED))
 
@@ -2193,6 +2226,7 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
         owner=owner,
         audio_path=Path("/tmp/a.wav"),
         history_text="Historia con hipertensión esencial",
+        consent=c_a.record_consent(owner=owner, mode="uploaded"),
     )
     c_a.review(p_a, reviewer=lambda item: Answer(Verdict.CONFIRMED))
 
@@ -2215,6 +2249,7 @@ def test_consultation_review_sin_store_no_cambia_nada_y_journal_identico(
         owner=owner,
         audio_path=Path("/tmp/a.wav"),
         history_text="Historia con hipertensión esencial",
+        consent=c_b.record_consent(owner=owner, mode="uploaded"),
     )
     c_b.review(p_b, reviewer=lambda item: Answer(Verdict.CONFIRMED))
 
@@ -2437,6 +2472,7 @@ def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
         owner=owner1,
         audio_path=Path("/tmp/audio.wav"),
         history_text="hipertensión esencial\ndiabetes mellitus",
+        consent=c1.record_consent(owner=owner1, mode="uploaded"),
     )
     res1 = c1.review(prep1, reviewer=lambda item: Answer(Verdict.CONFIRMED))
 
@@ -2480,6 +2516,7 @@ def test_consultation_review_separa_codigos_por_origen_y_both_en_ambas(
         owner=owner2,
         audio_path=Path("/tmp/audio.wav"),
         history_text="hipertensión esencial\ndiabetes mellitus",
+        consent=c2.record_consent(owner=owner2, mode="uploaded"),
     )
 
     def rechaza_codigos(item: ReviewItem) -> Answer:
@@ -2531,6 +2568,7 @@ def test_consultation_con_segmentador_excluye_codigos_de_medicacion(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
     codigos_cotejados = [m.diagnostic.code for m in prepared.matches]
     # R51 (de motivo_consulta, codable=True) debe aparecer
@@ -2662,6 +2700,7 @@ Madre con infarto
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text=historia_entera,
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
     result = consultation.review(prepared, reviewer=lambda item: Answer(Verdict.CONFIRMED))
 
@@ -2700,7 +2739,10 @@ def test_consultation_frase_negada_no_propone_codigo(
         match_threshold=0.3,
     )
     prep_neg = c_neg.prepare(
-        owner=AgentId("doc_neg"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_neg"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_neg.record_consent(owner=AgentId("doc_neg"), mode="uploaded"),
     )
     assert prep_neg.matches == ()
 
@@ -2718,7 +2760,10 @@ def test_consultation_frase_negada_no_propone_codigo(
         match_threshold=0.3,
     )
     prep_aff = c_aff.prepare(
-        owner=AgentId("doc_aff"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_aff"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_aff.record_consent(owner=AgentId("doc_aff"), mode="uploaded"),
     )
     assert len(prep_aff.matches) == 1
     assert prep_aff.matches[0].diagnostic.code == "R07"
@@ -2747,7 +2792,12 @@ def test_consultation_frase_mixta_propone_solo_lo_afirmado(
         negation=load_negation(),
         match_threshold=0.3,
     )
-    prep = c.prepare(owner=AgentId("doc_mix"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("doc_mix"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("doc_mix"), mode="uploaded"),
+    )
     codigos = {m.diagnostic.code for m in prep.matches}
     assert "R51" in codigos
     assert "R50" not in codigos
@@ -2775,6 +2825,7 @@ def test_consultation_negacion_se_aplica_a_historia(
         owner=AgentId("doc_hist_neg"),
         audio_path=Path("/tmp/a.wav"),
         history_text="Sin antecedentes de diabetes",
+        consent=c.record_consent(owner=AgentId("doc_hist_neg"), mode="uploaded"),
     )
     assert not any(m.diagnostic.code == "E11" for m in prep.matches)
 
@@ -2799,7 +2850,12 @@ def test_consultation_lexico_no_cuela_lo_negado(
         negation=load_negation(),
         match_threshold=0.3,
     )
-    prep = c.prepare(owner=AgentId("doc_lex_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("doc_lex_neg"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("doc_lex_neg"), mode="uploaded"),
+    )
     assert not any(m.diagnostic.code == "E11" for m in prep.matches)
 
 
@@ -2828,7 +2884,10 @@ def test_consultation_evidencia_en_review_item(
         match_threshold=0.3,
     )
     prep_con = c_con.prepare(
-        owner=AgentId("doc_ev_1"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_ev_1"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_con.record_consent(owner=AgentId("doc_ev_1"), mode="uploaded"),
     )
     items_con: list[ReviewItem] = []
 
@@ -2856,7 +2915,10 @@ def test_consultation_evidencia_en_review_item(
         match_threshold=0.3,
     )
     prep_sin = c_sin.prepare(
-        owner=AgentId("doc_ev_2"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_ev_2"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_sin.record_consent(owner=AgentId("doc_ev_2"), mode="uploaded"),
     )
     items_sin: list[ReviewItem] = []
 
@@ -2892,7 +2954,12 @@ def test_consultation_hallazgo_enteramente_negado_marcado_mixto_no(
         extractor=build_health_extractor(),
         segmenter=ClinicalSegmenter(load_sections()),
     )
-    prep = c.prepare(owner=AgentId("doc_find_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("doc_find_neg"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("doc_find_neg"), mode="uploaded"),
+    )
     items: list[ReviewItem] = []
 
     def _rev(item: ReviewItem) -> Answer:
@@ -2936,7 +3003,12 @@ def test_consultation_fields_extracted_incluye_negated(
         extractor=build_health_extractor(),
         segmenter=ClinicalSegmenter(load_sections()),
     )
-    prep = c.prepare(owner=AgentId("doc_evt_neg"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("doc_evt_neg"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("doc_evt_neg"), mode="uploaded"),
+    )
     evt = next(e for e in log if e.kind == EventKind.FIELDS_EXTRACTED)
     assert evt.data["fields"] == "duration,laterality,negated,reported_by"
     assert prep.encounter is not None
@@ -2974,10 +3046,16 @@ def test_consultation_sin_negation_inyectado_default_no_cambia_nada(
         match_threshold=0.3,
     )
     p1 = c_default.prepare(
-        owner=AgentId("doc_def_1"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_def_1"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_default.record_consent(owner=AgentId("doc_def_1"), mode="uploaded"),
     )
     p2 = c_explicit.prepare(
-        owner=AgentId("doc_def_2"), audio_path=Path("/tmp/a.wav"), history_text=""
+        owner=AgentId("doc_def_2"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_explicit.record_consent(owner=AgentId("doc_def_2"), mode="uploaded"),
     )
     assert [m.diagnostic.code for m in p1.matches] == [m.diagnostic.code for m in p2.matches]
     assert [m.score for m in p1.matches] == [m.score for m in p2.matches]
@@ -3064,7 +3142,12 @@ def test_consultation_catalogo_referencia_propone_codigos_cuatro_caracteres(
         log=EventLog(),
         match_threshold=0.3,
     )
-    prep = c.prepare(owner=AgentId("doc_ref_test"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("doc_ref_test"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("doc_ref_test"), mode="uploaded"),
+    )
     assert len(prep.matches) > 0
     for match in prep.matches:
         code = match.diagnostic.code
@@ -3097,7 +3180,12 @@ def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
         negation=load_negation(),
         retraction=None,
     )
-    prep_sin = c_sin.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep_sin = c_sin.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_sin.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert any(m.diagnostic.code == "R002" for m in prep_sin.matches)
 
     # Con regla no sale
@@ -3113,7 +3201,12 @@ def test_consultation_pareja_enumeracion_negacion_no_propone_codigo(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep_con = c_con.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep_con = c_con.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c_con.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert not any(m.diagnostic.code == "R002" for m in prep_con.matches)
 
 
@@ -3152,7 +3245,12 @@ def test_consultation_retractacion_opera_a_traves_de_secciones_distintas(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert not any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3176,7 +3274,12 @@ def test_consultation_historia_no_se_retracta(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text=historia)
+    prep = c.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text=historia,
+        consent=c.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3198,7 +3301,12 @@ def test_consultation_sin_retraction_inyectada_nada_cambia(
         negation=load_negation(),
         retraction=None,
     )
-    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert any(m.diagnostic.code == "R002" for m in prep.matches)
 
 
@@ -3240,7 +3348,12 @@ def test_consultation_hallazgo_retractado_permanece_en_modelo_clinico(
         negation=load_negation(),
         retraction=load_retraction(),
     )
-    prep = c.prepare(owner=AgentId("p"), audio_path=Path("/tmp/a.wav"), history_text="")
+    prep = c.prepare(
+        owner=AgentId("p"),
+        audio_path=Path("/tmp/a.wav"),
+        history_text="",
+        consent=c.record_consent(owner=AgentId("p"), mode="uploaded"),
+    )
     assert prep.encounter is not None
     frases_modelo = [f.text for items in prep.encounter.findings.values() for f in items]
     assert "Drolar en el pecho, falta de aire, palpitaciones." in frases_modelo
@@ -3290,6 +3403,7 @@ def test_consultation_review_elapsed_seconds_externo_registra_tiempo_pasado(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     def sample_reviewer(item: ReviewItem) -> Answer:
@@ -3347,6 +3461,7 @@ def test_consultation_review_sin_elapsed_seconds_mide_con_reloj_del_bucle(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión esencial.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     def sample_reviewer(item: ReviewItem) -> Answer:
@@ -3403,6 +3518,7 @@ def test_consultation_review_cortada_registra_elapsed_seconds(
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Paciente con hipertensión.",
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
     )
 
     def failing_reviewer(item: ReviewItem) -> Answer:
@@ -3452,6 +3568,7 @@ def test_consultation_terceros_no_produce_codigo_ni_por_lexico(
         owner=AgentId("doc_tp"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation_con_tp.record_consent(owner=AgentId("doc_tp"), mode="uploaded"),
     )
     assert "I214" not in res_con_tp.matched_codes
 
@@ -3472,6 +3589,7 @@ def test_consultation_terceros_no_produce_codigo_ni_por_lexico(
         owner=AgentId("doc_no_tp"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation_sin_tp.record_consent(owner=AgentId("doc_no_tp"), mode="uploaded"),
     )
     assert "I214" in res_sin_tp.matched_codes
 
@@ -3531,14 +3649,13 @@ def test_consultation_frase_de_tercero_sigue_en_la_nota(
         owner=AgentId("doc_note_tp"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
+        consent=consultation.record_consent(owner=AgentId("doc_note_tp"), mode="uploaded"),
     )
     # La frase debe estar en el transcript, en el modelo clínico y en la nota/resumen
     assert frase_familiar in res.transcript
     assert res.encounter is not None
     hallazgos_textos = [
-        finding.text
-        for findings in res.encounter.findings.values()
-        for finding in findings
+        finding.text for findings in res.encounter.findings.values() for finding in findings
     ]
     assert frase_familiar in hallazgos_textos
     assert frase_familiar in res.summary_markdown
@@ -3576,6 +3693,7 @@ def test_render_note_pasa_transcripcion_incluyendo_otros_comentarios(
 ) -> None:
     """Caso 11 (§B.3): render_note pasa la transcripción a build_note; el briefing
     contiene una línea de prepared.transcript que la segmentación mandó a otros_comentarios."""
+
     class _SpyNoteProvider:
         def __init__(self) -> None:
             self.captured_briefing: str | None = None
@@ -3662,6 +3780,7 @@ def test_consultation_review_note_y_edits_van_juntos(
         owner=AgentId("doc_note_edits"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="",
+        consent=consultation.record_consent(owner=AgentId("doc_note_edits"), mode="uploaded"),
     )
     spec_a = SectionSpec("a", "A", (), True, True)
     note = RenderedNote(fields=((spec_a, "uno"),), redacted=True)
@@ -3679,9 +3798,7 @@ def test_consultation_review_note_y_edits_van_juntos(
     with pytest.raises(
         ValueError, match="la nota y sus ediciones van juntas, o ninguna de las dos"
     ):
-        consultation.review(
-            prepared, reviewer=dummy_reviewer, note=None, note_edits={"a": "uno"}
-        )
+        consultation.review(prepared, reviewer=dummy_reviewer, note=None, note_edits={"a": "uno"})
 
 
 def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
@@ -3701,9 +3818,7 @@ def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
         redacted=True,
     )
 
-    catalog = build_index(
-        (DiagnosticCode("I10", "Hipertensión esencial", 3, "ambas"),)
-    )
+    catalog = build_index((DiagnosticCode("I10", "Hipertensión esencial", 3, "ambas"),))
     consultation = Consultation(
         wording=sample_wording_review,
         stt=_SpyWhisperSTT(),
@@ -3720,6 +3835,7 @@ def test_consultation_review_eventos_de_campos_caen_en_review_metrics_store(
         owner=AgentId("doc_screen_metrics"),
         audio_path=Path("/tmp/audio.wav"),
         history_text="",
+        consent=consultation.record_consent(owner=AgentId("doc_screen_metrics"), mode="uploaded"),
     )
 
     def dummy_reviewer(item: ReviewItem) -> Answer:
@@ -3759,9 +3875,7 @@ def test_prepare_da_lo_mismo_que_analyze_con_transcribe(
 
     Mismos matches, grouped_sections, transcript e history.
     """
-    segments = (
-        TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza intenso"),
-    )
+    segments = (TranscriptSegment(start=0.0, end=2.0, text="consulta por dolor de cabeza intenso"),)
     stt = _SpyWhisperSTT(segments=segments)
     catalog = build_index((DiagnosticCode("R51", "Cefalea", 3, "ambas"),))
     consultation = Consultation(
@@ -3779,8 +3893,17 @@ def test_prepare_da_lo_mismo_que_analyze_con_transcribe(
     audio = Path("/tmp/audio_77b.wav")
     historia = "Historia previa del paciente"
 
-    preparado = consultation.prepare(owner=owner, audio_path=audio, history_text=historia)
-    transcript = consultation.transcribe(owner=owner, audio_path=audio)
+    preparado = consultation.prepare(
+        owner=owner,
+        audio_path=audio,
+        history_text=historia,
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
+    )
+    transcript = consultation.transcribe(
+        owner=owner,
+        audio_path=audio,
+        consent=consultation.record_consent(owner=owner, mode="uploaded"),
+    )
     analizado = consultation.analyze(owner=owner, transcript=transcript, history_text=historia)
 
     assert preparado.matches == analizado.matches
@@ -3826,7 +3949,3 @@ def test_analyze_con_log_aislado_no_modifica_registro_consulta(
     consultation.analyze(owner=owner, transcript=texto, history_text="")
     assert len(log_consulta) > 0
     assert any(e.kind == EventKind.INPUT_OBSERVED for e in log_consulta)
-
-
-
-
