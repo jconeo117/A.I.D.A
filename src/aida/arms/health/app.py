@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 
 from aida.arms.health.audio import to_wav
+from aida.arms.health.audit import AuditLog
 from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
 from aida.arms.health.consent import ConsentRecord, ConsentTexts, load_consent_texts
 from aida.arms.health.consultation import (
@@ -37,6 +38,7 @@ from aida.arms.health.consultation import (
     ConsultationResult,
     PreparedConsultation,
 )
+from aida.arms.health.identity import IdentityError, Professional, ProfileStore
 from aida.arms.health.live import LiveSession, LiveTranscriber, line_kind
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import ReviewItem, review_items
@@ -56,7 +58,7 @@ from aida.arms.health.sections import SectionSpec, load_sections
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
-from aida.resources import data_root
+from aida.resources import data_root, user_dir
 
 _RAIZ = data_root()
 _UI_POR_DEFECTO = _RAIZ / "packs" / "health" / "consultorio" / "ui.yaml"
@@ -190,6 +192,40 @@ _CLAVES_APP = (
     "title_first_run",
     "pill_preparing",
     "problem_model_title",
+    "who_title",
+    "who_lead",
+    "who_add",
+    "who_add_hint",
+    "registry_short",
+    "pin_label",
+    "enter_button",
+    "first_title",
+    "first_lead",
+    "first_name",
+    "first_registry",
+    "first_pin",
+    "first_pin2",
+    "first_hint",
+    "first_button",
+    "first_pin_mismatch",
+    "locked_title",
+    "locked_lead",
+    "unlock_button",
+    "other_professional",
+    "title_locked",
+    "title_who",
+    "pill_locked",
+    "change_professional",
+    "profiles_title",
+    "profiles_text",
+    "profiles_add",
+    "profiles_added",
+    "identity_missing",
+    "identity_pin_format",
+    "identity_duplicate",
+    "identity_unknown",
+    "identity_bad_pin",
+    "identity_wait",
 )
 
 _CSS_EXTRA = """.mode {
@@ -444,6 +480,64 @@ _CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
 
 _ICONS_PAGES = _ICONS_SETTINGS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
 
+_CSS_IDENTITY = """/* La 83: quién atiende */
+.who {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem;
+  margin-top: 1.25rem;
+}
+.person {
+  display: flex; align-items: center; gap: .75rem; padding: .85rem 1rem; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  cursor: pointer;
+  font: inherit; color: var(--ink);
+}
+.person:hover { border-color: var(--line-2); }
+.person[aria-pressed="true"] {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+.person .avatar {
+  width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: color-mix(in srgb, var(--brand) 14%, var(--surface)); color: var(--brand);
+  font-weight: 700;
+}
+.person strong { display: block; font-size: .92rem; }
+.person small { color: var(--muted); font-size: .78rem; }
+.person.add { border-style: dashed; color: var(--muted); }
+.person.add .avatar { background: var(--surface-2); color: var(--muted); }
+.pin-row { display: flex; gap: .6rem; align-items: center; margin-top: 1.25rem; }
+.pin-row .input { max-width: 220px; letter-spacing: .35em; font-size: 1.1rem; text-align: center; }
+.pin-error { color: var(--off); font-size: .85rem; }
+.pin-error[hidden] { display: none; }
+.head-user {
+  display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .75rem;
+  border-radius: 999px;
+  font-size: .8rem; color: var(--head-ink); background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.1);
+}
+.head-user svg { width: 15px; height: 15px; }
+.lock-icon {
+  width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center;
+  margin: 0 auto .75rem;
+  background: var(--surface-2); color: var(--brand);
+}
+.lock-icon svg { width: 28px; height: 28px; }
+.center { text-align: center; }
+.center .pin-row { justify-content: center; }
+.head-user[hidden], .head-link[hidden] { display: none; }
+button.head-user { cursor: pointer; font: inherit; font-size: .8rem; }
+.fields-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem 1rem; margin-top: 1rem; }"""
+
+_ICONS_IDENTITY = """  <symbol id="i-user" viewBox="0 0 24 24">
+    <circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>
+  </symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24">
+    <rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>"""
+
+_ICONS_ALL = _ICONS_PAGES.replace("</defs></svg>", _ICONS_IDENTITY + "\n</defs></svg>")
+
 _CSS_LIVE = """/* La 77b: la consulta en vivo */
 .field-state {
   display: inline-flex; align-items: center; gap: .3rem; font-size: .72rem; color: var(--faint);
@@ -527,6 +621,9 @@ class AppWording:
 
     texts: Mapping[str, str]
     steps: tuple[str, ...]
+    idle_lock_minutes: float = 10.0
+    """Minutos sin uso tras los que AIDA pide el PIN otra vez (plan 83). En el pack:
+    cuánto se tolera un equipo desatendido es una decisión de cada consultorio."""
 
     def __getitem__(self, clave: str) -> str:
         return self.texts[clave]
@@ -546,8 +643,13 @@ def load_app_wording(path: Path | None = None) -> AppWording:
         isinstance(p, str) for p in pasos
     ):
         raise ValueError(f"'app.steps' debe ser una lista de cinco cadenas en {ruta}")
+    minutos = seccion.get("idle_lock_minutes")
+    if not isinstance(minutos, int | float) or isinstance(minutos, bool) or minutos <= 0:
+        raise ValueError(f"'app.idle_lock_minutes' debe ser un número positivo en {ruta}")
     return AppWording(
-        texts={clave: seccion[clave] for clave in _CLAVES_APP}, steps=tuple(pasos)
+        texts={clave: seccion[clave] for clave in _CLAVES_APP},
+        steps=tuple(pasos),
+        idle_lock_minutes=float(minutos),
     )
 
 
@@ -633,7 +735,11 @@ def draft_for_screen(consultation: Consultation, prepared: PreparedConsultation)
 
 
 def close_from_screen(
-    consultation: Consultation, draft: ReviewDraft, submission: ReviewSubmission
+    consultation: Consultation,
+    draft: ReviewDraft,
+    submission: ReviewSubmission,
+    *,
+    actor: Professional | None,
 ) -> ConsultationResult:
     return consultation.review(
         draft.prepared,
@@ -642,6 +748,7 @@ def close_from_screen(
         review_findings=False,
         note=draft.note,
         note_edits=submission.note_fields,
+        actor=actor,
     )
 
 
@@ -686,6 +793,11 @@ class _Session:
     excluded: frozenset[str] = frozenset()
     consent: ConsentRecord | None = None
     """La autorización de la sesión en curso (plan 82): la revisión la enseña."""
+    professional: Professional | None = None
+    """Quién atiende (plan 83). Sobrevive a `clean`: termina una consulta, no la sesión
+    del profesional."""
+    last_activity: float = 0.0
+    history_seen: bool = False
     download: str = "idle"
     """`idle`, `running`, `done` o `failed`: la descarga del modelo sobrevive a cambiar
     de pantalla, y `clean` no la toca."""
@@ -700,6 +812,7 @@ class _Session:
         self.mine = {}
         self.excluded = frozenset()
         self.consent = None
+        self.history_seen = False
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)
         self.workdir = None
@@ -727,6 +840,8 @@ def serve(
     note_sections: Sequence[SectionSpec] | None = None,
     tools: AppTools | None = None,
     consent_texts: ConsentTexts | None = None,
+    profiles: ProfileStore | None = None,
+    audit: AuditLog | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
@@ -746,10 +861,46 @@ def serve(
     textos = consent_texts if consent_texts is not None else load_consent_texts()
     token = token_urlsafe(16)
     lock = threading.Lock()
+    perfiles = (
+        profiles if profiles is not None else ProfileStore(user_dir("config") / "profiles.json")
+    )
+    auditoria = audit if audit is not None else AuditLog()
+    inactividad = wording.idle_lock_minutes * 60
     session = _Session(ready=build())
-    if isinstance(session.ready, AppProblem):
-        session.state = "problem"
-        session.problem = session.ready
+    # Nadie entra sin decir quién es (plan 83): lo primero es elegir perfil, o crear el
+    # primero si el equipo es nuevo.
+    session.state = "who" if perfiles.professionals() else "first_profile"
+
+    def tras_identificarse() -> None:
+        """Con el candado tomado: adonde se va después de entrar o desbloquear."""
+        session.last_activity = clock()
+        if isinstance(session.ready, AppProblem):
+            session.state = "problem"
+            session.problem = session.ready
+        else:
+            session.state = "start"
+            session.problem = None
+
+    def vigilar() -> None:
+        """Con el candado tomado, en cada petición. Bloquea si pasó el plazo sin uso, y
+        solo donde no hay nada a medias: en una grabación, un proceso o una revisión,
+        nunca. Lo que estuviera subido se descarta, como al recargar."""
+        if session.professional is None:
+            return
+        ahora = clock()
+        reposo = session.state in ("start", "settings", "problem")
+        if reposo and ahora - session.last_activity > inactividad:
+            session.clean()
+            session.state = "locked"
+            auditoria.record("locked", actor=session.professional)
+            return
+        if session.state != "locked":
+            session.last_activity = ahora
+
+    def identificado() -> bool:
+        return session.professional is not None and session.state not in (
+            "who", "first_profile", "locked",
+        )
 
     def reconstruir() -> None:
         """Con el candado tomado. Vuelve a montar todo: una clave guardada o un modelo
@@ -810,6 +961,19 @@ def serve(
                 session.problem = AppProblem("processing", f"{type(exc).__name__}: {exc}")
             return
         with lock:
+            # Lo que propuso AIDA, sin los textos (van cifrados con la revisión
+            # guardada): qué códigos y qué campos con contenido.
+            auditoria.record(
+                "draft_generated",
+                actor=session.professional,
+                owner=owner,
+                data={
+                    "codes": ",".join(sorted(m.diagnostic.code for m in prepared.matches)),
+                    "fields": ",".join(
+                        sorted(spec.section_id for spec, texto in draft.note.fields if texto)
+                    ),
+                },
+            )
             session.drafted = True
             session.mine = dict(mine or {})
             session.excluded = excluded
@@ -820,6 +984,13 @@ def serve(
 
     def pagina() -> str:
         momento = now()
+        marca = settings.wording.brand
+        if session.state == "first_profile":
+            return _first_profile_page(wording, marca, token, momento)
+        if session.state == "who":
+            return _who_page(wording, marca, token, perfiles.professionals(), momento)
+        if session.state == "locked" and session.professional is not None:
+            return _locked_page(wording, marca, token, session.professional, momento)
         if session.state == "review" and session.draft is not None and session.view:
             borrador = session.draft
             return _render_page(
@@ -835,7 +1006,6 @@ def serve(
                 excluded=session.excluded,
                 consent_line=textos.line(session.consent) if session.consent else None,
             )
-        marca = settings.wording.brand
         if session.state == "live" and session.live is not None:
             return _live_page(
                 wording, settings, token, session.owner, momento, secciones, session.view
@@ -843,7 +1013,10 @@ def serve(
         if session.state == "working":
             return _working_page(wording, marca, token, session.owner, momento)
         if session.state == "settings" and tools is not None:
-            return _settings_page(wording, marca, token, tools, momento, session.download)
+            return _settings_page(
+                wording, marca, token, tools, momento, session.download,
+                profiles=perfiles.professionals(), professional=session.professional,
+            )
         if session.state == "problem" and session.problem is not None:
             if session.problem.kind == "model" and tools is not None:
                 return _model_page(wording, marca, token, tools, momento, session.download)
@@ -852,6 +1025,7 @@ def serve(
             return _start_page(
                 wording, marca, token, session.ready, momento,
                 settings=tools is not None, consent=textos,
+                professional=session.professional,
             )
         return _problem_page(wording, marca, token, AppProblem("processing"), momento)
 
@@ -881,8 +1055,12 @@ def serve(
 
         def do_GET(self) -> None:
             with lock:
+                vigilar()
                 if self.path == f"/{token}":
                     self._send(200, pagina().encode("utf-8"), "text/html; charset=utf-8")
+                    return
+                if not identificado():
+                    self._json(401, {"error": ""})
                     return
                 if self.path == f"/{token}/estado":
                     pasos: tuple[bool, ...] = ()
@@ -909,6 +1087,13 @@ def serve(
                     and vista is not None
                     and vista.content_type is not None
                 ):
+                    # Ver la historia original es un acceso a datos de la persona
+                    # atendida: queda en la auditoría, una vez por consulta.
+                    if not session.history_seen:
+                        session.history_seen = True
+                        auditoria.record(
+                            "history_viewed", actor=session.professional, owner=session.owner
+                        )
                     self._send(200, vista.data, vista.content_type)
                     return
             self._404()
@@ -919,7 +1104,18 @@ def serve(
                 self._404()
                 return
             accion = ruta[len(token) + 2 :]
-            if accion in ("audio", "documento"):
+            with lock:
+                vigilar()
+                permitido = identificado()
+            if accion in ("perfil", "entrar", "desbloquear", "cambiar", "salir"):
+                self._identity(accion)
+                return
+            if not permitido:
+                self._json(401, {"error": ""})
+                return
+            if accion == "actividad":
+                self._json(200, {"ok": True})
+            elif accion in ("audio", "documento"):
                 self._upload(accion)
             elif accion == "empezar":
                 self._start()
@@ -945,14 +1141,103 @@ def serve(
                 with lock:
                     reconstruir()
                 self._json(200, {"ok": True})
-            elif accion == "salir":
+            else:
+                self._404()
+
+        def _identity(self, accion: str) -> None:
+            """Entrar, crear un perfil, desbloquear, cambiar de profesional y salir: lo
+            único que se atiende sin estar identificado."""
+            if accion == "salir":
                 with lock:
+                    if session.professional is not None:
+                        auditoria.record("session_closed", actor=session.professional)
                     session.clean()
                     session.state = "closed"
                 self._json(200, {"ok": True})
                 threading.Thread(target=http_server.shutdown, daemon=True).start()
-            else:
-                self._404()
+                return
+            if accion == "cambiar":
+                with lock:
+                    if session.state in ("live", "working", "review"):
+                        self._json(409, {"error": ""})
+                        return
+                    if session.professional is not None:
+                        auditoria.record("session_closed", actor=session.professional)
+                    session.clean()
+                    session.professional = None
+                    session.state = "who"
+                self._json(200, {"ok": True})
+                return
+            datos = self._body() or b"{}"
+            try:
+                pedido = json.loads(datos)
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict):
+                self._json(400, {"error": ""})
+                return
+            with lock:
+                try:
+                    if accion == "perfil":
+                        self._new_profile(pedido)
+                    elif accion == "entrar" and session.state == "who":
+                        perfil = str(pedido.get("profile", ""))
+                        session.professional = perfiles.verify(perfil, str(pedido.get("pin", "")))
+                        auditoria.record("session_opened", actor=session.professional)
+                        tras_identificarse()
+                        self._json(200, {"ok": True})
+                    elif (
+                        accion == "desbloquear"
+                        and session.state == "locked"
+                        and session.professional is not None
+                    ):
+                        perfiles.verify(session.professional.id, str(pedido.get("pin", "")))
+                        auditoria.record("unlocked", actor=session.professional)
+                        tras_identificarse()
+                        self._json(200, {"ok": True})
+                    else:
+                        self._json(409, {"error": ""})
+                except IdentityError as exc:
+                    restantes = (
+                        perfiles.attempts_left(
+                            str(pedido.get("profile", ""))
+                            if accion == "entrar"
+                            else session.professional.id if session.professional else ""
+                        )
+                        if exc.code == "bad_pin"
+                        else 0
+                    )
+                    self._json(
+                        400, {"error": wording[f"identity_{exc.code}"].format(restantes)}
+                    )
+
+        def _new_profile(self, pedido: dict[str, Any]) -> None:
+            """Con el candado tomado. El primero, en el primer arranque, y entra con él;
+            los demás, desde Ajustes y por alguien ya identificado (plan 83): nadie se da
+            de alta solo en un equipo que ya tiene dueños."""
+            primero = session.state == "first_profile"
+            if not primero and not (identificado() and session.state == "settings"):
+                self._json(409, {"error": ""})
+                return
+            pin = str(pedido.get("pin", ""))
+            if pin != str(pedido.get("pin2", "")):
+                self._json(400, {"error": wording["first_pin_mismatch"]})
+                return
+            nuevo = perfiles.create(
+                name=str(pedido.get("name", "")),
+                registry=str(pedido.get("registry", "")),
+                pin=pin,
+            )
+            auditoria.record(
+                "profile_created",
+                actor=session.professional if not primero else nuevo,
+                data={"profile": nuevo.id, "name": nuevo.label()},
+            )
+            if primero:
+                session.professional = nuevo
+                auditoria.record("session_opened", actor=nuevo)
+                tras_identificarse()
+            self._json(200, {"ok": True})
 
         def _settings(self, accion: str, herramientas: AppTools) -> None:
             """Ajustes solo se abre desde el inicio o desde un problema: nunca con una
@@ -1098,7 +1383,9 @@ def serve(
                     return
                 session.owner = owner
                 registro = ready.consultation.record_consent(
-                    owner=AgentId(owner), mode="recorded" if grabando else "uploaded"
+                    owner=AgentId(owner),
+                    mode="recorded" if grabando else "uploaded",
+                    actor=session.professional,
                 )
                 session.consent = registro
                 if grabando and session.workdir is not None:
@@ -1157,7 +1444,9 @@ def serve(
                 if envio is None:
                     self._json(400, {"error": error})
                     return
-                close_from_screen(ready.consultation, borrador, envio)
+                close_from_screen(
+                    ready.consultation, borrador, envio, actor=session.professional
+                )
                 session.clean()
                 session.state = "start"
             self._json(200, {"ok": True, "next": f"/{token}"})
@@ -1194,8 +1483,8 @@ def _page(
         estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}"
         iconos = _ICONS_LIVE
     else:
-        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}"
-        iconos = _ICONS_PAGES
+        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}\n{_CSS_IDENTITY}"
+        iconos = _ICONS_ALL
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1235,6 +1524,7 @@ def _start_page(
     *,
     settings: bool = False,
     consent: ConsentTexts | None = None,
+    professional: Professional | None = None,
 ) -> str:
     e = html.escape
     textos = consent if consent is not None else load_consent_texts()
@@ -1323,9 +1613,10 @@ def _start_page(
         f"const TOKEN = {json.dumps(token)};\nconst W = {palabras};\n"
         f"const CONSENT = {autorizaciones};\n{_JS_START}"
     )
-    enlace = ""
+    enlace = _user_chip(w, professional)
+    script += _identity_script(w)
     if settings:
-        enlace = (
+        enlace += (
             f'\n    <button type="button" class="head-link" id="to-settings">'
             f'<svg><use href="#i-gear"/></svg>{e(w["settings_label"])}</button>'
         )
@@ -1541,7 +1832,15 @@ poll();
 """
 
 def _settings_page(
-    w: AppWording, brand: str, token: str, tools: AppTools, moment: datetime, download: str
+    w: AppWording,
+    brand: str,
+    token: str,
+    tools: AppTools,
+    moment: datetime,
+    download: str,
+    *,
+    profiles: Sequence[Professional] = (),
+    professional: Professional | None = None,
 ) -> str:
     """Cada tarjeta se consulta al abrir: es una pantalla que se visita poco, y lo que
     enseña tiene que ser lo que hay ahora, no lo que había al arrancar."""
@@ -1608,6 +1907,7 @@ def _settings_page(
             <span class="status {lector[0]}">{e(lector[1])}</span></div>
           <p>{e(w["reader_text"])}</p>
         </div>
+        {_profiles_block(w, profiles)}
         <div class="setting">
           <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
             <span class="status ok">{e(w["cipher_ok"])}</span></div>
@@ -1624,7 +1924,8 @@ def _settings_page(
     return _page(
         brand=brand, title=w["title_settings"], place=w["header_place"], moment=moment,
         pill=w["pill_ready"], pill_class="pill", body=body,
-        script=_settings_script(w, token, tools),
+        script=_settings_script(w, token, tools) + _identity_script(w),
+        head_link=_user_chip(w, professional),
     )
 
 
@@ -1684,6 +1985,310 @@ def _model_page(
         pill=w["pill_preparing"], pill_class="pill", body=body,
         script=_settings_script(w, token, tools) + _JS_TO_SETTINGS,
     )
+
+
+def _user_chip(w: AppWording, professional: Professional | None) -> str:
+    """Quién atiende, en la cabecera; pulsarlo cambia de profesional (plan 83)."""
+    if professional is None:
+        return ""
+    e = html.escape
+    return (
+        f'\n    <button type="button" class="head-user" id="head-user" '
+        f'title="{e(w["change_professional"])}"><svg><use href="#i-user"/></svg>'
+        f"{e(professional.name)}</button>"
+    )
+
+
+def _identity_script(w: AppWording) -> str:
+    return f"const IDLE_MS = {int(w.idle_lock_minutes * 60_000)};\n{_JS_IDENTITY_HEAD}"
+
+
+def _initials(name: str) -> str:
+    """Las iniciales del avatar, sin títulos: «Dra. Laura Gómez» es LG, no DL."""
+    palabras = [p for p in name.split() if not p.endswith(".")]
+    return "".join(p[0] for p in palabras[:2]).upper() or name[:1].upper()
+
+
+def _person(p: Professional, w: AppWording, *, button: bool) -> str:
+    e = html.escape
+    etiqueta = "button" if button else "div"
+    extra = (
+        f' type="button" aria-pressed="false" data-id="{e(p.id)}" data-name="{e(p.name)}"'
+        if button
+        else ""
+    )
+    return (
+        f'<{etiqueta} class="person"{extra}><span class="avatar">{e(_initials(p.name))}</span>'
+        f"<span><strong>{e(p.name)}</strong>"
+        f"<small>{e(w['registry_short'])} {e(p.registry)}</small></span></{etiqueta}>"
+    )
+
+
+def _profiles_block(w: AppWording, profiles: Sequence[Professional]) -> str:
+    """En Ajustes: quiénes hay y añadir a otro. Lo añade alguien ya identificado."""
+    e = html.escape
+    personas = "".join(_person(p, w, button=False) for p in profiles)
+    return f"""<div class="setting">
+          <div class="setting-head"><svg><use href="#i-user"/></svg>
+            <h3>{e(w["profiles_title"])}</h3></div>
+          <p>{e(w["profiles_text"])}</p>
+          <div class="who">{personas}</div>
+          <div class="fields-2">
+            <div><label class="label" for="np-name">{e(w["first_name"])}</label>
+              <input class="input" id="np-name" autocomplete="off"></div>
+            <div><label class="label" for="np-registry">{e(w["first_registry"])}</label>
+              <input class="input" id="np-registry" autocomplete="off"></div>
+            <div><label class="label" for="np-pin">{e(w["first_pin"])}</label>
+              <input class="input" id="np-pin" type="password" inputmode="numeric"></div>
+            <div><label class="label" for="np-pin2">{e(w["first_pin2"])}</label>
+              <input class="input" id="np-pin2" type="password" inputmode="numeric"></div>
+          </div>
+          <div class="key-row"><button type="button" class="btn" id="np-add">
+            <svg><use href="#i-plus"/></svg>{e(w["profiles_add"])}</button></div>
+          <div class="result fail" id="np-error" hidden><svg><use href="#i-alert"/></svg>
+            <span></span></div>
+        </div>"""
+
+
+def _who_page(
+    w: AppWording,
+    brand: str,
+    token: str,
+    profiles: Sequence[Professional],
+    moment: datetime,
+) -> str:
+    e = html.escape
+    personas = "".join(_person(p, w, button=True) for p in profiles)
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <h2>{e(w["who_title"])}</h2>
+      <p class="lead">{e(w["who_lead"])}</p>
+      <div class="who">{personas}
+        <div class="person add"><span class="avatar">
+          <svg style="width:18px;height:18px"><use href="#i-plus"/></svg></span>
+          <span><strong>{e(w["who_add"])}</strong><small>{e(w["who_add_hint"])}</small></span>
+        </div>
+      </div>
+      <div class="pin-row">
+        <input class="input" id="pin" type="password" inputmode="numeric"
+          aria-label="{e(w["pin_label"])}" autocomplete="off">
+        <span class="pin-error" id="pin-error" hidden></span>
+      </div>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="exit">
+      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
+    <span class="stat" id="who-name"></span>
+    <button type="button" class="btn btn-primary" id="enter">
+      <svg><use href="#i-check"/></svg>{e(w["enter_button"])}</button>
+  </footer>
+</section>"""
+    script = (
+        f"const TOKEN = {json.dumps(token)};\n"
+        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
+        f"{_JS_WHO}"
+    )
+    return _page(
+        brand=brand, title=w["title_who"], place=w["header_place"], moment=moment,
+        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
+    )
+
+
+def _first_profile_page(w: AppWording, brand: str, token: str, moment: datetime) -> str:
+    e = html.escape
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <h2>{e(w["first_title"])}</h2>
+      <p class="lead">{e(w["first_lead"])}</p>
+      <div class="fields-2">
+        <div><label class="label" for="np-name">{e(w["first_name"])}</label>
+          <input class="input" id="np-name" autocomplete="off"></div>
+        <div><label class="label" for="np-registry">{e(w["first_registry"])}</label>
+          <input class="input" id="np-registry" autocomplete="off"></div>
+        <div><label class="label" for="np-pin">{e(w["first_pin"])}</label>
+          <input class="input" id="np-pin" type="password" inputmode="numeric"></div>
+        <div><label class="label" for="np-pin2">{e(w["first_pin2"])}</label>
+          <input class="input" id="np-pin2" type="password" inputmode="numeric"></div>
+      </div>
+      <p class="hint">{e(w["first_hint"])}</p>
+      <p class="pin-error" id="np-error" hidden></p>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="exit">
+      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
+    <span class="stat"></span>
+    <button type="button" class="btn btn-primary" id="np-add">
+      <svg><use href="#i-check"/></svg>{e(w["first_button"])}</button>
+  </footer>
+</section>"""
+    script = (
+        f"const TOKEN = {json.dumps(token)};\n"
+        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
+        f"{_JS_NEW_PROFILE}"
+    )
+    return _page(
+        brand=brand, title=w["title_first_run"], place=w["header_place"], moment=moment,
+        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
+    )
+
+
+def _locked_page(
+    w: AppWording, brand: str, token: str, professional: Professional, moment: datetime
+) -> str:
+    e = html.escape
+    entrada = e(w["locked_lead"]).replace(
+        "{}", f"<strong>{e(professional.name)}</strong>"
+    ).replace("{minutes}", str(int(w.idle_lock_minutes)))
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card center">
+      <div class="lock-icon"><svg><use href="#i-lock"/></svg></div>
+      <h2>{e(w["locked_title"])}</h2>
+      <p class="lead">{entrada}</p>
+      <div class="pin-row">
+        <input class="input" id="pin" type="password" inputmode="numeric"
+          aria-label="{e(w["pin_label"])}" autocomplete="off">
+      </div>
+      <p class="pin-error" id="pin-error" hidden></p>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="other">
+      <svg><use href="#i-user"/></svg>{e(w["other_professional"])}</button>
+    <span class="stat"></span>
+    <button type="button" class="btn btn-primary" id="unlock">
+      <svg><use href="#i-check"/></svg>{e(w["unlock_button"])}</button>
+  </footer>
+</section>"""
+    chip = (
+        f'\n    <span class="head-user"><svg><use href="#i-user"/></svg>'
+        f"{e(professional.name)}</span>"
+    )
+    return _page(
+        brand=brand, title=w["title_locked"], place=w["header_place"], moment=moment,
+        pill=w["pill_locked"], pill_class="pill fallback", body=body,
+        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LOCKED}", head_link=chip,
+    )
+
+
+_JS_IDENTITY_HEAD = """
+(function () {
+  let last = Date.now(), sent = 0;
+  const activity = () => {
+    last = Date.now();
+    if (last - sent > 60000) {
+      sent = last;
+      fetch('/' + TOKEN + '/actividad', { method: 'POST', body: '' });
+    }
+  };
+  ['input', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, activity, true));
+  // El bloqueo lo decide Python; la página solo recarga para enseñarlo.
+  setInterval(() => { if (Date.now() - last > IDLE_MS + 2000) location.reload(); }, 5000);
+  const me = document.getElementById('head-user');
+  if (me) {
+    me.addEventListener('click', async () => {
+      await fetch('/' + TOKEN + '/cambiar', { method: 'POST', body: '' });
+      location.reload();
+    });
+  }
+  const add = document.getElementById('np-add');
+  if (add) {
+    add.addEventListener('click', async () => {
+      const v = id => document.getElementById(id).value;
+      const body = JSON.stringify({
+        name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2'),
+      });
+      const r = await fetch('/' + TOKEN + '/perfil', { method: 'POST', body });
+      if (r.ok) { location.reload(); return; }
+      const box = document.getElementById('np-error');
+      box.querySelector('span').textContent = (await r.json()).error;
+      box.hidden = false;
+    });
+  }
+})();
+"""
+
+_JS_WHO = """
+function post(path, body) {
+  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
+}
+let chosen = null;
+document.querySelectorAll('.person[data-id]').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.person[data-id]').forEach(
+    x => x.setAttribute('aria-pressed', 'false'));
+  b.setAttribute('aria-pressed', 'true');
+  chosen = b.dataset.id;
+  document.getElementById('who-name').textContent = b.dataset.name;
+  document.getElementById('pin-error').hidden = true;
+  document.getElementById('pin').focus();
+}));
+const first = document.querySelector('.person[data-id]');
+if (first) { first.click(); }
+async function enter() {
+  const pin = document.getElementById('pin').value;
+  if (!chosen || !pin) { return; }
+  const r = await post('/entrar', JSON.stringify({ profile: chosen, pin }));
+  if (r.ok) { location.reload(); return; }
+  const err = document.getElementById('pin-error');
+  err.textContent = (await r.json()).error;
+  err.hidden = false;
+  document.getElementById('pin').value = '';
+}
+document.getElementById('enter').addEventListener('click', enter);
+document.getElementById('pin').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') { enter(); }
+});
+document.getElementById('exit').addEventListener('click', async () => {
+  await post('/salir');
+  document.body.textContent = W.closed_text;
+});
+"""
+
+_JS_NEW_PROFILE = """
+function post(path, body) {
+  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
+}
+document.getElementById('np-add').addEventListener('click', async () => {
+  const v = id => document.getElementById(id).value;
+  const r = await post('/perfil', JSON.stringify({
+    name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2') }));
+  if (r.ok) { location.reload(); return; }
+  const err = document.getElementById('np-error');
+  err.textContent = (await r.json()).error;
+  err.hidden = false;
+});
+document.getElementById('exit').addEventListener('click', async () => {
+  await post('/salir');
+  document.body.textContent = W.closed_text;
+});
+"""
+
+_JS_LOCKED = """
+function post(path, body) {
+  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
+}
+async function unlock() {
+  const pin = document.getElementById('pin').value;
+  const r = await post('/desbloquear', JSON.stringify({ pin }));
+  if (r.ok) { location.reload(); return; }
+  const err = document.getElementById('pin-error');
+  err.textContent = (await r.json()).error;
+  err.hidden = false;
+  document.getElementById('pin').value = '';
+}
+document.getElementById('unlock').addEventListener('click', unlock);
+document.getElementById('pin').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter') { unlock(); }
+});
+document.getElementById('other').addEventListener('click', async () => {
+  await post('/cambiar');
+  location.reload();
+});
+"""
 
 
 _JS_TO_SETTINGS = """

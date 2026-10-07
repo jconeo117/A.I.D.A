@@ -19,11 +19,9 @@ que una manipulación parcial no pase desapercibida.
 
 from __future__ import annotations
 
-import contextlib
 import getpass
 import hashlib
 import json
-import os
 import socket
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -33,6 +31,7 @@ from pathlib import Path
 import yaml
 
 from aida.engine.ontology import AgentId
+from aida.ledger import ChainedLog
 from aida.resources import data_root
 
 _RAIZ = data_root()
@@ -103,8 +102,8 @@ class ConsentRecord:
     """Huella del texto exacto que se leyó: si alguien cambia el texto sin subir la
     versión, la huella lo delata."""
     workstation: str
-    """Quién la recogió, hasta que la 83 traiga la identidad del profesional: el
-    usuario del sistema y el nombre del equipo."""
+    """Quién la recogió: desde la 83, el profesional identificado y el equipo
+    («nombre (registro) @ usuario@equipo»); antes, solo el usuario y el equipo."""
     at: str
     """ISO 8601 con zona: una evidencia sin zona horaria no se puede situar."""
     prev: str
@@ -114,95 +113,54 @@ class ConsentRecord:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
 
 
-def _digest(campos: Mapping[str, str]) -> str:
-    cuerpo = json.dumps(dict(campos), ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(cuerpo.encode("utf-8")).hexdigest()
-
-
 def workstation() -> str:
     return f"{getpass.getuser()}@{socket.gethostname()}"
 
 
 class ConsentLedger:
-    """El registro. Con `path=None` vive en memoria: sigue siendo la misma puerta
-    (hay que registrar para poder transcribir), solo que no deja archivo."""
+    """El registro de autorizaciones, sobre la cadena común (`aida.ledger`). Con
+    `path=None` vive en memoria: sigue siendo la misma puerta (hay que registrar para
+    poder transcribir), solo que no deja archivo. El formato de cada línea es el de la
+    82: las autorizaciones ya registradas siguen verificando."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path
-        self._records: list[ConsentRecord] = []
-        if path is not None and path.is_file():
-            for linea in path.read_text(encoding="utf-8").splitlines():
-                if linea.strip():
-                    self._records.append(ConsentRecord(**json.loads(linea)))
-        self._digests = {r.digest for r in self._records}
+        self._chain = ChainedLog(path)
 
     def append(
         self, *, owner: AgentId, mode: str, version: str, text: str, workstation: str, at: str
     ) -> ConsentRecord:
         if mode not in MODES:
             raise ValueError(f"modo de autorización desconocido: {mode!r}")
-        campos = {
-            "owner": str(owner),
-            "mode": mode,
-            "version": version,
-            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "workstation": workstation,
-            "at": at,
-            "prev": self._records[-1].digest if self._records else _GENESIS,
-        }
-        record = ConsentRecord(
-            owner=AgentId(owner),
-            mode=mode,
-            version=version,
-            text_sha256=campos["text_sha256"],
-            workstation=workstation,
-            at=at,
-            prev=campos["prev"],
-            digest=_digest(campos),
+        linea = self._chain.append(
+            {
+                "owner": str(owner),
+                "mode": mode,
+                "version": version,
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "workstation": workstation,
+                "at": at,
+            }
         )
-        if self._path is not None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            # Escrita y llevada a disco antes de devolverla: una autorización que se da
-            # por registrada y se pierde en un corte no es evidencia de nada.
-            with self._path.open("a", encoding="utf-8") as archivo:
-                archivo.write(record.to_json() + "\n")
-                archivo.flush()
-                os.fsync(archivo.fileno())
-            # Lleva códigos de quien fue grabado: legible solo por el usuario, como las
-            # claves. En Windows los permisos los da la carpeta del perfil.
-            with contextlib.suppress(OSError):
-                self._path.chmod(0o600)
-        self._records.append(record)
-        self._digests.add(record.digest)
-        return record
+        return _record(linea)
 
     def contains(self, record: ConsentRecord) -> bool:
-        return record.digest in self._digests
+        return self._chain.contains(record.digest)
 
     def records(self) -> tuple[ConsentRecord, ...]:
-        return tuple(self._records)
+        return tuple(_record(linea) for linea in self._chain.lines())
 
     def verify(self) -> tuple[str, ...]:
-        """Los problemas de la cadena, leída de nuevo del archivo: lo que hay en
-        memoria no prueba nada sobre lo que hay en disco. Vacío si está íntegra."""
-        if self._path is None or not self._path.is_file():
-            return ()
-        problemas: list[str] = []
-        anterior = _GENESIS
-        lineas = self._path.read_text(encoding="utf-8").splitlines()
-        for numero, linea in enumerate(lineas, start=1):
-            if not linea.strip():
-                continue
-            try:
-                datos = json.loads(linea)
-                guardada = str(datos.pop("digest"))
-            except (ValueError, KeyError, AttributeError):
-                problemas.append(f"línea {numero}: no se puede leer")
-                anterior = ""
-                continue
-            if datos.get("prev") != anterior:
-                problemas.append(f"línea {numero}: no sigue a la anterior")
-            if _digest({k: str(v) for k, v in datos.items()}) != guardada:
-                problemas.append(f"línea {numero}: su contenido no corresponde a su huella")
-            anterior = guardada
-        return tuple(problemas)
+        return self._chain.verify()
+
+
+def _record(linea: Mapping[str, str]) -> ConsentRecord:
+    return ConsentRecord(
+        owner=AgentId(linea["owner"]),
+        mode=linea["mode"],
+        version=linea["version"],
+        text_sha256=linea["text_sha256"],
+        workstation=linea["workstation"],
+        at=linea["at"],
+        prev=linea["prev"],
+        digest=linea["digest"],
+    )

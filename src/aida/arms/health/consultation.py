@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from aida.arms.health.audit import AuditLog
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.consent import (
@@ -24,6 +25,7 @@ from aida.arms.health.consent import (
 )
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.history import HistoryLayout, codable_history_lines
+from aida.arms.health.identity import IdentityError, Professional
 from aida.arms.health.lexicon import Lexicon, clinical_terms
 from aida.arms.health.match import (
     CatalogIndex,
@@ -142,6 +144,7 @@ class Consultation:
         consent_texts: ConsentTexts | None = None,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         operator: Callable[[], str] = workstation,
+        audit: AuditLog | None = None,
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -171,10 +174,24 @@ class Consultation:
         self._consent_texts = consent_texts
         self._now = now
         self._operator = operator
+        # Sin auditoría declarada, una en memoria: la revisión exige igual a alguien
+        # identificado (plan 83); solo no deja archivo.
+        self._audit = audit if audit is not None else AuditLog()
 
-    def record_consent(self, *, owner: AgentId, mode: str) -> ConsentRecord:
+    @property
+    def audit(self) -> AuditLog:
+        """La auditoría de esta consulta: la comparte quien la lanza (la aplicación, la
+        CLI), para que todo quede en una sola cadena."""
+        return self._audit
+
+    def record_consent(
+        self, *, owner: AgentId, mode: str, actor: Professional | None = None
+    ) -> ConsentRecord:
         """Registra que `owner` autorizó, con el texto vigente del pack, y lo deja en
-        el journal. Es lo que abre `transcribe` para ese dueño."""
+        el journal y en la auditoría. Es lo que abre `transcribe` para ese dueño.
+
+        Con `actor`, quien la recogió es el profesional identificado, con el equipo
+        (plan 83); sin él, solo el equipo, como en la 82: la CLI sin `--as`."""
         if mode not in MODES:
             raise ValueError(f"modo de autorización desconocido: {mode!r}")
         if self._consent_texts is None:
@@ -185,8 +202,14 @@ class Consultation:
             mode=mode,
             version=textos.version,
             text=textos.modes[mode].text,
-            workstation=self._operator(),
+            workstation=f"{actor.label()} @ {self._operator()}" if actor else self._operator(),
             at=self._now().isoformat(timespec="seconds"),
+        )
+        self._audit.record(
+            "consent_recorded",
+            actor=actor,
+            owner=str(owner),
+            data={"mode": mode, "version": record.version, "consent": record.digest},
         )
         self._log.emit(
             tick=0,
@@ -580,6 +603,7 @@ class Consultation:
         review_findings: bool = True,
         note: RenderedNote | None = None,
         note_edits: Mapping[str, str] | None = None,
+        actor: Professional | None,
     ) -> ConsultationResult:
         """Solo tras contestar a todo se guarda. El resumen —la lista de
         hechos y códigos confirmados— sale sin modelo: eso es lo que el
@@ -592,6 +616,10 @@ class Consultation:
         Con `note` y `note_edits` —la pantalla—, la nota ya redactada se revisa
         aquí y la que vuelve es la entregada, con sus campos editados marcados.
         """
+        # Sin diagnóstico autónomo (plan 83): es el único sitio por el que un código
+        # pasa a confirmado, y no pasa sin un profesional identificado.
+        if actor is None:
+            raise IdentityError("no_actor", "revisar exige un profesional identificado")
         if prepared.encounter is None or prepared.grouped_sections is None:
             raise ValueError("revisión activa pero no hay segmentador configurado")
         if (note is None) != (note_edits is None):
@@ -659,6 +687,20 @@ class Consultation:
             note=reviewed_note,
         )
         self._cache.store(owner=prepared.owner, summary_markdown=summary)
+        confirmados = sorted(m.diagnostic.code for m in reviewed.confirmed_codes)
+        propuestos = sorted(m.diagnostic.code for m in prepared.matches)
+        textos: dict[str, object] = {"codes_proposed": propuestos, "codes_confirmed": confirmados}
+        datos = {
+            "codes_confirmed": ",".join(confirmados),
+            "codes_removed": ",".join(c for c in propuestos if c not in confirmados),
+        }
+        if note is not None and reviewed_note is not None:
+            textos["draft"] = {spec.section_id: texto for spec, texto in note.fields}
+            textos["final"] = {spec.section_id: texto for spec, texto in reviewed_note.fields}
+            datos["fields_edited"] = ",".join(sorted(reviewed_note.edited))
+        self._audit.record(
+            "review_saved", actor=actor, owner=str(prepared.owner), data=datos, texts=textos
+        )
         return result
 
     def _record_review(

@@ -11,6 +11,7 @@ del test.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import os
 import sys
@@ -31,8 +32,10 @@ from aida.resources import data_root, user_dir
 
 if TYPE_CHECKING:
     from aida.arms.health.app import AppProblem, AppReady, AppTools
+    from aida.arms.health.audit import AuditLog
     from aida.arms.health.capture import CaptureSettings
     from aida.arms.health.consultation import Consultation
+    from aida.arms.health.identity import Professional, ProfileStore
     from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
     from aida.arms.health.transcription import CloudWhisperSTT
@@ -151,6 +154,23 @@ def _construir_parser() -> argparse.ArgumentParser:
         "sin ella --consultation y --mic --history no transcriben",
     )
     parser.add_argument(
+        "--as",
+        dest="actor_profile",
+        metavar="PERFIL",
+        help="quién revisa (plan 83): el identificador o el registro profesional del "
+        "perfil; pide el PIN. Obligatorio con --review",
+    )
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="lista la auditoría, comprueba que la cadena está íntegra y termina",
+    )
+    parser.add_argument(
+        "--audit-show",
+        metavar="HUELLA",
+        help="descifra y muestra los textos de una línea de la auditoría y termina",
+    )
+    parser.add_argument(
         "--consents",
         action="store_true",
         help="lista las autorizaciones registradas, comprueba que la cadena está íntegra "
@@ -234,6 +254,88 @@ def _consents_path() -> Path:
     """Un solo sitio para la ruta: la escriben la aplicación y la CLI, y la lee
     --consents."""
     return user_dir("data") / "autorizaciones.jsonl"
+
+
+def _profiles() -> ProfileStore:
+    from aida.arms.health.identity import ProfileStore
+
+    return ProfileStore(user_dir("config") / "profiles.json")
+
+
+@functools.cache
+def _audit() -> AuditLog:
+    """Una sola auditoría por proceso: la comparten la consulta y la aplicación, y dos
+    instancias sobre el mismo archivo encadenarían cada una por su lado."""
+    from aida.arms.health.audit import AuditLog
+    from aida.keys import cache_key
+
+    clave = cache_key()
+    return AuditLog(
+        user_dir("data") / "auditoria.jsonl",
+        blobs=user_dir("data") / "auditoria",
+        key=clave.encode() if clave else None,
+    )
+
+
+def _identify(profile: str) -> Professional | None:
+    """El profesional de `--as`, tras pedir su PIN en la terminal. `None` tras decir
+    por qué, si no se pudo."""
+    import getpass
+
+    from aida.arms.health.identity import IdentityError
+
+    perfiles = _profiles()
+    elegido = next(
+        (p for p in perfiles.professionals() if profile in (p.id, p.registry)), None
+    )
+    if elegido is None:
+        print(f"aida: error: no hay un perfil {profile!r} en este equipo", file=sys.stderr)
+        return None
+    try:
+        return perfiles.verify(elegido.id, getpass.getpass(f"PIN de {elegido.name}: "))
+    except IdentityError as exc:
+        print(f"aida: error: no se pudo identificar ({exc.code})", file=sys.stderr)
+        return None
+
+
+def _list_audit() -> int:
+    """Lista y verifica, como `--consents`: código 1 si la cadena está rota."""
+    auditoria = _audit()
+    for linea in auditoria.lines():
+        quien = linea["actor_name"] or "-"
+        blob = linea["blob"][:12] if linea["blob"] else "-"
+        print(
+            f"{linea['at']} · {linea['kind']} · {quien} · {linea['owner'] or '-'} · "
+            f"{linea['data']} · {blob}"
+        )
+    problemas = auditoria.verify()
+    for problema in problemas:
+        print(f"aida: error: {problema}", file=sys.stderr)
+    if problemas:
+        return 1
+    print(f"aida: {len(auditoria.lines())} líneas de auditoría, cadena íntegra", file=sys.stderr)
+    return 0
+
+
+def _show_audit(prefijo: str) -> int:
+    """Los textos de una línea, por su huella o el principio de ella (los doce
+    caracteres que lista `--audit`)."""
+    import json as _json
+
+    auditoria = _audit()
+    candidatas = sorted(
+        {x["blob"] for x in auditoria.lines() if x["blob"].startswith(prefijo)}
+    )
+    if len(candidatas) != 1 or not prefijo:
+        print("aida: error: esa huella no identifica una sola línea", file=sys.stderr)
+        return 1
+    try:
+        textos = auditoria.show(candidatas[0])
+    except (ValueError, OSError) as exc:
+        print(f"aida: error: {exc}", file=sys.stderr)
+        return 1
+    print(_json.dumps(textos, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
 
 
 def _list_consents() -> int:
@@ -516,6 +618,7 @@ def _build_consultation(
         note_providers=cast(Any, _cognition_candidates(args, ajustes_nota)),
         note_on_fallback=aviso_nota,
         consents=ConsentLedger(_consents_path()),
+        audit=_audit(),
         consent_texts=load_consent_texts(),
     )
 
@@ -845,11 +948,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings=load_ui_settings(),
             wording=load_app_wording(),
             tools=_app_tools(),
+            profiles=_profiles(),
+            audit=_audit(),
         )
         return 0
 
     if args.consents:
         return _list_consents()
+    if args.audit:
+        return _list_audit()
+    if args.audit_show:
+        return _show_audit(args.audit_show)
 
     if args.consultation:
         if not args.audio or not args.history:
@@ -942,7 +1051,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.consent:
             print(_FALTA_CONSENT, file=sys.stderr)
             return 1
-        autorizacion = consultation.record_consent(owner=AgentId(args.owner), mode="uploaded")
+        # Revisar es confirmar códigos: sin profesional identificado, no (plan 83).
+        profesional = None
+        if args.review:
+            if not args.actor_profile:
+                print("aida: error: --review requiere --as PERFIL", file=sys.stderr)
+                return 1
+            profesional = _identify(args.actor_profile)
+            if profesional is None:
+                return 1
+        autorizacion = consultation.record_consent(
+            owner=AgentId(args.owner), mode="uploaded", actor=profesional
+        )
         linea_autorizacion = load_consent_texts().line(autorizacion)
 
         try:
@@ -987,10 +1107,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
                             )
                             return 1
-                        result = close_from_screen(consultation, borrador, envio)
+                        result = close_from_screen(
+                            consultation, borrador, envio, actor=profesional
+                        )
                     else:
                         try:
-                            result = consultation.review(prepared, reviewer=_review_from_stdin)
+                            result = consultation.review(
+                                prepared, reviewer=_review_from_stdin, actor=profesional
+                            )
                         except (EOFError, KeyboardInterrupt):
                             print(
                                 "aida: revisión incompleta: nada se registra como revisado",
@@ -1031,6 +1155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 moment=datetime.now(),
                 include_model=bool(args.print_model),
                 consent_line=linea_autorizacion,
+            )
+            _audit().record(
+                "exported",
+                actor=profesional,
+                owner=args.owner,
+                data={"file": escritos.summary.name},
             )
             print(f"aida: consulta escrita en {escritos.summary}", file=sys.stderr)
             if escritos.model is not None:
