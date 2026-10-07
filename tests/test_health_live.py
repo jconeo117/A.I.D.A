@@ -277,6 +277,11 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
     session._draft = spy_draft  # type: ignore[assignment]
     session._prepared = MagicMock(spec=PreparedConsultation)
 
+    def esperar_draft(esperado: int, timeout: float = 1.5) -> None:
+        fin = time.time() + timeout
+        while len(draft_calls) < esperado and time.time() < fin:
+            orig_sleep(0.01)
+
     session.start()
     try:
         # 1. Agregamos 3 frases (< 6) y tiempo avanza solo 2s (< 8s)
@@ -290,7 +295,7 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
 
         # 2. Ahora pasa el tiempo de silencio (>= 8s)
         current_time += 8.5
-        time.sleep(0.05)
+        esperar_draft(1)
         # Debe haber redactado por silencio
         assert len(draft_calls) == 1
 
@@ -299,7 +304,7 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
             session._lines.extend([("line", f"Frase extra {i}") for i in range(6)])
             session._last_speech = current_time
         current_time += 0.1
-        time.sleep(0.05)
+        esperar_draft(2)
         # Debe haber redactado de inmediato por cantidad de frases
         assert len(draft_calls) == 2
 
@@ -312,6 +317,7 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
         assert len(draft_calls) == 2
     finally:
         session.stop()
+
 
 
 def test_live_session_set_code_rejected_y_snapshot(tmp_path: Path) -> None:

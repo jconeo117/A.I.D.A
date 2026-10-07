@@ -41,6 +41,7 @@ from aida.arms.health.app import (
     _WORKDIR_PREFIX,
     AppProblem,
     AppReady,
+    AppTools,
     AppWording,
     ReviewDraft,
     _keep_mine,
@@ -946,4 +947,374 @@ def test_keep_mine_anade_campos_faltantes_vacios() -> None:
     # 2. Si todos los campos de mine ya están en la nota, devuelve el borrador intacto
     draft_sin_faltantes = _keep_mine(draft_obj, {"motivo": "Cefalea"}, secciones)
     assert draft_sin_faltantes is draft_obj
+
+
+# ---------------------------------------------------------------------------
+# Plan 78: Ajustes y arranque de la aplicación (§B.4)
+# ---------------------------------------------------------------------------
+
+
+def _dummy_app_tools(
+    *,
+    cloud_source: str | None = "env",
+    check_fn: Callable[[str], tuple[bool, str]] | None = None,
+    save_fn: Callable[[str], None] | None = None,
+    model_name: str = "small",
+    model_total_mb: int = 464,
+    model_available_fn: Callable[[], bool] | None = None,
+    model_bytes_fn: Callable[[], int] | None = None,
+    download_fn: Callable[[], None] | None = None,
+    reader_version_fn: Callable[[], str | None] | None = None,
+    cache_since_fn: Callable[[], float | None] | None = None,
+) -> AppTools:
+    return AppTools(
+        cloud_key_source=lambda: cloud_source,
+        check_cloud_key=check_fn or (lambda k: (True, "200")),
+        save_cloud_key=save_fn or (lambda k: None),
+        model_name=model_name,
+        model_total_mb=model_total_mb,
+        model_available=model_available_fn or (lambda: True),
+        model_bytes=model_bytes_fn or (lambda: 0),
+        download_model=download_fn or (lambda: None),
+        reader_version=reader_version_fn or (lambda: "5.3.0"),
+        cache_key_since=cache_since_fn or (lambda: 1700000000.0),
+    )
+
+
+def test_servidor_sin_tools_sin_enlace_ajustes_y_post_ajustes_404(tmp_path: Path) -> None:
+    """Caso 19 (§B.4): Sin tools, el inicio no lleva el enlace 'Ajustes' y POST /ajustes da 404."""
+    ready = _crear_app_ready(tmp_path)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=None)
+    try:
+        resp = httpx.get(url, timeout=5.0)
+        assert resp.status_code == 200
+        assert 'id="to-settings"' not in resp.text
+        assert 'Ajustes' not in resp.text
+        resp_post = httpx.post(f"{url}/ajustes", timeout=5.0)
+        assert resp_post.status_code == 404
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_con_tools_lleva_enlace_y_post_ajustes_200(tmp_path: Path) -> None:
+    """Caso 20 (§B.4): Con tools, el inicio lo lleva; POST /ajustes desde start da 200
+    y la página es la de Ajustes con los textos del pack.
+    """
+    ready = _crear_app_ready(tmp_path)
+    tools = _dummy_app_tools()
+    wording = load_app_wording()
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools, wording=wording)
+    try:
+        resp = httpx.get(url, timeout=5.0)
+        assert resp.status_code == 200
+        assert 'id="to-settings"' in resp.text
+        assert 'Ajustes' in resp.text
+
+        resp_post = httpx.post(f"{url}/ajustes", timeout=5.0)
+        assert resp_post.status_code == 200
+        assert resp_post.json() == {"ok": True}
+
+        resp_page = httpx.get(url, timeout=5.0)
+        assert resp_page.status_code == 200
+        assert wording["title_settings"] in resp_page.text
+        assert wording["key_title"] in resp_page.text
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_ajustes_en_working_devuelve_409(tmp_path: Path) -> None:
+    """Caso 21 (§B.4, M10): POST /ajustes con la sesión en working da 409 y el estado no cambia."""
+    pytest.importorskip("av", reason="requiere el extra de captura (av)")
+    bloqueo = threading.Event()
+    ready = _crear_app_ready(tmp_path)
+
+    orig_prepare = ready.consultation.prepare
+
+    def blocking_prepare(*args: Any, **kwargs: Any) -> Any:
+        bloqueo.wait(timeout=5.0)
+        return orig_prepare(*args, **kwargs)
+
+    ready.consultation.prepare = blocking_prepare  # type: ignore[method-assign]
+    tools = _dummy_app_tools()
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools)
+    try:
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(_crear_wav_minimo())
+        doc = tmp_path / "d.txt"
+        doc.write_text("historia", encoding="utf-8")
+        httpx.post(f"{url}/audio", content=audio.read_bytes(), timeout=5.0)
+        httpx.post(
+            f"{url}/documento",
+            content=doc.read_bytes(),
+            headers={"X-Filename": "d.txt"},
+            timeout=5.0,
+        )
+        httpx.post(f"{url}/empezar", json={"owner": "doc_01"}, timeout=5.0)
+        time.sleep(0.05)
+
+        resp = httpx.post(f"{url}/ajustes", timeout=5.0)
+        assert resp.status_code == 409
+        assert resp.json() == {"ok": False}
+        assert httpx.get(f"{url}/estado", timeout=5.0).json()["state"] == "working"
+    finally:
+        bloqueo.set()
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_clave_guardar_valida_y_rechaza(tmp_path: Path) -> None:
+    """Caso 22 (§B.4, M11): clave-guardar con check_cloud_key falso (401) no llama a
+    save_cloud_key y responde ok: false, reason: 401. Con 200 la llama con la clave sin espacios.
+    """
+    ready = _crear_app_ready(tmp_path)
+    claves_guardadas: list[str] = []
+
+    def fake_check(key: str) -> tuple[bool, str]:
+        if "bad" in key:
+            return False, "401"
+        return True, "200"
+
+    tools = _dummy_app_tools(check_fn=fake_check, save_fn=claves_guardadas.append)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools)
+    try:
+        httpx.post(f"{url}/ajustes", timeout=5.0)
+        resp_bad = httpx.post(f"{url}/clave-guardar", json={"key": "sk-bad"}, timeout=5.0)
+        assert resp_bad.status_code == 200
+        assert resp_bad.json() == {"ok": False, "reason": "401"}
+        assert len(claves_guardadas) == 0
+
+        resp_good = httpx.post(f"{url}/clave-guardar", json={"key": "  sk-buena  "}, timeout=5.0)
+        assert resp_good.status_code == 200
+        assert resp_good.json() == {"ok": True, "reason": "200"}
+        assert claves_guardadas == ["sk-buena"]
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_clave_probar_nunca_guarda(tmp_path: Path) -> None:
+    """Caso 23 (§B.4): clave-probar nunca llama a save_cloud_key."""
+    ready = _crear_app_ready(tmp_path)
+    claves_guardadas: list[str] = []
+    tools = _dummy_app_tools(
+        check_fn=lambda k: (True, "200"),
+        save_fn=claves_guardadas.append,
+    )
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools)
+    try:
+        httpx.post(f"{url}/ajustes", timeout=5.0)
+        resp = httpx.post(f"{url}/clave-probar", json={"key": "sk-test"}, timeout=5.0)
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "reason": "200"}
+        assert len(claves_guardadas) == 0
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_clave_cuerpo_invalido_da_400(tmp_path: Path) -> None:
+    """Caso 24 (§B.4): Cuerpo vacío o sin key devuelve 400 en rutas de clave."""
+    ready = _crear_app_ready(tmp_path)
+    tools = _dummy_app_tools()
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools)
+    try:
+        httpx.post(f"{url}/ajustes", timeout=5.0)
+        assert httpx.post(f"{url}/clave-probar", content=b"", timeout=5.0).status_code == 400
+        assert httpx.post(f"{url}/clave-probar", json={}, timeout=5.0).status_code == 400
+        assert httpx.post(f"{url}/clave-guardar", content=b"", timeout=5.0).status_code == 400
+        assert (
+            httpx.post(f"{url}/clave-guardar", json={"otra": "x"}, timeout=5.0).status_code == 400
+        )
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_descarga_modelo_ciclo_y_concurrencia_y_fallo(tmp_path: Path) -> None:
+    """Caso 25 (§B.4, M12): POST /modelo lanza download_model una vez; un segundo POST
+    mientras corre no lo lanza otra vez; GET /modelo da running y luego done;
+    si revienta, da failed con mensaje en detail y el servidor sigue respondiendo.
+    """
+    ready = _crear_app_ready(tmp_path)
+    descargas: list[int] = []
+    bloqueo_dl = threading.Event()
+    fallar = False
+
+    def fake_download() -> None:
+        descargas.append(1)
+        if fallar:
+            raise RuntimeError("fallo simulado de descarga")
+        bloqueo_dl.wait(timeout=5.0)
+
+    tools = _dummy_app_tools(download_fn=fake_download)
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, tools=tools)
+    try:
+        httpx.post(f"{url}/ajustes", timeout=5.0)
+        # 1. Primer POST lanza la descarga
+        resp1 = httpx.post(f"{url}/modelo", timeout=5.0)
+        assert resp1.status_code == 200
+        time.sleep(0.05)
+        # 2. Segundo POST mientras corre no lanza otra (M12)
+        resp2 = httpx.post(f"{url}/modelo", timeout=5.0)
+        assert resp2.status_code == 200
+        assert len(descargas) == 1
+
+        # 3. GET /modelo da running
+        estado_dl = httpx.get(f"{url}/modelo", timeout=5.0).json()
+        assert estado_dl["state"] == "running"
+
+        # 4. Desbloqueamos y pasa a done
+        bloqueo_dl.set()
+        time.sleep(0.05)
+        estado_done = httpx.get(f"{url}/modelo", timeout=5.0).json()
+        assert estado_done["state"] == "done"
+
+        # 5. Si revienta -> failed con mensaje en detail y servidor responde
+        fallar = True
+        httpx.post(f"{url}/modelo", timeout=5.0)
+        time.sleep(0.05)
+        estado_fail = httpx.get(f"{url}/modelo", timeout=5.0).json()
+        assert estado_fail["state"] == "failed"
+        assert "fallo simulado de descarga" in estado_fail["detail"]
+        assert httpx.get(f"{url}/estado", timeout=5.0).status_code == 200
+    finally:
+        bloqueo_dl.set()
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_volver_desde_ajustes_reconstruye(tmp_path: Path) -> None:
+    """Caso 26 (§B.4): POST /volver desde Ajustes llama a build otra vez."""
+    ready = _crear_app_ready(tmp_path)
+    build_llamadas = 0
+
+    def builder() -> AppReady | AppProblem:
+        nonlocal build_llamadas
+        build_llamadas += 1
+        return ready
+
+    tools = _dummy_app_tools()
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(builder, tools=tools)
+    try:
+        assert build_llamadas == 1
+        httpx.post(f"{url}/ajustes", timeout=5.0)
+        resp = httpx.post(f"{url}/volver", timeout=5.0)
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert build_llamadas == 2
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_app_problem_model_con_y_sin_tools(tmp_path: Path) -> None:
+    """Caso 27 (§B.4): Un build que devuelve AppProblem('model') con tools muestra
+    la pantalla de primer arranque (problem_model_title, dl-button, to-settings);
+    sin tools muestra la genérica.
+    """
+    wording = load_app_wording()
+    tools = _dummy_app_tools()
+
+    # 1. Con tools: pantalla de primer arranque
+    url1, _tok1, _port1, hilo1, _ = _lanzar_servidor_app(
+        lambda: AppProblem("model"), tools=tools, wording=wording
+    )
+    try:
+        resp1 = httpx.get(url1, timeout=5.0)
+        assert resp1.status_code == 200
+        assert wording["problem_model_title"] in resp1.text
+        assert 'id="dl-button"' in resp1.text
+        assert 'id="to-settings"' in resp1.text
+    finally:
+        httpx.post(f"{url1}/salir", timeout=5.0)
+        hilo1.join(timeout=5.0)
+
+    # 2. Sin tools: pantalla de problema genérica
+    url2, _tok2, _port2, hilo2, _ = _lanzar_servidor_app(
+        lambda: AppProblem("model"), tools=None, wording=wording
+    )
+    try:
+        resp2 = httpx.get(url2, timeout=5.0)
+        assert resp2.status_code == 200
+        assert wording["problem_model_title"] not in resp2.text
+        assert 'id="dl-button"' not in resp2.text
+        assert 'id="to-settings"' not in resp2.text
+    finally:
+        httpx.post(f"{url2}/salir", timeout=5.0)
+        hilo2.join(timeout=5.0)
+
+
+def test_servidor_app_ready_sin_modelo_local_muestra_aviso(tmp_path: Path) -> None:
+    """Caso 28 (§B.4, M15): AppReady(local_model=False) en el inicio muestra check_no_local
+    con clase warn.
+    """
+    ready = _crear_app_ready(tmp_path)
+    ready_sin_local = AppReady(
+        consultation=ready.consultation,
+        reader=ready.reader,
+        log=ready.log,
+        cloud=ready.cloud,
+        writer=ready.writer,
+        live_stt=ready.live_stt,
+        local_model=False,
+    )
+    wording = load_app_wording()
+    url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready_sin_local, wording=wording)
+    try:
+        resp = httpx.get(url, timeout=5.0)
+        assert resp.status_code == 200
+        assert wording["check_no_local"] in resp.text
+        assert 'class="check warn"' in resp.text
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+
+def test_servidor_ajustes_refleja_origenes_clave_y_oculta_descarga(tmp_path: Path) -> None:
+    """Caso 29 (§B.4): Ajustes refleja cloud_key_source ('env' => key_status_env y nota,
+    None => key_status_none); y si model_available es True no hay id="dl-button".
+    """
+    ready = _crear_app_ready(tmp_path)
+    wording = load_app_wording()
+
+    # 1. Origen env y modelo instalado
+    tools_env = _dummy_app_tools(
+        cloud_source="env",
+        model_available_fn=lambda: True,
+    )
+    url1, _tok1, _port1, hilo1, _ = _lanzar_servidor_app(
+        lambda: ready, tools=tools_env, wording=wording
+    )
+    try:
+        httpx.post(f"{url1}/ajustes", timeout=5.0)
+        resp1 = httpx.get(url1, timeout=5.0)
+        assert resp1.status_code == 200
+        assert wording["key_status_env"] in resp1.text
+        assert wording["key_env_note"] in resp1.text
+        assert 'id="dl-button"' not in resp1.text
+    finally:
+        httpx.post(f"{url1}/salir", timeout=5.0)
+        hilo1.join(timeout=5.0)
+
+    # 2. Origen None y modelo ausente
+    tools_none = _dummy_app_tools(
+        cloud_source=None,
+        model_available_fn=lambda: False,
+    )
+    url2, _tok2, _port2, hilo2, _ = _lanzar_servidor_app(
+        lambda: ready, tools=tools_none, wording=wording
+    )
+    try:
+        httpx.post(f"{url2}/ajustes", timeout=5.0)
+        resp2 = httpx.get(url2, timeout=5.0)
+        assert resp2.status_code == 200
+        assert wording["key_status_none"] in resp2.text
+        assert wording["key_env_note"] not in resp2.text
+        assert 'id="dl-button"' in resp2.text
+    finally:
+        httpx.post(f"{url2}/salir", timeout=5.0)
+        hilo2.join(timeout=5.0)
+
 

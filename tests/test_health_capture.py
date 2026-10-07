@@ -34,9 +34,12 @@ from aida.arms.health.capture import (
     ModelUnavailableError,
     NoSpeechError,
     TranscriptionError,
+    build_document_reader,
     build_local_capture,
     capture_diagnosis,
+    download_local_model,
     load_capture_settings,
+    local_model_bytes,
     split_into_sentences,
 )
 from aida.voice.diarize import TranscriptSegment
@@ -812,3 +815,169 @@ def test_capture_diagnosis_modelo_falla_solo_esa_linea_en_false(
     assert len(ciertos) == 5
     assert any("tesseract" in t for t in ciertos)
     assert any("entrada de audio" in t for t in ciertos)
+
+
+# ---------------------------------------------------------------------------
+# Plan 78: Separación de diagnóstico, tesseract y modelo (§B.3)
+# ---------------------------------------------------------------------------
+
+
+def test_capture_diagnosis_sin_microfono_ni_modelo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caso 13 (§B.3, M8, M9): capture_diagnosis(need_microphone=False, need_model=False)
+    con sounddevice simulado para reventar si se le pregunta: ninguna línea habla de la
+    entrada de audio ni del modelo, y sounddevice.query_devices no se llamó.
+    """
+    sd_llamado = False
+
+    def explode(*args: Any, **kwargs: Any) -> Any:
+        nonlocal sd_llamado
+        sd_llamado = True
+        raise AssertionError("sounddevice no debe ser consultado")
+
+    sd_mod = _modulo_doble("sounddevice", query_devices=explode)
+    monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
+
+    diagnosis = capture_diagnosis(need_microphone=False, need_model=False)
+    assert sd_llamado is False
+    assert not any("entrada de audio" in texto for texto, _ in diagnosis)
+    assert not any("modelo" in texto for texto, _ in diagnosis)
+    # Comprueba que tesseract y los módulos sí se reportan
+    assert any("tesseract" in texto for texto, _ in diagnosis)
+    assert any("módulo faster_whisper" in texto for texto, _ in diagnosis)
+
+
+def test_capture_diagnosis_sin_argumentos_comprueba_microfono_y_modelo() -> None:
+    """Caso 14 (§B.3): capture_diagnosis() sin argumentos sigue comprobando
+    micrófono y modelo (utilizado por --check-capture).
+    """
+    diagnosis = capture_diagnosis()
+    assert any("entrada de audio" in texto for texto, _ in diagnosis)
+    assert any("modelo" in texto for texto, _ in diagnosis)
+
+
+def test_build_document_reader_con_y_sin_aida_tesseract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 15 (§B.3): build_document_reader() con AIDA_TESSERACT=/ruta/x deja
+    pytesseract.pytesseract.tesseract_cmd == '/ruta/x'; sin la variable no lo toca.
+    """
+    pytest.importorskip("pytesseract", reason="requiere pytesseract (extra capture)")
+    import pytesseract
+
+    cmd_original = pytesseract.pytesseract.tesseract_cmd
+
+    # Con AIDA_TESSERACT
+    monkeypatch.setenv("AIDA_TESSERACT", "/opt/custom/bin/tesseract")
+    reader = build_document_reader()
+    assert reader is not None
+    assert pytesseract.pytesseract.tesseract_cmd == "/opt/custom/bin/tesseract"
+
+    # Sin variable: no modifica el cmd actual
+    monkeypatch.delenv("AIDA_TESSERACT", raising=False)
+    pytesseract.pytesseract.tesseract_cmd = "/ruta/previa"
+    build_document_reader()
+    assert pytesseract.pytesseract.tesseract_cmd == "/ruta/previa"
+
+    # Restauramos cmd original
+    pytesseract.pytesseract.tesseract_cmd = cmd_original
+
+
+def test_download_local_model_deshabilita_xet_y_pide_modelo_ajustes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 16 (§B.3, M7): download_local_model con faster_whisper.utils.download_model
+    simulado: en el momento de la llamada, huggingface_hub.constants.HF_HUB_DISABLE_XET
+    es True, y se pide el modelo de los ajustes.
+    """
+    pytest.importorskip("faster_whisper", reason="requiere faster_whisper (extra capture)")
+    import faster_whisper.utils as fw_utils
+    from huggingface_hub import constants
+
+    modelo_pedido: str | None = None
+    xet_durante_llamada: bool | None = None
+
+    def fake_download_model(model: str, **kwargs: Any) -> Any:
+        nonlocal modelo_pedido, xet_durante_llamada
+        modelo_pedido = model
+        xet_durante_llamada = getattr(constants, "HF_HUB_DISABLE_XET", False)
+        return "/tmp/fake-model-dir"
+
+    monkeypatch.setattr(fw_utils, "download_model", fake_download_model)
+
+    settings = load_capture_settings()
+    download_local_model(settings)
+
+    assert modelo_pedido == settings.model
+    assert xet_durante_llamada is True
+
+
+def test_local_model_bytes_cuenta_archivos_incluyendo_incomplete_y_no_symlinks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 17 (§B.3): local_model_bytes cuenta los archivos de models--<repo> bajo
+    HF_HUB_CACHE simulado, incluido un .incomplete, y no cuenta enlaces simbólicos.
+    """
+    pytest.importorskip("huggingface_hub", reason="requiere huggingface_hub (extra capture)")
+    from huggingface_hub import constants
+
+    cache_hub = tmp_path / "hub_cache"
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache_hub))
+
+    settings = CaptureSettings(
+        model="tiny",
+        device="cpu",
+        no_speech_threshold=0.6,
+        abbreviations=("dr.",),
+        provider="cloud",
+        cloud_model="whisper-1",
+        cloud_language="es",
+        cloud_base_url="https://api.openai.com",
+        timeout_seconds=30.0,
+        compute_type="int8",
+        connect_timeout_seconds=3.0,
+        cloud_formats=(".wav",),
+        transcription_prompt="prompt",
+        cloud_timestamps=False,
+    )
+
+    from aida.arms.health.capture import _model_repo
+
+    repo_dir_name = f"models--{_model_repo('tiny').replace('/', '--')}"
+    repo_dir = cache_hub / repo_dir_name
+    repo_dir.mkdir(parents=True)
+
+    # Archivo normal de 150 bytes
+    f1 = repo_dir / "model.bin"
+    f1.write_bytes(b"x" * 150)
+
+    # Archivo .incomplete de 250 bytes
+    f2 = repo_dir / "weights.incomplete"
+    f2.write_bytes(b"y" * 250)
+
+    # Symlink a f1 (no debe contarse)
+    link = repo_dir / "model_symlink.bin"
+    link.symlink_to(f1)
+
+    total_bytes = local_model_bytes(settings)
+    assert total_bytes == 400
+
+
+def test_load_capture_settings_lee_model_download_mb_y_cero_si_falta(
+    tmp_path: Path,
+) -> None:
+    """Caso 18 (§B.3): load_capture_settings lee model_download_mb: 464 del pack;
+    un YAML sin la clave da 0.
+    """
+    real = load_capture_settings()
+    assert real.model_download_mb == 464
+
+    yaml_path = tmp_path / "sin_download_mb.yaml"
+    yaml_path.write_text(
+        "model: small\ndevice: cpu\nno_speech_threshold: 0.6\nabbreviations: []\n"
+        "provider: local\ncloud_model: m\ncloud_language: es\ncloud_base_url: http://x\n"
+        "timeout_seconds: 10\nconnect_timeout_seconds: 3.0\ncompute_type: int8\n"
+        "transcription_prompt: 'p'\ncloud_timestamps: false\ncloud_formats: ['.wav']\n",
+        encoding="utf-8",
+    )
+    s = load_capture_settings(yaml_path)
+    assert s.model_download_mb == 0

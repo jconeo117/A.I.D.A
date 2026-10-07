@@ -624,20 +624,25 @@ def test_consultation_sin_audio_ni_history_devuelve_uno_y_menciona_banderas_en_s
     assert "--audio" in captured_history.err
 
 
-def test_consultation_sin_cache_key_devuelve_uno_y_menciona_variable_en_stderr(
+def test_consultation_sin_cache_key_crea_clave_y_falla_por_audio(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """§6.1 Caso 2: `--consultation --audio x --history y` sin AIDA_CONSULT_CACHE_KEY
-    en el entorno devuelve código 1 y menciona la variable por stderr.
+    """§B.5 Caso 34: sin variable y con la carpeta vacía, la clave se crea (cache.key existe)
+    y el fallo ya no es de clave (el audio no existe).
     """
+    pytest.importorskip("faster_whisper", reason="requiere el extra 'capture'")
+    from aida.resources import user_dir
+
     monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
 
-    codigo = main(["--consultation", "--audio", "audio.wav", "--history", "historia.png"])
+    with pytest.raises(FileNotFoundError):
+        main(["--consultation", "--audio", "audio.wav", "--history", "historia.png"])
 
     captured = capsys.readouterr()
-    assert codigo == 1
-    assert "AIDA_CONSULT_CACHE_KEY" in captured.err
+    assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
+    assert (user_dir("config") / "cache.key").is_file()
+
 
 
 def test_consultation_clave_invalida_falla_sin_cargar_catalogo_ni_whisper(
@@ -4197,13 +4202,16 @@ def test_cli_app_llama_a_serve_con_app_build(
 ) -> None:
     """Caso 20 (§B.5): --app llama a serve con un build que es _app_build
     y construye AppReady en un entorno válido."""
-    from aida.arms.health.app import AppReady
+    pytest.importorskip("pytesseract", reason="requiere el extra 'capture'")
+    from aida.arms.health.app import AppReady, AppTools
     from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 
     llamadas_serve: list[dict[str, Any]] = []
 
-    def spy_serve(build: Any, *, settings: Any, wording: Any) -> None:
-        llamadas_serve.append({"build": build, "settings": settings, "wording": wording})
+    def spy_serve(build: Any, *, settings: Any, wording: Any, tools: Any = None) -> None:
+        llamadas_serve.append({
+            "build": build, "settings": settings, "wording": wording, "tools": tools,
+        })
 
     monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
 
@@ -4212,7 +4220,11 @@ def test_cli_app_llama_a_serve_con_app_build(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(
         "aida.arms.health.capture.capture_diagnosis",
-        lambda: (("tesseract", True), ("faster-whisper", True)),
+        lambda **kwargs: (("tesseract", True), ("faster-whisper", True)),
+    )
+    monkeypatch.setattr(
+        "aida.arms.health.capture.local_model_available",
+        lambda: True,
     )
 
     class _DummySTT(LocalWhisperSTT):
@@ -4237,8 +4249,10 @@ def test_cli_app_llama_a_serve_con_app_build(
     codigo = main(["--app"])
     assert codigo == 0
     assert len(llamadas_serve) == 1
+    assert isinstance(llamadas_serve[0]["tools"], AppTools)
     ready = llamadas_serve[0]["build"]()
     assert isinstance(ready, AppReady)
+
 
 
 def test_cli_consultation_sin_extra_captura_falla_con_mensaje_i152(
@@ -4411,6 +4425,209 @@ def test_live_transcriber_configuracion(monkeypatch: pytest.MonkeyPatch) -> None
     assert res is mock_stt
     assert len(spy_calls) == 1
     assert spy_calls[0][1] == "test-api-key"
+
+
+# ---------------------------------------------------------------------------
+# Plan 78: Integración de datos, carpetas y claves en run (§B.5)
+# ---------------------------------------------------------------------------
+
+
+def test_app_build_sin_modelo_local_requiere_nube_o_model_problem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Caso 30 (§B.5, M13): _app_build sin modelo local y sin clave de nube devuelve
+    AppProblem('model'); sin modelo pero con clave devuelve AppReady con local_model=False
+    y sin cargar WhisperModel.
+    """
+    pytest.importorskip("pytesseract", reason="requiere el extra 'capture'")
+    from aida.arms.health.app import AppProblem, AppReady
+    from aida.run import _app_build, _construir_parser
+
+    args = _construir_parser().parse_args(["--app"])
+
+    monkeypatch.setattr(
+        "aida.arms.health.capture.capture_diagnosis", lambda **kwargs: (("diag", True),)
+    )
+    monkeypatch.setattr("aida.run._check_consult_cache_key", lambda: Fernet.generate_key().decode())
+    monkeypatch.setattr("aida.arms.health.capture.local_model_available", lambda: False)
+
+    # 1. Sin clave de nube -> AppProblem('model') (M13)
+    monkeypatch.setattr("aida.run.cloud_key", lambda: None)
+    monkeypatch.setattr("aida.keys.cloud_key", lambda: None)
+    res_problem = _app_build(args)
+    assert isinstance(res_problem, AppProblem)
+    assert res_problem.kind == "model"
+
+    # 2. Con clave de nube -> AppReady con local_model=False y sin llamar a build_local_capture
+    monkeypatch.setattr("aida.run.cloud_key", lambda: "sk-valida")
+    monkeypatch.setattr("aida.keys.cloud_key", lambda: "sk-valida")
+    whisper_cargado = False
+
+    def spy_build_local() -> Any:
+        nonlocal whisper_cargado
+        whisper_cargado = True
+        raise AssertionError("No debe intentar cargar modelo local")
+
+    monkeypatch.setattr("aida.arms.health.capture.build_local_capture", spy_build_local)
+    res_ready = _app_build(args)
+    assert isinstance(res_ready, AppReady)
+    assert res_ready.local_model is False
+    assert whisper_cargado is False
+
+
+def test_app_build_llama_a_capture_diagnosis_sin_micro_ni_modelo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 31 (§B.5): _app_build llama a capture_diagnosis con need_microphone=False,
+    need_model=False.
+    """
+    from aida.run import _app_build, _construir_parser
+
+    args = _construir_parser().parse_args(["--app"])
+    llamadas_diag: list[dict[str, Any]] = []
+
+    def spy_diag(
+        *, need_microphone: bool = True, need_model: bool = True
+    ) -> tuple[tuple[str, bool], ...]:
+        llamadas_diag.append({"need_microphone": need_microphone, "need_model": need_model})
+        return (("test", True),)
+
+    monkeypatch.setattr("aida.arms.health.capture.capture_diagnosis", spy_diag)
+    monkeypatch.setattr("aida.run._check_consult_cache_key", lambda: None)
+
+    _app_build(args)
+    assert len(llamadas_diag) == 1
+    assert llamadas_diag[0] == {"need_microphone": False, "need_model": False}
+
+
+
+def test_transcription_comportamiento_segun_modelo_y_proveedor(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 32 (§B.5): _transcription(None, key) con clave de nube devuelve la nube;
+    sin clave ValueError; con provider: local y un STT devuelve el local sin aviso por stderr.
+    """
+    from aida.arms.health.capture import CaptureSettings, LocalWhisperSTT
+    from aida.arms.health.transcripts import CachedSTT
+    from aida.run import _transcription
+
+    key = Fernet.generate_key().decode()
+
+    # 1. stt=None y con clave de nube -> devuelve nube
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda: CaptureSettings(
+            provider="cloud",
+            cloud_model="whisper-1",
+            cloud_language="es",
+            cloud_base_url="https://api.openai.com",
+            cloud_formats=(".wav",),
+            cloud_timestamps=False,
+            transcription_prompt="prompt",
+            model="small",
+            device="cpu",
+            compute_type="int8",
+            no_speech_threshold=0.6,
+            abbreviations=(),
+            timeout_seconds=30.0,
+            connect_timeout_seconds=3.0,
+        ),
+    )
+    monkeypatch.setattr("aida.run.cloud_key", lambda: "sk-cloud")
+    monkeypatch.setattr("aida.keys.cloud_key", lambda: "sk-cloud")
+    t_nube = _transcription(None, key)
+    assert isinstance(t_nube, CachedSTT)
+
+    # 2. stt=None y sin clave de nube -> ValueError
+    monkeypatch.setattr("aida.run.cloud_key", lambda: None)
+    monkeypatch.setattr("aida.keys.cloud_key", lambda: None)
+    with pytest.raises(ValueError, match="sin modelo local y sin clave de nube"):
+        _transcription(None, key)
+
+
+    # 3. provider: local y con STT -> devuelve local sin aviso por stderr
+    dummy_stt = MagicMock(spec=LocalWhisperSTT)
+    monkeypatch.setattr(
+        "aida.arms.health.capture.load_capture_settings",
+        lambda: CaptureSettings(
+            provider="local",
+            cloud_model="whisper-1",
+            cloud_language="es",
+            cloud_base_url="https://api.openai.com",
+            cloud_formats=(".wav",),
+            cloud_timestamps=False,
+            transcription_prompt="prompt",
+            model="small",
+            device="cpu",
+            compute_type="int8",
+            no_speech_threshold=0.6,
+            abbreviations=(),
+            timeout_seconds=30.0,
+
+            connect_timeout_seconds=3.0,
+        ),
+    )
+    capsys.readouterr()  # limpiar buffer
+    t_local = _transcription(dummy_stt, key)
+    assert isinstance(t_local, CachedSTT)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_main_sin_argumentos_empaquetado_abre_app_o_muestra_uso(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Caso 33 (§B.5, M14): main([]) con sys.frozen = True llama a serve;
+    sin frozen imprime el uso y devuelve 0 sin llamar a serve.
+    """
+    serve_llamado = False
+
+    def spy_serve(*args: Any, **kwargs: Any) -> None:
+        nonlocal serve_llamado
+        serve_llamado = True
+
+    monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
+
+    # 1. Con sys.frozen = True -> llama a serve (M14)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    res_frozen = main([])
+    assert res_frozen == 0
+    assert serve_llamado is True
+
+    # 2. Sin sys.frozen -> imprime uso y devuelve 0 sin llamar a serve
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    serve_llamado = False
+    res_normal = main([])
+    assert res_normal == 0
+    assert serve_llamado is False
+    captured = capsys.readouterr()
+    assert "usage:" in captured.out.lower() or "aida" in captured.out.lower()
+
+
+def test_check_consult_cache_key_invalida_en_archivo_nombra_ruta(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Caso 35 (§B.5): _check_consult_cache_key con cache.key inválida en la carpeta
+    devuelve None y el mensaje nombra la ruta del archivo, no la variable de entorno.
+    """
+    from aida.run import _check_consult_cache_key
+
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("AIDA_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    archivo = config_dir / "cache.key"
+    archivo.write_text("no-es-fernet\n", encoding="utf-8")
+
+    key = _check_consult_cache_key()
+    assert key is None
+    captured = capsys.readouterr()
+    assert str(archivo) in captured.err
+    assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
 
 
 
