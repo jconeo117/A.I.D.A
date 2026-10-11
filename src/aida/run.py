@@ -584,6 +584,8 @@ def _build_consultation(
     from aida.arms.health.metrics import ReviewMetricsStore
     from aida.arms.health.negation import load_negation, load_retraction, load_third_party
     from aida.arms.health.note import load_note_settings
+    from aida.arms.health.sections import load_sections
+    from aida.arms.health.traceability import load_traceability
     from aida.arms.health.wording import default_summary_wording
     from aida.engine.events import EventLog
 
@@ -629,6 +631,8 @@ def _build_consultation(
         consents=ConsentLedger(_consents_path()),
         audit=_audit(),
         consent_texts=load_consent_texts(),
+        traceability=load_traceability(),
+        note_sections=tuple(s for s in load_sections().sections if s.in_note),
     )
 
 
@@ -1097,6 +1101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         from datetime import datetime
 
                         from aida.arms.health.app import close_from_screen, draft_for_screen
+                        from aida.arms.health.consultation import AbsenceUnresolvedError
                         from aida.arms.health.review_ui import (
                             ReviewAbandoned,
                             collect_review,
@@ -1117,15 +1122,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 moment=datetime.now(),
                                 settings=ajustes_ui,
                                 consent_line=linea_autorizacion,
+                                trace=borrador.trace,
                             )
                         except ReviewAbandoned:
                             print(
                                 f"aida: {ajustes_ui.wording.abandoned_text}", file=sys.stderr
                             )
                             return 1
-                        result = close_from_screen(
-                            consultation, borrador, envio, actor=profesional
-                        )
+                        try:
+                            result = close_from_screen(
+                                consultation, borrador, envio, actor=profesional
+                            )
+                        except AbsenceUnresolvedError as exc:
+                            print(f"aida: error: {exc}", file=sys.stderr)
+                            return 1
                     else:
                         try:
                             result = consultation.review(

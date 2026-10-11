@@ -1,0 +1,50 @@
+# «No consta» y trazabilidad (plan 84).
+#
+# Apartados críticos: nunca se copian vacíos. Si la consulta no dice nada de ellos, el
+# motor escribe `not_recorded`, o `see_history` si la historia previa sí trae datos de
+# ese apartado (bajo alguno de los encabezados declarados). Los eligió el usuario:
+# Antecedentes y Medicamentos.
+critical_sections:
+  antecedentes:
+    - "ANTECEDENTES PERSONALES"
+    - "ALERGIAS"
+    - "ANTECEDENTES QUIRURGICOS"
+  medicamentos:
+    - "MEDICACION ACTUAL"
+not_recorded: "No consta."
+see_history: "No se habló en la consulta; consta en la historia del {0}."
+not_recorded_badge: "No se habló de ello"
+
+# Frases de ausencia: una frase de la nota que empiece o contenga alguna de estas
+# necesita un hallazgo negado del mismo apartado que la respalde. Se comparan sin
+# tildes y en minúsculas.
+absence_markers:
+  - "niega"
+  - "no refiere"
+  - "no presenta"
+  - "sin antecedentes"
+  - "sin alergias"
+  - "no tiene"
+  - "no toma"
+  - "no consume"
+  - "no reporta"
+  - "no manifiesta"
+absence_flag: "{0}: en la consulta no se oyó al paciente negarlo. Corríjalo o confírmelo."
+absence_confirm: "Lo confirmo"
+absence_confirmed: "Confirmado"
+absences_pending_singular: "ausencia por revisar"
+absences_pending_plural: "ausencias por revisar"
+absences_unresolved: "Hay ausencias sin respaldo por corregir o confirmar."
+
+# La historia previa en la revisión: de qué fecha es y qué trae, con su fecha.
+date_prefix: "FECHA:"
+profile_title: "Según la historia del {0}"
+profile_title_undated: "Según la historia previa"
+history_date_suffix: "HC {0}"
+profile:
+  - heading: "ALERGIAS"
+    label: "Alergias"
+  - heading: "MEDICACION ACTUAL"
+    label: "Medicación"
+  - heading: "ANTECEDENTES QUIRURGICOS"
+    label: "Cirugías"

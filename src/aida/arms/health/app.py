@@ -34,6 +34,7 @@ from aida.arms.health.audit import AuditLog
 from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
 from aida.arms.health.consent import ConsentRecord, ConsentTexts, load_consent_texts
 from aida.arms.health.consultation import (
+    AbsenceUnresolvedError,
     Consultation,
     ConsultationResult,
     PreparedConsultation,
@@ -55,6 +56,7 @@ from aida.arms.health.review_ui import (
     reviewer_from,
 )
 from aida.arms.health.sections import SectionSpec, load_sections
+from aida.arms.health.traceability import ReviewTrace
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -712,6 +714,8 @@ class ReviewDraft:
     prepared: PreparedConsultation
     note: RenderedNote
     items: tuple[ReviewItem, ...]
+    trace: ReviewTrace | None = None
+    """Las ausencias sin respaldo y la historia con su fecha (plan 84), para la pantalla."""
 
 
 def draft_for_screen(consultation: Consultation, prepared: PreparedConsultation) -> ReviewDraft:
@@ -731,7 +735,17 @@ def draft_for_screen(consultation: Consultation, prepared: PreparedConsultation)
         negated_suffix=wording.negated_suffix,
         review_findings=False,
     )
-    return ReviewDraft(prepared=prepared, note=note, items=items)
+    ajustes = consultation.traceability
+    trace = (
+        ReviewTrace(
+            flags=consultation.absence_flags(prepared, note),
+            profile=consultation.history_profile(prepared),
+            settings=ajustes,
+        )
+        if ajustes is not None
+        else None
+    )
+    return ReviewDraft(prepared=prepared, note=note, items=items, trace=trace)
 
 
 def close_from_screen(
@@ -749,6 +763,7 @@ def close_from_screen(
         note=draft.note,
         note_edits=submission.note_fields,
         actor=actor,
+        absences_confirmed=submission.absences_confirmed,
     )
 
 
@@ -1013,6 +1028,7 @@ def serve(
                 overrides=session.mine,
                 excluded=session.excluded,
                 consent_line=textos.line(session.consent) if session.consent else None,
+                trace=borrador.trace,
             )
         if session.state == "live" and session.live is not None:
             return _live_page(
@@ -1452,9 +1468,14 @@ def serve(
                 if envio is None:
                     self._json(400, {"error": error})
                     return
-                close_from_screen(
-                    ready.consultation, borrador, envio, actor=actor()
-                )
+                try:
+                    close_from_screen(ready.consultation, borrador, envio, actor=actor())
+                except AbsenceUnresolvedError:
+                    # La pantalla no deja llegar aquí; si llega, el servidor manda.
+                    ajustes = ready.consultation.traceability
+                    texto = ajustes.absences_unresolved if ajustes is not None else ""
+                    self._json(400, {"error": texto})
+                    return
                 session.clean()
                 session.state = "start"
             self._json(200, {"ok": True, "next": f"/{token}"})

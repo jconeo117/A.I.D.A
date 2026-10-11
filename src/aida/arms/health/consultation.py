@@ -49,6 +49,15 @@ from aida.arms.health.note import NoteSettings, RenderedNote, build_note
 from aida.arms.health.review import Reviewer, review_encounter, review_note
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import ClinicalSegmenter
+from aida.arms.health.traceability import (
+    AbsenceFlag,
+    HistoryProfile,
+    TraceabilitySettings,
+    absence_flags,
+    complete_note,
+    history_profile,
+    unresolved,
+)
 from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
@@ -114,6 +123,14 @@ class PreparedConsultation:
     encounter: Encounter | None
 
 
+class AbsenceUnresolvedError(ValueError):
+    """Se intentó guardar con ausencias sin respaldo ni confirmar ni corregir."""
+
+    def __init__(self, pending: tuple[AbsenceFlag, ...]) -> None:
+        super().__init__(f"{len(pending)} ausencias sin resolver")
+        self.pending = pending
+
+
 class Consultation:
     def __init__(
         self,
@@ -145,6 +162,8 @@ class Consultation:
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         operator: Callable[[], str] = workstation,
         audit: AuditLog | None = None,
+        traceability: TraceabilitySettings | None = None,
+        note_sections: tuple[SectionSpec, ...] = (),
     ) -> None:
         self._wording = wording
         self._stt = stt
@@ -177,6 +196,10 @@ class Consultation:
         # Sin auditoría declarada, una en memoria: la revisión exige igual a alguien
         # identificado (plan 83); solo no deja archivo.
         self._audit = audit if audit is not None else AuditLog()
+        # «No consta» y el vigilante de ausencias (plan 84). Sin ajustes, la nota sale
+        # como antes: la batería construye consultas sin pack.
+        self._traceability = traceability
+        self._note_sections = note_sections
 
     @property
     def audit(self) -> AuditLog:
@@ -294,13 +317,42 @@ class Consultation:
             raise ValueError("--note requiere --segment")
         if self._note_settings is None:
             raise ValueError("no hay ajustes de nota configurados (note.yaml)")
-        return build_note(
+        note = build_note(
             grouped_sections=prepared.grouped_sections,
             conversation=tuple(prepared.transcript.split("\n")),
             settings=self._note_settings,
             providers=self._note_providers,
             on_fallback=self._note_on_fallback,
         )
+        if self._traceability is None:
+            return note
+        # Aquí y no en quien la pinta: es la única puerta por la que sale una nota, y
+        # así un apartado crítico no sale vacío ni en la pantalla ni en el export.
+        return complete_note(
+            note,
+            sections=self._note_sections,
+            profile=self.history_profile(prepared),
+            settings=self._traceability,
+        )
+
+    @property
+    def traceability(self) -> TraceabilitySettings | None:
+        return self._traceability
+
+    def history_profile(self, prepared: PreparedConsultation) -> HistoryProfile:
+        """Lo que trae la historia previa, con su fecha (plan 84)."""
+        if self._traceability is None or self._history_layout is None:
+            return HistoryProfile(date=None, lines={}, items=())
+        return history_profile(prepared.history, self._history_layout, self._traceability)
+
+    def absence_flags(
+        self, prepared: PreparedConsultation, note: RenderedNote
+    ) -> tuple[AbsenceFlag, ...]:
+        """Las ausencias de la nota sin respaldo en lo dicho. Una sola puerta: la usan la
+        pantalla para avisar y `review` para no guardar con alguna pendiente."""
+        if self._traceability is None or prepared.encounter is None:
+            return ()
+        return absence_flags(note, prepared.encounter.findings, self._traceability)
 
     def prepare(
         self,
@@ -607,6 +659,7 @@ class Consultation:
         note: RenderedNote | None = None,
         note_edits: Mapping[str, str] | None = None,
         actor: Professional | None,
+        absences_confirmed: frozenset[str] = frozenset(),
     ) -> ConsultationResult:
         """Solo tras contestar a todo se guarda. El resumen —la lista de
         hechos y códigos confirmados— sale sin modelo: eso es lo que el
@@ -627,6 +680,14 @@ class Consultation:
             raise ValueError("revisión activa pero no hay segmentador configurado")
         if (note is None) != (note_edits is None):
             raise ValueError("la nota y sus ediciones van juntas, o ninguna de las dos")
+        # Una ausencia sin respaldo que sigue en el texto final y nadie confirmó no se
+        # guarda (plan 84). Se comprueba aquí, en la única puerta de la revisión, y no
+        # solo en la pantalla: la pantalla ayuda, no decide.
+        marcas = self.absence_flags(prepared, note) if note is not None else ()
+        if note is not None and note_edits is not None:
+            pendientes = unresolved(marcas, note_edits, absences_confirmed)
+            if pendientes:
+                raise AbsenceUnresolvedError(pendientes)
         section_template = self._wording.section_template
         confirmed_template = self._wording.confirmed_template
         no_confirmed_text = self._wording.no_confirmed_text
@@ -697,6 +758,10 @@ class Consultation:
             "codes_confirmed": ",".join(confirmados),
             "codes_removed": ",".join(c for c in propuestos if c not in confirmados),
         }
+        datos["absences_flagged"] = ",".join(sorted(m.id for m in marcas))
+        datos["absences_confirmed"] = ",".join(
+            sorted(m.id for m in marcas if m.id in absences_confirmed)
+        )
         if note is not None and reviewed_note is not None:
             textos["draft"] = {spec.section_id: texto for spec, texto in note.fields}
             textos["final"] = {spec.section_id: texto for spec, texto in reviewed_note.fields}

@@ -32,6 +32,7 @@ from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import Answer, ItemKind, Reviewer, ReviewItem, Verdict
 from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import is_interrogative
+from aida.arms.health.traceability import AbsenceFlag, ReviewTrace
 from aida.resources import data_root
 
 _RAIZ = data_root()
@@ -154,6 +155,9 @@ class ReviewSubmission:
     note_fields: Mapping[str, str] = field(default_factory=dict)
     """El texto entregado de cada campo, por `section_id`. Qué cambió lo decide
     `review_note`, no la página."""
+    absences_confirmed: frozenset[str] = frozenset()
+    """Las ausencias sin respaldo que el profesional confirmó (plan 84). Si basta o no
+    lo decide `Consultation.review`, no la página."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,21 +183,71 @@ def history_view(path: Path | None, text: str) -> HistoryView:
 
 
 def _render_field(
-    spec: SectionSpec, texto: str, propio: str | None, wording: ReviewWording, copiar: str
+    spec: SectionSpec,
+    texto: str,
+    propio: str | None,
+    wording: ReviewWording,
+    copiar: str,
+    trace: ReviewTrace | None = None,
+    not_recorded: bool = False,
 ) -> str:
     e = html.escape
     visible = propio if propio is not None else texto
     editado = propio is not None and propio.strip() != texto.strip()
-    clases = "field" + ("" if visible.strip() else " empty") + (" edited" if editado else "")
+    marcas = [f for f in (trace.flags if trace else ()) if f.section_id == spec.section_id]
+    clases = (
+        "field"
+        + ("" if visible.strip() else " empty")
+        + (" edited" if editado else "")
+        + (" flagged" if marcas else "")
+    )
+    # Lo que escribió el motor porque no se habló de ello (plan 84), dicho en el campo.
+    del_motor = (
+        f'<span class="by-aida">{e(trace.settings.not_recorded_badge)}</span>'
+        if trace is not None and not_recorded
+        else ""
+    )
+    avisos = "".join(_render_absence(m, trace) for m in marcas if trace is not None)
     return (
         f'<article class="{clases}" data-field-id="{e(spec.section_id)}" '
         f'data-original="{e(texto)}">'
-        f'<div class="field-head"><h3>{e(spec.label)}</h3>'
+        f'<div class="field-head"><h3>{e(spec.label)}</h3>{del_motor}'
         f'<span class="badge"{"" if editado else " hidden"}>{e(wording.edited_label)}</span>'
         f"{copiar}</div>"
         f'<textarea placeholder="{e(wording.empty_field_placeholder)}">{e(visible)}</textarea>'
-        f"</article>"
+        f"{avisos}</article>"
     )
+
+
+def _render_absence(flag: AbsenceFlag, trace: ReviewTrace) -> str:
+    """El aviso de una ausencia sin respaldo: la frase entre comillas y el botón para
+    confirmarla. La frase va en `data-sentence`: si el profesional la corrige, el aviso
+    se resuelve solo."""
+    e = html.escape
+    frase = flag.sentence.rstrip(" .")
+    texto = e(trace.settings.absence_flag).replace("{0}", f"<q>{e(frase)}</q>")
+    return (
+        f'<div class="absence" data-flag="{e(flag.id)}" data-sentence="{e(flag.sentence)}">'
+        f'<svg><use href="#i-alert"/></svg><div>{texto}'
+        f'<div class="absence-actions"><button type="button" class="absence-ok">'
+        f"{e(trace.settings.absence_confirm)}</button></div></div></div>"
+    )
+
+
+def _render_prior(trace: ReviewTrace) -> str:
+    """«Según la historia del …»: lo que la historia previa trae, con su fecha, al lado
+    de la nota y sin tocarla (plan 84)."""
+    if not trace.profile.items:
+        return ""
+    e = html.escape
+    fecha = trace.profile.date
+    ajustes = trace.settings
+    titulo = ajustes.profile_title.format(fecha) if fecha else ajustes.profile_title_undated
+    filas = "".join(
+        f"<dt>{e(etiqueta)}</dt><dd>{e(' · '.join(lineas))}</dd>"
+        for etiqueta, lineas in trace.profile.items
+    )
+    return f'<div class="prior"><h4>{e(titulo)}</h4><dl>{filas}</dl></div>'
 
 
 def _render_page(
@@ -209,6 +263,7 @@ def _render_page(
     overrides: Mapping[str, str] | None = None,
     excluded: frozenset[str] = frozenset(),
     consent_line: str | None = None,
+    trace: ReviewTrace | None = None,
 ) -> str:
     """La nota al centro, que es lo que se copia; a la derecha, en pestañas, lo que
     se consulta para corregirla. Cada código empieza incluido: el profesional quita
@@ -235,14 +290,17 @@ def _render_page(
     # compara al guardar (`review_note`).
     propios = overrides or {}
     campos = "\n".join(
-        _render_field(spec, texto, propios.get(spec.section_id), wording, copiar)
+        _render_field(
+            spec, texto, propios.get(spec.section_id), wording, copiar, trace,
+            spec.section_id in note.not_recorded,
+        )
         for spec, texto in note.fields
     )
     codigos = "\n".join(
         f'<article class="code{" off" if m.diagnostic.code in excluded else ""}" '
         f'data-ref="{e(m.diagnostic.code)}" data-origin="{m.origin.value}">'
         f'<div class="code-head"><span class="code-id">{e(m.diagnostic.code)}</span>'
-        f'<span class="origin">{e(origenes[m.origin])}</span>'
+        f'<span class="origin">{e(origenes[m.origin])}{_history_date(m.origin, trace)}</span>'
         f'<button type="button" class="switch" role="switch" '
         f'aria-checked="{"false" if m.diagnostic.code in excluded else "true"}" '
         f'aria-label="{e(wording.include_label)}"></button></div>'
@@ -256,7 +314,8 @@ def _render_page(
         for m in matches
     )
     leyenda = (
-        f'<div class="legend"><span>{e(wording.origin_today_label)}</span>'
+        (_render_prior(trace) if trace is not None else "")
+        + f'<div class="legend"><span>{e(wording.origin_today_label)}</span>'
         f'<span class="h">{e(wording.origin_history_label)}</span>'
         f'<span class="b">{e(wording.origin_both_label)}</span></div>'
     )
@@ -288,6 +347,18 @@ def _render_page(
     )
     marca = wording.brand[:1]
 
+    # Las ausencias por revisar (plan 84): el contador, y los textos que usa la página.
+    pendientes = (
+        '\n  <span class="stat warn" id="stat-absence"></span>' if trace and trace.flags else ""
+    )
+    textos_traza = json.dumps(
+        {
+            "pending_singular": trace.settings.absences_pending_singular if trace else "",
+            "pending_plural": trace.settings.absences_pending_plural if trace else "",
+            "confirmed": trace.settings.absence_confirmed if trace else "",
+        },
+        ensure_ascii=False,
+    )
     # Con qué autorización se grabó (plan 82): a la vista de quien revisa, que es quien
     # firma. Sin autorización no se llega aquí desde la aplicación ni desde la CLI.
     autorizacion = (
@@ -304,10 +375,11 @@ def _render_page(
 <style>
 {_CSS}
 {_CSS_CONSENT_STAT}
+{_CSS_TRACE}
 </style>
 </head>
 <body>
-{_ICONS_REVIEW}
+{_ICONS_REVIEW_TRACE}
 <header class="top">
   <div class="mark"><i>{e(marca)}</i>{e(wording.brand)}</div>
   <div class="sep"></div>
@@ -355,7 +427,7 @@ def _render_page(
   </section>
 </main>
 <div class="done-panel" id="save-ok" hidden>{e(wording.saved_text)}</div>
-<footer class="bar">
+<footer class="bar">{pendientes}
   <span class="stat" id="stat-edited"></span>
   <span class="stat" id="stat-codes"></span>{autorizacion}
   <span class="error" id="save-error" hidden></span>
@@ -367,7 +439,9 @@ def _render_page(
 const TOKEN = {json.dumps(token)};
 const WORDING = {wording_json};
 const STARTED_AT = Date.now();
+const TRACE = {textos_traza};
 {_JS}
+{_JS_TRACE}
 </script>
 </body>
 </html>
@@ -654,6 +728,87 @@ _ICONS_CONSENT = """  <symbol id="i-shield" viewBox="0 0 24 24">
 
 _ICONS_REVIEW = _ICONS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
 
+_CSS_TRACE = """/* La 84: ausencias sin respaldo, «No consta» y la historia con su fecha */
+.field.flagged::before { background: var(--warn); }
+.absence {
+  margin: 0 1rem .9rem 1.15rem; padding: .65rem .8rem; border-radius: 10px;
+  background: var(--warn-soft); color: #78350f; font-size: .85rem; line-height: 1.5;
+  display: flex; gap: .6rem; align-items: flex-start;
+}
+.absence svg { width: 16px; height: 16px; flex: none; margin-top: .15rem; color: var(--warn); }
+.absence q { font-weight: 650; quotes: "«" "»"; }
+.absence .absence-actions { display: flex; gap: .5rem; margin-top: .5rem; }
+.absence button {
+  font: inherit; font-size: .8rem; font-weight: 600; padding: .3rem .7rem; border-radius: 8px;
+  border: 1px solid rgba(180, 83, 9, .35); background: #fff; color: #78350f; cursor: pointer;
+}
+.absence.ok { background: var(--surface-2); color: var(--muted); }
+.absence.ok svg { color: var(--brand); }
+.by-aida {
+  font-size: .72rem; font-weight: 600; color: var(--muted); background: var(--surface-2);
+  border-radius: 999px; padding: .1rem .55rem;
+}
+.prior {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  padding: .85rem 1rem; margin-bottom: .9rem; box-shadow: var(--e1);
+}
+.prior h4 { margin: 0 0 .5rem; font-size: .8rem; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--history); }
+.prior dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .3rem .8rem;
+  font-size: .86rem; }
+.prior dt { color: var(--muted); }
+.prior dd { margin: 0; color: var(--ink); }
+.origin small { font-weight: 500; opacity: .8; }
+.btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }"""
+
+_ICONS_TRACE = """  <symbol id="i-alert" viewBox="0 0 24 24">
+    <path d="M12 9v4M12 17h.01"/>
+    <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>
+  </symbol>"""
+
+_ICONS_REVIEW_TRACE = _ICONS_REVIEW.replace("</defs></svg>", _ICONS_TRACE + "\n</defs></svg>")
+
+
+def _history_date(origin: CodeOrigin, trace: ReviewTrace | None) -> str:
+    """La fecha de la historia en los códigos que vienen de ella (plan 84)."""
+    if trace is None or not trace.profile.date or origin is CodeOrigin.TODAY:
+        return ""
+    sufijo = trace.settings.history_date_suffix.format(trace.profile.date)
+    return f" <small>· {html.escape(sufijo)}</small>"
+
+
+_JS_TRACE = """
+// Las ausencias sin respaldo (plan 84): una está pendiente mientras no se confirme y
+// su frase siga en el campo. Con alguna pendiente no se guarda; `review` lo vuelve a
+// comprobar igual.
+function plain(s) {
+  return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+}
+function absences() {
+  const box = document.getElementById('stat-absence');
+  if (!box) { return; }
+  let pending = 0;
+  document.querySelectorAll('.absence').forEach(a => {
+    const text = a.closest('.field').querySelector('textarea').value;
+    const open = !a.dataset.confirmed && plain(text).includes(plain(a.dataset.sentence));
+    a.classList.toggle('ok', !open);
+    if (open) { pending += 1; }
+    a.closest('.field').classList.toggle('flagged', open);
+  });
+  box.classList.toggle('warn', pending > 0);
+  setStat(box, pending, pending === 1 ? TRACE.pending_singular : TRACE.pending_plural);
+  document.getElementById('save').disabled = pending > 0;
+}
+document.querySelectorAll('.absence-ok').forEach(b => b.addEventListener('click', () => {
+  const a = b.closest('.absence');
+  a.dataset.confirmed = '1';
+  b.closest('.absence-actions').replaceChildren(document.createTextNode(TRACE.confirmed));
+  absences();
+}));
+document.querySelectorAll('.field textarea').forEach(t => t.addEventListener('input', absences));
+absences();
+"""
+
 _JS = """
 const grow = t => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; };
 
@@ -748,6 +903,8 @@ document.getElementById('save').addEventListener('click', () => {
       elapsed_seconds: (Date.now() - STARTED_AT) / 1000,
       answers: answers,
       note: note,
+      absences_confirmed: Array.from(
+        document.querySelectorAll('.absence[data-confirmed]'), a => a.dataset.flag),
     }),
   }).then(resp => {
     if (resp.ok) {
@@ -826,11 +983,15 @@ def parse_submission(
     declarado = payload.get("elapsed_seconds")
     if not isinstance(declarado, int | float) or isinstance(declarado, bool) or declarado < 0:
         return None, "elapsed_seconds inválido"
+    confirmadas = payload.get("absences_confirmed", [])
+    if not isinstance(confirmadas, list) or not all(isinstance(c, str) for c in confirmadas):
+        return None, "absences_confirmed inválido"
     return (
         ReviewSubmission(
             answers=answers,
             elapsed_seconds=min(float(declarado), measured_elapsed),
             note_fields=dict(campos),
+            absences_confirmed=frozenset(confirmadas),
         ),
         "",
     )
@@ -854,6 +1015,7 @@ def collect_review(
     open_browser: Callable[[str], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     consent_line: str | None = None,
+    trace: ReviewTrace | None = None,
 ) -> ReviewSubmission:
     """Levanta la pantalla, espera a que se guarde y devuelve lo contestado.
 
@@ -875,6 +1037,7 @@ def collect_review(
     page = _render_page(
         matches, note, transcript, history, owner, moment, wording, token,
         consent_line=consent_line,
+        trace=trace,
     )
 
     class Handler(BaseHTTPRequestHandler):

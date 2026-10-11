@@ -100,6 +100,10 @@ class RenderedNote:
     """Los `section_id` de los campos que el profesional reescribió en la pantalla,
     en el orden de `fields`. Lo lee `render_note_markdown` para que la procedencia
     no firme como del modelo un texto que escribió otra persona."""
+    not_recorded: tuple[str, ...] = ()
+    """Los `section_id` que escribió el motor («No consta», plan 84) porque la consulta
+    no dijo nada de un apartado crítico. La revisión lo dice, y el vigilante de
+    ausencias no los mira: no son una afirmación del modelo."""
 
 
 def _literal_fallback(
