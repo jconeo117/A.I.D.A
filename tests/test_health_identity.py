@@ -1413,7 +1413,7 @@ def test_app_actor_sin_profesional_en_estado_que_registra_falla_sin_auditar(
         def __set__(self, obj: Any, val: Any) -> None:
             pass
 
-    _Session.professional = _FlapProf(prof_real)  # type: ignore[assignment]
+    monkeypatch.setattr(_Session, "professional", _FlapProf(prof_real))
 
     audit_lines_before = len(list(audit.lines()))
     record_calls.clear()
