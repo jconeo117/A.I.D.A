@@ -49,7 +49,7 @@ def test_version_imprime_la_version_declarada_y_devuelve_cero(
 
 
 def _crear_perfil_cli(monkeypatch: pytest.MonkeyPatch, pin: str = "1234") -> str:
-    from aida.arms.health.identity import ProfileStore
+    from aida.platform.identity import ProfileStore
     from aida.resources import user_dir
 
     store = ProfileStore(user_dir("config") / "profiles.json")
@@ -4392,8 +4392,8 @@ def test_cli_app_llama_a_serve_con_app_build(
     assert codigo == 0
     assert len(llamadas_serve) == 1
     assert isinstance(llamadas_serve[0]["tools"], AppTools)
-    from aida.arms.health.audit import AuditLog
-    from aida.arms.health.identity import ProfileStore
+    from aida.platform.audit import AuditLog
+    from aida.platform.identity import ProfileStore
 
     assert isinstance(llamadas_serve[0]["profiles"], ProfileStore)
     assert isinstance(llamadas_serve[0]["audit"], AuditLog)

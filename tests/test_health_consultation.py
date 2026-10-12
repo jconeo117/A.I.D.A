@@ -27,7 +27,6 @@ from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation, SummaryWording
 from aida.arms.health.extract import build_health_extractor
 from aida.arms.health.history import HistoryLayout, HistorySection
-from aida.arms.health.identity import Professional
 from aida.arms.health.lexicon import Lexicon
 from aida.arms.health.match import CatalogIndex, CodableText, build_index
 from aida.arms.health.metrics import ReviewMetricsStore, review_record
@@ -46,6 +45,7 @@ from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.engine.ports import CognitionProvider
+from aida.platform.identity import Professional
 from aida.voice.diarize import (
     DiarizationError,
     LocalPyannoteDiarizer,

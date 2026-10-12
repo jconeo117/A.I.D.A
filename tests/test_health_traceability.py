@@ -41,7 +41,6 @@ import yaml
 from cryptography.fernet import Fernet
 
 from aida import run
-from aida.arms.health.audit import AuditLog
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import (
@@ -50,7 +49,6 @@ from aida.arms.health.consultation import (
     PreparedConsultation,
 )
 from aida.arms.health.history import HistoryLayout, HistorySection
-from aida.arms.health.identity import Professional
 from aida.arms.health.match import CodeOrigin, MatchedCode, build_index
 from aida.arms.health.model import ClinicalFinding, Encounter
 from aida.arms.health.note import RenderedNote, load_note_settings
@@ -75,6 +73,8 @@ from aida.arms.health.traceability import (
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
+from aida.platform.audit import AuditLog
+from aida.platform.identity import Professional
 from tests.conftest import _ORIGINAL_HANDLE_REQUEST
 from tests.test_health_app import (
     _crear_app_ready,

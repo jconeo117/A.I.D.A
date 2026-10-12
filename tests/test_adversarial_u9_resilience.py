@@ -39,11 +39,11 @@ from aida.arms.health.capture import (
 )
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, SummaryWording
-from aida.arms.health.identity import Professional
 from aida.arms.health.match import CatalogIndex, build_index
 from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ports import CognitionProvider
+from aida.platform.identity import Professional
 
 _ACTOR = Professional(id="t", name="Prueba", registry="0")
 

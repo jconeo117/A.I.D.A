@@ -29,7 +29,6 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation
 from aida.arms.health.extract import build_health_extractor
-from aida.arms.health.identity import Professional
 from aida.arms.health.live import LiveSession, line_kind
 from aida.arms.health.match import build_index
 from aida.arms.health.note import ClinicalNote, RenderedNote
@@ -38,6 +37,7 @@ from aida.arms.health.segment import ClinicalSegmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import EventLog
 from aida.engine.ontology import AgentId
+from aida.platform.identity import Professional
 from aida.voice.diarize import TranscriptSegment
 
 _ACTOR = Professional(id="t", name="Prueba", registry="0")

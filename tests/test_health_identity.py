@@ -38,6 +38,7 @@ import threading
 import time
 import wave
 from collections.abc import Callable
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -54,19 +55,12 @@ from aida.arms.health.app import (
     load_app_wording,
     serve,
 )
-from aida.arms.health.audit import KINDS, AuditLog
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consent import ConsentLedger, load_consent_texts
 from aida.arms.health.consultation import Consultation
 from aida.arms.health.extract import build_health_extractor
-from aida.arms.health.identity import (
-    IdentityError,
-    Professional,
-    ProfileStore,
-    valid_pin,
-)
 from aida.arms.health.match import build_index
 from aida.arms.health.note import load_note_settings
 from aida.arms.health.review import Answer, Verdict
@@ -75,7 +69,15 @@ from aida.arms.health.segment import build_health_segmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
-from aida.ledger import GENESIS, ChainedLog, chain_digest
+from aida.platform.audit import KINDS, AuditLog
+from aida.platform.identity import (
+    IdentityError,
+    Professional,
+    ProfileStore,
+    valid_pin,
+)
+from aida.platform.ledger import GENESIS, ChainedLog, chain_digest
+from aida.platform.license import License, LicenseState
 from aida.resources import user_dir
 from aida.run import _audit, main
 from aida.voice.diarize import TranscriptSegment
@@ -199,6 +201,17 @@ def _lanzar_servidor_identity(
         "audit": audit,
         "tools": tools,
     }
+    if "license" not in serve_kwargs:
+        serve_kwargs["license"] = LicenseState(
+            status="valid",
+            license=License(
+                id="t",
+                client="t",
+                arms=("health",),
+                issued=date.today(),
+                expires=date.today() + timedelta(days=365),
+            ),
+        )
     hilo = threading.Thread(
         target=serve,
         args=(build_fn,),

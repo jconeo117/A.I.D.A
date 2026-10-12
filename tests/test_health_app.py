@@ -26,6 +26,7 @@ import time
 import uuid
 import wave
 from collections.abc import Callable
+from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -57,7 +58,6 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT, Transcr
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation
 from aida.arms.health.extract import build_health_extractor
-from aida.arms.health.identity import Professional, ProfileStore
 from aida.arms.health.live import LiveTranscriber
 from aida.arms.health.match import build_index
 from aida.arms.health.metrics import ReviewMetricsStore
@@ -69,6 +69,8 @@ from aida.arms.health.segment import build_health_segmenter
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
+from aida.platform.identity import Professional, ProfileStore
+from aida.platform.license import License, LicenseState
 from aida.voice.diarize import TranscriptSegment
 from tests.conftest import _ORIGINAL_HANDLE_REQUEST
 
@@ -172,6 +174,17 @@ def _lanzar_servidor_app(
     }
     if "profiles" not in serve_kwargs:
         serve_kwargs["profiles"] = ProfileStore(Path(tempfile.mkdtemp()) / "profiles.json")
+    if "license" not in serve_kwargs:
+        serve_kwargs["license"] = LicenseState(
+            status="valid",
+            license=License(
+                id="t",
+                client="t",
+                arms=("health",),
+                issued=date.today(),
+                expires=date.today() + timedelta(days=365),
+            ),
+        )
     hilo = threading.Thread(
         target=serve,
         args=(build_fn,),
