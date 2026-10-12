@@ -21,8 +21,9 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
-from aida.arms.health.identity import IdentityError, Professional
-from aida.ledger import ChainedLog
+from aida.platform.identity import IdentityError, Professional
+from aida.platform.identity import workstation as _puesto
+from aida.platform.ledger import ChainedLog
 
 KINDS = (
     "session_opened",
@@ -36,6 +37,7 @@ KINDS = (
     "draft_generated",
     "review_saved",
     "exported",
+    "license_loaded",
 )
 
 
@@ -49,13 +51,11 @@ class AuditLog:
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         workstation: Callable[[], str] | None = None,
     ) -> None:
-        from aida.arms.health.consent import workstation as puesto
-
         self._chain = ChainedLog(path)
         self._blobs = blobs
         self._key = key
         self._now = now
-        self._workstation = workstation if workstation is not None else puesto
+        self._workstation = workstation if workstation is not None else _puesto
 
     def record(
         self,

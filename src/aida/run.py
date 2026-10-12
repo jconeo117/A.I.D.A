@@ -32,14 +32,16 @@ from aida.resources import data_root, user_dir
 
 if TYPE_CHECKING:
     from aida.arms.health.app import AppProblem, AppReady, AppTools
-    from aida.arms.health.audit import AuditLog
     from aida.arms.health.capture import CaptureSettings
     from aida.arms.health.consultation import Consultation
-    from aida.arms.health.identity import Professional, ProfileStore
     from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
     from aida.arms.health.transcription import CloudWhisperSTT
     from aida.engine.events import EventLog
+    from aida.platform.arms import ArmManifest
+    from aida.platform.audit import AuditLog
+    from aida.platform.identity import Professional, ProfileStore
+    from aida.platform.license import LicenseState
 
 USO_BREVE = "aida: asistente determinista. Usa --version o --pack <ruta> [--explain]."
 """Sin argumentos no hay nada que decidir todavía: se informa y se sale con éxito."""
@@ -257,7 +259,7 @@ def _consents_path() -> Path:
 
 
 def _profiles() -> ProfileStore:
-    from aida.arms.health.identity import ProfileStore
+    from aida.platform.identity import ProfileStore
 
     return ProfileStore(user_dir("config") / "profiles.json")
 
@@ -266,8 +268,8 @@ def _profiles() -> ProfileStore:
 def _audit() -> AuditLog:
     """Una sola auditoría por proceso: la comparten la consulta y la aplicación, y dos
     instancias sobre el mismo archivo encadenarían cada una por su lado."""
-    from aida.arms.health.audit import AuditLog
     from aida.keys import cache_key
+    from aida.platform.audit import AuditLog
 
     clave = cache_key()
     return AuditLog(
@@ -282,7 +284,7 @@ def _identify(profile: str) -> Professional | None:
     por qué, si no se pudo."""
     import getpass
 
-    from aida.arms.health.identity import IdentityError
+    from aida.platform.identity import IdentityError
 
     perfiles = _profiles()
     elegido = next(
@@ -296,6 +298,69 @@ def _identify(profile: str) -> Professional | None:
     except IdentityError as exc:
         print(f"aida: error: no se pudo identificar ({exc.code})", file=sys.stderr)
         return None
+
+
+def _license_path() -> Path:
+    """Un solo sitio para la ruta: la escribe la aplicación al cargar una licencia y la
+    leen la aplicación y la CLI."""
+    return user_dir("config") / "licencia.json"
+
+
+def _require_license(arm_id: str) -> bool:
+    """La CLI tampoco empieza trabajo sin licencia (plan 100): si no, sería el atajo.
+    `False` tras decir por qué."""
+    from aida.platform.license import load_license
+
+    estado = load_license(_license_path())
+    if estado.allows(arm_id):
+        return True
+    print(
+        f"aida: error: la licencia no permite empezar trabajo en {arm_id!r} ({estado.status})",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _open_platform(args: argparse.Namespace) -> int:
+    """`--app`: la plataforma decide qué brazo abrir. Hoy, el primero que la licencia
+    trae (vigente o caducado: caducado se abre en solo lectura); si no trae ninguno, el
+    primero instalado, para que se pueda cargar una licencia. Con más de un brazo
+    licenciado, aquí irá el lanzador (102)."""
+    from aida.platform.arms import discover
+    from aida.platform.license import load_license
+
+    estado = load_license(_license_path())
+    brazos = discover()
+    if not brazos:
+        print("aida: error: no hay ningún brazo instalado", file=sys.stderr)
+        return 1
+    licenciados = [b for b in brazos if estado.licensed(b.id)]
+    elegido = licenciados[0] if licenciados else brazos[0]
+    abrir = elegido.entry()
+    resultado: int = abrir(args, estado, elegido)
+    return resultado
+
+
+def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManifest) -> int:
+    """El punto de entrada del brazo de salud (`packs/health/arm.yaml`). Vive aquí porque
+    la aplicación de salud se monta con piezas de esta CLI; pasará al brazo cuando llegue
+    el segundo (102)."""
+    from aida.arms.health.app import load_app_wording, serve
+    from aida.arms.health.review_ui import load_ui_settings
+
+    serve(
+        lambda: _app_build(args),
+        settings=load_ui_settings(),
+        wording=load_app_wording(),
+        tools=_app_tools(),
+        profiles=_profiles(),
+        audit=_audit(),
+        license=license,
+        license_path=_license_path(),
+        arm_id=arm.id,
+        arm_name=arm.name,
+    )
+    return 0
 
 
 def _require_actor(args: argparse.Namespace) -> Professional | None:
@@ -835,6 +900,8 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
         if not args.consent:
             print(_FALTA_CONSENT, file=sys.stderr)
             return 1
+        if not _require_license("health"):
+            return 1
         # Lo que se registre en esta sesión de voz tiene autor (`I-156`).
         profesional_voz = _require_actor(args)
         if profesional_voz is None:
@@ -964,18 +1031,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if all(correcto for _texto, correcto in lineas) else 1
 
     if args.app:
-        from aida.arms.health.app import load_app_wording, serve
-        from aida.arms.health.review_ui import load_ui_settings
-
-        serve(
-            lambda: _app_build(args),
-            settings=load_ui_settings(),
-            wording=load_app_wording(),
-            tools=_app_tools(),
-            profiles=_profiles(),
-            audit=_audit(),
-        )
-        return 0
+        return _open_platform(args)
 
     if args.consents:
         return _list_consents()
@@ -1074,6 +1130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # comprueba aquí, después de las demás banderas: un error de uso se dice antes.
         if not args.consent:
             print(_FALTA_CONSENT, file=sys.stderr)
+            return 1
+        if not _require_license("health"):
             return 1
         # Todo lo que esta ejecución registre tiene un mismo autor (`I-156`): la
         # autorización, la revisión y el export.

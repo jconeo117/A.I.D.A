@@ -11,7 +11,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
-from aida.arms.health.audit import AuditLog
 from aida.arms.health.cache import ConsultationCache
 from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.consent import (
@@ -21,11 +20,9 @@ from aida.arms.health.consent import (
     ConsentRecord,
     ConsentTexts,
     load_consent_texts,
-    workstation,
 )
 from aida.arms.health.extract import ClinicalExtractor
 from aida.arms.health.history import HistoryLayout, codable_history_lines
-from aida.arms.health.identity import IdentityError, Professional
 from aida.arms.health.lexicon import Lexicon, clinical_terms
 from aida.arms.health.match import (
     CatalogIndex,
@@ -62,6 +59,8 @@ from aida.cognition.briefing import SpokenReply
 from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.engine.ports import CognitionProvider
+from aida.platform.audit import AuditLog
+from aida.platform.identity import IdentityError, Professional, workstation
 from aida.voice.diarize import DiarizationError, LocalPyannoteDiarizer, merge_by_speaker
 
 

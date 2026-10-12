@@ -10,6 +10,7 @@ Ningún texto de la pantalla vive aquí: sale de `ui.yaml`, sección `app` (`I-0
 
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import re
@@ -20,7 +21,7 @@ import time
 import webbrowser
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
@@ -30,7 +31,6 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 
 from aida.arms.health.audio import to_wav
-from aida.arms.health.audit import AuditLog
 from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
 from aida.arms.health.consent import ConsentRecord, ConsentTexts, load_consent_texts
 from aida.arms.health.consultation import (
@@ -39,7 +39,6 @@ from aida.arms.health.consultation import (
     ConsultationResult,
     PreparedConsultation,
 )
-from aida.arms.health.identity import IdentityError, Professional, ProfileStore
 from aida.arms.health.live import LiveSession, LiveTranscriber, line_kind
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import ReviewItem, review_items
@@ -60,6 +59,9 @@ from aida.arms.health.traceability import ReviewTrace
 from aida.arms.health.wording import default_summary_wording
 from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
+from aida.platform.audit import AuditLog
+from aida.platform.identity import IdentityError, Professional, ProfileStore
+from aida.platform.license import LicenseState, read_license
 from aida.resources import data_root, user_dir
 
 _RAIZ = data_root()
@@ -228,6 +230,29 @@ _CLAVES_APP = (
     "identity_unknown",
     "identity_bad_pin",
     "identity_wait",
+    "license_title",
+    "license_client",
+    "license_arms",
+    "license_until",
+    "license_load",
+    "license_status_valid",
+    "license_status_expiring",
+    "license_status_expired",
+    "license_status_missing",
+    "license_status_invalid",
+    "license_warn",
+    "license_missing_title",
+    "license_missing_lead",
+    "license_rejected",
+    "readonly_title",
+    "readonly_lead",
+    "readonly_item_consents",
+    "readonly_item_audit",
+    "readonly_item_texts",
+    "readonly_hint",
+    "pill_readonly",
+    "license_readonly",
+    "go_settings",
 )
 
 _CSS_EXTRA = """.mode {
@@ -538,7 +563,33 @@ _ICONS_IDENTITY = """  <symbol id="i-user" viewBox="0 0 24 24">
   </symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>"""
 
-_ICONS_ALL = _ICONS_PAGES.replace("</defs></svg>", _ICONS_IDENTITY + "\n</defs></svg>")
+_CSS_LICENSE = """/* La 100: la licencia */
+.head-warn {
+  display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .75rem;
+  border-radius: 999px;
+  font-size: .78rem; font-weight: 600; color: #fde68a; background: rgba(180, 83, 9, .28);
+  border: 1px solid rgba(253, 230, 138, .25);
+}
+.head-warn[hidden] { display: none; }
+.license-row {
+  display: grid; grid-template-columns: auto 1fr; gap: .3rem .9rem; margin-top: .7rem;
+  font-size: .86rem;
+}
+.license-row dt { color: var(--muted); }
+.license-row dd { margin: 0; }
+.readonly-list {
+  margin: .9rem 0 0; padding: 0; list-style: none; display: grid; gap: .45rem; font-size: .88rem;
+}
+.readonly-list li { display: flex; gap: .5rem; align-items: center; color: var(--ink-2); }
+.readonly-list svg { width: 16px; height: 16px; color: var(--brand); }"""
+
+_ICONS_LICENSE = """  <symbol id="i-badge" viewBox="0 0 24 24">
+    <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5Z"/><path d="M9 12h6M12 9v6"/>
+  </symbol>"""
+
+_ICONS_ALL = _ICONS_PAGES.replace(
+    "</defs></svg>", _ICONS_IDENTITY + "\n" + _ICONS_LICENSE + "\n</defs></svg>"
+)
 
 _CSS_LIVE = """/* La 77b: la consulta en vivo */
 .field-state {
@@ -857,6 +908,11 @@ def serve(
     consent_texts: ConsentTexts | None = None,
     profiles: ProfileStore | None = None,
     audit: AuditLog | None = None,
+    license: LicenseState,
+    license_path: Path | None = None,
+    arm_id: str = "health",
+    arm_name: str = "",
+    today: Callable[[], date] = date.today,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
@@ -880,6 +936,8 @@ def serve(
         profiles if profiles is not None else ProfileStore(user_dir("config") / "profiles.json")
     )
     auditoria = audit if audit is not None else AuditLog()
+    # La licencia vigente en esta sesión; cambia si se carga otra desde la aplicación.
+    licencia = [license]
     inactividad = wording.idle_lock_minutes * 60
     session = _Session(ready=build())
     # Nadie entra sin decir quién es (plan 83): lo primero es elegir perfil, o crear el
@@ -1040,6 +1098,16 @@ def serve(
             return _settings_page(
                 wording, marca, token, tools, momento, session.download,
                 profiles=perfiles.professionals(), professional=session.professional,
+                license=licencia[0],
+            )
+        # La licencia (plan 100): sin una válida, la pantalla de cargarla; caducada, solo
+        # lectura. Las dos, después de identificarse: cargar una licencia es un registro
+        # y tiene autor.
+        if licencia[0].status in ("missing", "invalid"):
+            return _license_page(wording, marca, token, licencia[0], momento, session.professional)
+        if not licencia[0].allows(arm_id) and session.state == "start":
+            return _readonly_page(
+                wording, marca, token, licencia[0], momento, session.professional, arm_name
             )
         if session.state == "problem" and session.problem is not None:
             if session.problem.kind == "model" and tools is not None:
@@ -1049,7 +1117,7 @@ def serve(
             return _start_page(
                 wording, marca, token, session.ready, momento,
                 settings=tools is not None, consent=textos,
-                professional=session.professional,
+                professional=session.professional, license=licencia[0],
             )
         return _problem_page(wording, marca, token, AppProblem("processing"), momento)
 
@@ -1149,6 +1217,8 @@ def serve(
                 self._live(accion)
             elif accion == "terminar":
                 self._finish()
+            elif accion == "licencia":
+                self._license()
             elif accion in ("ajustes", "clave-probar", "clave-guardar", "modelo") and tools:
                 self._settings(accion, tools)
             elif accion == "volver":
@@ -1378,6 +1448,33 @@ def serve(
                     session.document = destino
             self._json(200, {"ok": True})
 
+        def _license(self) -> None:
+            """Cargar una licencia: se verifica antes de guardarla, y una que no sirve
+            no pisa la que había. Queda en la auditoría, con quien la cargó."""
+            datos = self._body() or b""
+            estado = read_license(datos.decode("utf-8", "replace"), today=today())
+            if not estado.licensed(arm_id) or estado.status == "expired":
+                self._json(400, {"error": wording["license_rejected"].format(estado.status)})
+                return
+            with lock:
+                destino = license_path if license_path is not None else _license_file()
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                destino.write_bytes(datos)
+                with contextlib.suppress(OSError):
+                    destino.chmod(0o600)
+                licencia[0] = estado
+                assert estado.license is not None
+                auditoria.record(
+                    "license_loaded",
+                    actor=actor(),
+                    data={
+                        "license": estado.license.id,
+                        "client": estado.license.client,
+                        "expires": estado.license.expires.isoformat(),
+                    },
+                )
+            self._json(200, {"ok": True})
+
         def _start(self) -> None:
             datos = self._body() or b"{}"
             try:
@@ -1395,6 +1492,11 @@ def serve(
                     return
                 if not isinstance(owner, str) or not valid_owner(owner):
                     self._json(400, {"error": wording["owner_invalid"]})
+                    return
+                # Caducada o sin licencia, nada nuevo (plan 100). Una sola puerta: todo lo
+                # que empieza trabajo en la aplicación pasa por aquí.
+                if not licencia[0].allows(arm_id):
+                    self._json(403, {"error": wording["license_readonly"]})
                     return
                 grabando = pedido.get("recorded") is True
                 if session.document is None or (session.audio is None and not grabando):
@@ -1512,7 +1614,10 @@ def _page(
         estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}"
         iconos = _ICONS_LIVE
     else:
-        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}\n{_CSS_IDENTITY}"
+        estilo = (
+            f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}\n{_CSS_IDENTITY}\n"
+            f"{_CSS_LICENSE}"
+        )
         iconos = _ICONS_ALL
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -1554,6 +1659,7 @@ def _start_page(
     settings: bool = False,
     consent: ConsentTexts | None = None,
     professional: Professional | None = None,
+    license: LicenseState | None = None,
 ) -> str:
     e = html.escape
     textos = consent if consent is not None else load_consent_texts()
@@ -1642,7 +1748,7 @@ def _start_page(
         f"const TOKEN = {json.dumps(token)};\nconst W = {palabras};\n"
         f"const CONSENT = {autorizaciones};\n{_JS_START}"
     )
-    enlace = _user_chip(w, professional)
+    enlace = _license_chip(w, license) + _user_chip(w, professional)
     script += _identity_script(w)
     if settings:
         enlace += (
@@ -1870,6 +1976,7 @@ def _settings_page(
     *,
     profiles: Sequence[Professional] = (),
     professional: Professional | None = None,
+    license: LicenseState | None = None,
 ) -> str:
     """Cada tarjeta se consulta al abrir: es una pantalla que se visita poco, y lo que
     enseña tiene que ser lo que hay ahora, no lo que había al arrancar."""
@@ -1937,6 +2044,7 @@ def _settings_page(
           <p>{e(w["reader_text"])}</p>
         </div>
         {_profiles_block(w, profiles)}
+        {_license_block(w, license)}
         <div class="setting">
           <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
             <span class="status ok">{e(w["cipher_ok"])}</span></div>
@@ -1953,8 +2061,8 @@ def _settings_page(
     return _page(
         brand=brand, title=w["title_settings"], place=w["header_place"], moment=moment,
         pill=w["pill_ready"], pill_class="pill", body=body,
-        script=_settings_script(w, token, tools) + _identity_script(w),
-        head_link=_user_chip(w, professional),
+        script=_settings_script(w, token, tools) + _identity_script(w) + _JS_LICENSE,
+        head_link=_license_chip(w, license) + _user_chip(w, professional),
     )
 
 
@@ -2317,6 +2425,158 @@ document.getElementById('other').addEventListener('click', async () => {
   await post('/cambiar');
   location.reload();
 });
+"""
+
+
+def _license_file() -> Path:
+    return user_dir("config") / "licencia.json"
+
+
+def _license_chip(w: AppWording, license: LicenseState | None) -> str:
+    """El aviso de caducidad en la cabecera, desde `WARN_DAYS` antes (plan 100)."""
+    if license is None or license.status != "expiring":
+        return ""
+    e = html.escape
+    return (
+        f'\n    <span class="head-warn"><svg style="width:14px;height:14px">'
+        f'<use href="#i-alert"/></svg>{e(w["license_warn"].format(license.days_left))}</span>'
+    )
+
+
+def _license_status(w: AppWording, license: LicenseState) -> tuple[str, str]:
+    if license.status == "valid":
+        return "ok", w["license_status_valid"]
+    if license.status == "expiring":
+        return "warn", w["license_status_expiring"].format(license.days_left)
+    return "fail", w[f"license_status_{license.status}"]
+
+
+def _license_block(w: AppWording, license: LicenseState | None) -> str:
+    """La tarjeta «Licencia» de Ajustes: quién, qué brazos y hasta cuándo, y cargar
+    otra."""
+    if license is None:
+        return ""
+    e = html.escape
+    clase, estado = _license_status(w, license)
+    filas = ""
+    if license.license is not None:
+        lic = license.license
+        filas = (
+            f'<dl class="license-row"><dt>{e(w["license_client"])}</dt><dd>{e(lic.client)}</dd>'
+            f'<dt>{e(w["license_arms"])}</dt><dd>{e(" · ".join(lic.arms))}</dd>'
+            f'<dt>{e(w["license_until"])}</dt><dd>{lic.expires.strftime("%d/%m/%Y")}</dd></dl>'
+        )
+    return f"""<div class="setting">
+          <div class="setting-head"><svg><use href="#i-badge"/></svg>
+            <h3>{e(w["license_title"])}</h3>
+            <span class="status {clase}">{e(estado)}</span></div>
+          {filas}
+          <div class="key-row"><label class="btn">{e(w["license_load"])}
+            <input type="file" id="license-file" accept=".json,application/json" hidden>
+          </label></div>
+          <div class="result fail" id="license-error" hidden><svg><use href="#i-alert"/></svg>
+            <span></span></div>
+        </div>"""
+
+
+def _license_page(
+    w: AppWording,
+    brand: str,
+    token: str,
+    license: LicenseState,
+    moment: datetime,
+    professional: Professional | None,
+) -> str:
+    """Sin una licencia válida no se empieza nada: se carga aquí."""
+    e = html.escape
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <div class="alert-head">
+        <span class="alert-icon warn"><svg><use href="#i-badge"/></svg></span>
+        <div><h2>{e(w["license_missing_title"])}</h2>
+        <p class="lead" style="margin:.2rem 0 0">{e(w["license_missing_lead"])}</p></div>
+      </div>
+      {_license_block(w, license)}
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="exit">
+      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
+  </footer>
+</section>"""
+    return _page(
+        brand=brand, title=w["license_title"], place=w["header_place"], moment=moment,
+        pill=w["pill_problem"], pill_class="pill fallback", body=body,
+        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LICENSE}{_JS_EXIT}",
+        head_link=_user_chip(w, professional),
+    )
+
+
+def _readonly_page(
+    w: AppWording,
+    brand: str,
+    token: str,
+    license: LicenseState,
+    moment: datetime,
+    professional: Professional | None,
+    arm_name: str,
+) -> str:
+    """Caducada: nada nuevo, y nada de lo registrado se pierde (debate de la 100)."""
+    e = html.escape
+    caducidad = license.license.expires.strftime("%d/%m/%Y") if license.license else ""
+    items = "".join(
+        f'<li><svg><use href="#i-check"/></svg>{e(w[clave])}</li>'
+        for clave in ("readonly_item_consents", "readonly_item_audit", "readonly_item_texts")
+    )
+    body = f"""<section class="screen">
+  <div class="stage">
+    <div class="panel-card">
+      <div class="alert-head">
+        <span class="alert-icon warn"><svg><use href="#i-badge"/></svg></span>
+        <div><h2>{e(w["readonly_title"].format(arm_name, caducidad))}</h2>
+        <p class="lead" style="margin:.2rem 0 0">{e(w["readonly_lead"])}</p></div>
+      </div>
+      <ul class="readonly-list">{items}</ul>
+      <p class="hint">{e(w["readonly_hint"])}</p>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="exit">
+      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
+    <button type="button" class="btn btn-primary" id="to-settings">
+      <svg><use href="#i-gear"/></svg>{e(w["go_settings"])}</button>
+  </footer>
+</section>"""
+    return _page(
+        brand=brand, title=arm_name, place=w["header_place"], moment=moment,
+        pill=w["pill_readonly"], pill_class="pill fallback", body=body,
+        script=f"const TOKEN = {json.dumps(token)};\n{_JS_TO_SETTINGS}{_JS_EXIT}",
+        head_link=_user_chip(w, professional),
+    )
+
+
+_JS_EXIT = """
+document.getElementById('exit').addEventListener('click', async () => {
+  await fetch('/' + TOKEN + '/salir', { method: 'POST', body: '' });
+  document.body.textContent = '';
+});
+"""
+
+_JS_LICENSE = """
+// Cargar la licencia (plan 100): el archivo va tal cual; quien lo valida es AIDA.
+const licenseFile = document.getElementById('license-file');
+if (licenseFile) {
+  licenseFile.addEventListener('change', async () => {
+    const file = licenseFile.files[0];
+    if (!file) { return; }
+    const r = await fetch('/' + TOKEN + '/licencia', { method: 'POST', body: await file.text() });
+    if (r.ok) { location.reload(); return; }
+    const box = document.getElementById('license-error');
+    box.querySelector('span').textContent = (await r.json()).error;
+    box.hidden = false;
+  });
+}
 """
 
 

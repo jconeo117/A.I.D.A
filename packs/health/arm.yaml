@@ -1,0 +1,8 @@
+# El brazo de salud, descrito para la plataforma (plan 100). Lo lee `aida.platform.arms`.
+id: "health"
+name: "Consultorio"
+description: "Graba o sube la consulta, revisa la nota y los códigos, y cópialos a la historia."
+version: "1"
+# Dónde se abre. Hoy vive en la CLI porque la aplicación de salud se monta con sus
+# piezas (`run.py`); pasará al propio brazo cuando llegue el segundo (102).
+app: "aida.run:launch_health"

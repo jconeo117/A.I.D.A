@@ -15,10 +15,12 @@ se lleve el archivo y lo ataque con tiempo. Para eso hace falta el llavero del s
 from __future__ import annotations
 
 import contextlib
+import getpass
 import hashlib
 import hmac
 import json
 import secrets
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -156,3 +158,8 @@ class ProfileStore:
             raise IdentityError("bad_pin" if fallos else "wait")
         self._fallos.pop(profile_id, None)
         return Professional(id=profile_id, name=perfil["name"], registry=perfil["registry"])
+
+def workstation() -> str:
+    """El usuario del sistema y el nombre del equipo: dónde se hizo algo. Acompaña al
+    profesional en cada registro (planes 82 a 83b), no lo sustituye."""
+    return f"{getpass.getuser()}@{socket.gethostname()}"

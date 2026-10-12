@@ -36,3 +36,54 @@ def _sin_claves_del_equipo(
     esperan «sin clave de nube» la encontraran; y sin clave de caché, AIDA la
     crearía en la carpeta real."""
     monkeypatch.setenv("AIDA_CONFIG_DIR", str(tmp_path_factory.mktemp("config-aida")))
+
+
+@pytest.fixture(scope="session")
+def _par_de_prueba() -> tuple[str, object]:
+    """Una pareja Ed25519 solo para la batería (plan 100): la clave pública de verdad
+    la escribe `tools/licencias.py keygen`, y no hay modo desarrollo que la salte."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    privada = Ed25519PrivateKey.generate()
+    publica = privada.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    return base64.b64encode(publica).decode(), privada
+
+
+@pytest.fixture(autouse=True)
+def _licencia_de_prueba(
+    monkeypatch: pytest.MonkeyPatch,
+    _sin_claves_del_equipo: None,
+    _par_de_prueba: tuple[str, object],
+) -> None:
+    """Toda la batería corre con una licencia de salud vigente, firmada con la clave de
+    prueba, en la carpeta de configuración temporal del test. Un test que quiera otra
+    situación (sin licencia, caducada) la sobrescribe."""
+    import base64
+    import json
+    import os
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    from aida.platform import _public_key
+    from aida.platform.license import canonical
+
+    publica, privada = _par_de_prueba
+    monkeypatch.setattr(_public_key, "PUBLIC_KEY", publica)
+    payload: dict[str, object] = {
+        "id": "prueba",
+        "client": "Batería",
+        "arms": ["health"],
+        "issued": date.today().isoformat(),
+        "expires": (date.today() + timedelta(days=365)).isoformat(),
+    }
+    firma = privada.sign(canonical(payload))  # type: ignore[attr-defined]
+    destino = Path(os.environ["AIDA_CONFIG_DIR"]) / "licencia.json"
+    destino.write_text(
+        json.dumps({"payload": payload, "signature": base64.b64encode(firma).decode()}),
+        encoding="utf-8",
+    )

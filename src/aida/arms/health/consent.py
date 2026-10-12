@@ -19,10 +19,8 @@ que una manipulación parcial no pase desapercibida.
 
 from __future__ import annotations
 
-import getpass
 import hashlib
 import json
-import socket
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -31,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from aida.engine.ontology import AgentId
-from aida.ledger import ChainedLog
+from aida.platform.ledger import ChainedLog
 from aida.resources import data_root
 
 _RAIZ = data_root()
@@ -113,8 +111,6 @@ class ConsentRecord:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
 
 
-def workstation() -> str:
-    return f"{getpass.getuser()}@{socket.gethostname()}"
 
 
 class ConsentLedger:
