@@ -36,9 +36,12 @@ def user_dir(kind: str) -> Path:
     siga encontrando sus claves y su caché. En Windows, `%APPDATA%` para la
     configuración y `%LOCALAPPDATA%` para lo demás, que es donde el sistema espera
     cada cosa. `AIDA_CONFIG_DIR` pisa la de configuración: la batería lo usa para no
-    leer nunca las claves reales de quien la corre."""
+    leer nunca las claves reales de quien la corre. `AIDA_DATA_DIR` pisa la de datos: la
+    batería lo usa para no tocar nunca las grabaciones reales (87)."""
     if kind == "config" and os.environ.get("AIDA_CONFIG_DIR"):
         return Path(os.environ["AIDA_CONFIG_DIR"])
+    if kind == "data" and os.environ.get("AIDA_DATA_DIR"):
+        return Path(os.environ["AIDA_DATA_DIR"])
     casa = Path.home()
     if sys.platform == "win32":
         roaming = Path(os.environ.get("APPDATA") or casa / "AppData" / "Roaming")

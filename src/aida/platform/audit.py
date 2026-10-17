@@ -39,6 +39,9 @@ KINDS = (
     "exported",
     "license_loaded",
     "texts_purged",
+    "recording_recovered",
+    "recording_discarded",
+    "recording_purged",
 )
 
 

@@ -17,6 +17,7 @@ escrito hasta ese momento sigue siendo legible.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -67,14 +68,27 @@ class SealedAppender:
             return
         with self._path.open("ab") as archivo:
             archivo.write(self._fernet.encrypt(data) + b"\n")
+            archivo.flush()
+            # Un apagón pierde como mucho el último trozo (87).
+            os.fsync(archivo.fileno())
 
 
 def read_appended(path: Path, key: bytes) -> bytes:
-    """Todo lo añadido, descifrado y en orden."""
+    """Todo lo añadido, descifrado y en orden. Una última línea que no descifra es un
+    corte a mitad de escritura: se ignora, y lo anterior sigue siendo la grabación. Una
+    rota en medio no es un corte sino daño, y sigue reventando."""
+    from cryptography.fernet import InvalidToken
+
     fernet = _fernet(key)
-    return b"".join(
-        fernet.decrypt(linea) for linea in path.read_bytes().splitlines() if linea.strip()
-    )
+    lineas = [linea for linea in path.read_bytes().splitlines() if linea.strip()]
+    partes: list[bytes] = []
+    for indice, linea in enumerate(lineas):
+        try:
+            partes.append(fernet.decrypt(linea))
+        except InvalidToken:
+            if indice != len(lineas) - 1:
+                raise
+    return b"".join(partes)
 
 
 def plain_name(path: Path) -> str:

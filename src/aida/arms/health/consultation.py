@@ -283,6 +283,14 @@ class Consultation:
             raise ConsentMissingError("la autorización no está en el registro")
         return consent
 
+    def consent_by_digest(self, digest: str) -> ConsentRecord | None:
+        """La autorización de una grabación interrumpida, por su huella (87). `None` si ya
+        no está: entonces no se recupera."""
+        for record in self._consents.records():
+            if record.digest == digest:
+                return record
+        return None
+
     def run(
         self,
         *,

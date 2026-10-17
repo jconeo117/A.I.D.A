@@ -13,3 +13,7 @@ audit_texts_days: 5475
 # el resumen, para la consulta en curso.
 transcripts_hours: 24
 summaries_hours: 1
+
+# Una grabación interrumpida (AIDA se cerró grabando), si nadie la recupera (plan 87).
+# Pasado el plazo se borra al abrir sesión, con su línea en la auditoría.
+interrupted_hours: 72

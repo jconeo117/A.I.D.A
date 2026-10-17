@@ -22,6 +22,7 @@ class Retention:
     audit_texts_days: int
     transcripts_hours: int
     summaries_hours: int
+    interrupted_hours: int
 
 
 def load_retention(path: Path | None = None) -> Retention:
@@ -29,7 +30,12 @@ def load_retention(path: Path | None = None) -> Retention:
     descubre cuando ya se ha guardado de más."""
     ruta = path if path is not None else _POR_DEFECTO
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
-    claves = ("audit_texts_days", "transcripts_hours", "summaries_hours")
+    claves = (
+        "audit_texts_days",
+        "transcripts_hours",
+        "summaries_hours",
+        "interrupted_hours",
+    )
     if not isinstance(raw, dict) or not all(
         isinstance(raw.get(c), int) and not isinstance(raw.get(c), bool) and raw[c] > 0
         for c in claves

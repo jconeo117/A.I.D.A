@@ -356,6 +356,7 @@ def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManif
     from aida.arms.health.retention import load_retention
     from aida.arms.health.review_ui import load_ui_settings
 
+    retencion = load_retention()
     serve(
         lambda: _app_build(args),
         settings=load_ui_settings(),
@@ -367,7 +368,8 @@ def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManif
         license_path=_license_path(),
         arm_id=arm.id,
         arm_name=arm.name,
-        retention_days=load_retention().audit_texts_days,
+        retention_days=retencion.audit_texts_days,
+        interrupted_hours=retencion.interrupted_hours,
     )
     return 0
 

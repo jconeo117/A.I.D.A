@@ -48,6 +48,15 @@ from aida.arms.health.live import (
     recording_wav,
 )
 from aida.arms.health.note import RenderedNote
+from aida.arms.health.recovery import (
+    Interrupted,
+    expired,
+    interrupted,
+    purge_unmarked,
+    sessions_root,
+    started_at,
+    write_marker,
+)
 from aida.arms.health.review import ReviewItem, review_items
 from aida.arms.health.review_ui import (
     _CSS,
@@ -88,9 +97,10 @@ un dato que haya que proteger."""
 _MAX_BYTES = 512 * 1024 * 1024
 
 _WORKDIR_PREFIX = "aida-sesion-"
-"""Las sesiones viven en carpetas con este prefijo, y al arrancar se borran las que
-hayan quedado: si el proceso murió sin cerrarse, el audio en claro de la última
-sesión seguiría en disco."""
+"""Las sesiones viven en carpetas con este prefijo, dentro de `sessions_root()`. Al
+arrancar se borran las que no tienen marcador (subidas a medias), y las grabaciones que
+sí lo tienen se conservan para recuperarlas (87). Las que quedaran en `/tmp` de
+versiones anteriores se siguen borrando: nadie las va a recuperar."""
 
 _CLAVES_APP = (
     "header_place",
@@ -132,6 +142,15 @@ _CLAVES_APP = (
     "where_fallback",
     "where_reader",
     "where_here",
+    "recover_title",
+    "recover_meta",
+    "recover_expiry",
+    "recover_go",
+    "recover_drop",
+    "recover_confirm",
+    "recover_back",
+    "recover_yes",
+    "recover_gone",
     "missing_owner",
     "missing_audio",
     "missing_document",
@@ -556,7 +575,28 @@ _CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
 .where li { display: flex; justify-content: space-between; gap: 1rem; }
 .where span { color: var(--muted); }
 .where b { font-weight: 600; }
-.where .off { color: var(--muted); text-decoration: line-through; }"""
+.where .off { color: var(--muted); text-decoration: line-through; }
+
+/* La 87: una grabación interrumpida, solo para quien la grabó */
+.recover {
+  margin: 0 0 1.25rem; padding: 1rem 1.1rem; border-radius: var(--r-s);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+  background: color-mix(in srgb, var(--warn-soft) 55%, white);
+}
+.recover-head { display: flex; align-items: center; gap: .6rem; }
+.recover-head svg { width: 18px; height: 18px; color: var(--warn); flex: none; }
+.recover-head strong { font-size: .95rem; }
+.recover-meta {
+  margin: .45rem 0 0 1.75rem; font-size: .88rem; color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.recover-meta b { color: var(--ink); }
+.recover-expiry { margin: .25rem 0 0 1.75rem; font-size: .8rem; color: var(--muted); }
+.recover-actions { display: flex; gap: .6rem; margin: .85rem 0 0 1.75rem; flex-wrap: wrap; }
+.recover-confirm { margin: .85rem 0 0 1.75rem; font-size: .88rem; color: var(--ink-2); }
+.recover[hidden], .recover-confirm[hidden], .recover-actions[hidden] { display: none; }
+.btn-danger { color: var(--off); border-color: color-mix(in srgb, var(--off) 35%, var(--line)); }
+.btn-danger:hover { color: white; background: var(--off); border-color: var(--off); }"""
 
 _ICONS_PAGES = _ICONS_SETTINGS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
 
@@ -979,12 +1019,17 @@ def serve(
     arm_name: str = "",
     today: Callable[[], date] = date.today,
     retention_days: int | None = None,
+    interrupted_hours: int | None = None,
+    sessions: Path | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
+    raiz = sessions if sessions is not None else sessions_root()
+    raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
     purge_plain_leftovers()
     for resto in sorted(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*")):
         shutil.rmtree(resto, ignore_errors=True)
+    purge_unmarked(raiz)
     secciones: Sequence[SectionSpec] = (
         note_sections
         if note_sections is not None
@@ -1011,13 +1056,44 @@ def serve(
             return ready.seal_key
         return efimera
 
+    def pendiente() -> Interrupted | None:
+        """La grabación interrumpida más antigua de quien atiende, si la hay (87)."""
+        ready = session.ready
+        if (
+            session.professional is None
+            or not isinstance(ready, AppReady)
+            or ready.seal_key is None
+        ):
+            return None
+        for interrumpida in interrupted(raiz, ready.seal_key):
+            if interrumpida.professional == session.professional.id:
+                return interrumpida
+        return None
+
     def retener(actor: Professional) -> None:
-        """Con el candado tomado, al abrir sesión: borra los textos de auditoría que
-        cumplieron su plazo (plan 85a), firmado por quien abre."""
-        if retention_days is None:
+        """Con el candado tomado, al abrir sesión: borra lo que cumplió su plazo, firmado
+        por quien abre. Los textos de auditoría (85a) y las grabaciones interrumpidas
+        (87), de cualquiera: lo que nadie recuperó no se queda para siempre."""
+        ahora = now().astimezone()
+        if retention_days is not None:
+            auditoria.purge_texts(ahora - timedelta(days=retention_days), actor=actor)
+        if interrupted_hours is None:
             return
-        corte = datetime.now().astimezone() - timedelta(days=retention_days)
-        auditoria.purge_texts(corte, actor=actor)
+        llave = clave(session.ready if isinstance(session.ready, AppReady) else None)
+        legibles = {i.folder: i for i in interrupted(raiz, llave)}
+        for carpeta in expired(raiz, llave, interrupted_hours, ahora):
+            empieza, legible = started_at(carpeta, llave)
+            duenio = legibles.get(carpeta)
+            shutil.rmtree(carpeta, ignore_errors=True)
+            auditoria.record(
+                "recording_purged",
+                actor=actor,
+                owner=duenio.owner if duenio is not None else "",
+                data={
+                    "started": empieza.isoformat(timespec="seconds"),
+                    "readable": "true" if legible else "false",
+                },
+            )
 
     # La licencia vigente en esta sesión; cambia si se carga otra desde la aplicación.
     licencia = [license]
@@ -1201,10 +1277,17 @@ def serve(
                 return _model_page(wording, marca, token, tools, momento, session.download)
             return _problem_page(wording, marca, token, session.problem, momento)
         if isinstance(session.ready, AppReady):
+            pending = pendiente()
             return _start_page(
                 wording, marca, token, session.ready, momento,
                 settings=tools is not None, consent=textos,
                 professional=session.professional, license=licencia[0],
+                pending=pending,
+                pending_expires=(
+                    pending.expires(interrupted_hours)
+                    if pending is not None and interrupted_hours is not None
+                    else None
+                ),
             )
         return _problem_page(wording, marca, token, AppProblem("processing"), momento)
 
@@ -1298,6 +1381,8 @@ def serve(
                 self._upload(accion)
             elif accion == "empezar":
                 self._start()
+            elif accion in ("recuperar", "descartar"):
+                self._recover(accion)
             elif accion == "guardar":
                 self._save()
             elif accion in ("pcm", "campo", "codigo", "pausa"):
@@ -1541,7 +1626,9 @@ def serve(
                     self._json(409, {"error": "hay una sesión en curso"})
                     return
                 if session.workdir is None:
-                    session.workdir = Path(tempfile.mkdtemp(prefix=_WORKDIR_PREFIX))
+                    session.workdir = Path(
+                        tempfile.mkdtemp(prefix=_WORKDIR_PREFIX, dir=raiz)
+                    )
                 sufijo = _safe_suffix(self.headers.get("X-Name", ""))
                 # Sellado al escribirlo (plan 85a): lo subido nunca está en claro en disco.
                 destino = session.workdir / f"{accion}{sufijo}.sealed"
@@ -1578,6 +1665,76 @@ def serve(
                         "expires": estado.license.expires.isoformat(),
                     },
                 )
+            self._json(200, {"ok": True})
+
+        def _recover(self, accion: str) -> None:
+            """Recuperar o descartar una grabación interrumpida. Solo la ve quien la grabó:
+            el filtro por profesional va antes que cualquier otra cosa, y con él un id ajeno
+            es simplemente «no existe» (87)."""
+            try:
+                pedido = json.loads(self._body() or b"{}")
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict) or not isinstance(pedido.get("id"), str):
+                self._json(400, {"error": "cuerpo inválido"})
+                return
+            nombre = pedido["id"]
+            with lock:
+                ready = session.ready
+                if (
+                    not isinstance(ready, AppReady)
+                    or ready.seal_key is None
+                    or session.state != "start"
+                    or session.professional is None
+                ):
+                    self._json(409, {"error": "no se puede recuperar ahora"})
+                    return
+                if not licencia[0].allows(arm_id):
+                    self._json(403, {"error": wording["license_readonly"]})
+                    return
+                elegidas = [
+                    i
+                    for i in interrupted(raiz, ready.seal_key)
+                    if i.professional == session.professional.id and i.folder.name == nombre
+                ]
+                if not elegidas:
+                    self._json(404, {"error": "no hay esa grabación"})
+                    return
+                elegida = elegidas[0]
+                if accion == "descartar":
+                    shutil.rmtree(elegida.folder, ignore_errors=True)
+                    auditoria.record(
+                        "recording_discarded",
+                        actor=session.professional,
+                        owner=elegida.owner,
+                        data={"started": elegida.started.isoformat(timespec="seconds")},
+                    )
+                    self._json(200, {"ok": True})
+                    return
+                registro = ready.consultation.consent_by_digest(elegida.consent_digest)
+                if registro is None:
+                    self._json(409, {"error": wording["recover_gone"]})
+                    return
+                session.workdir = elegida.folder
+                session.owner = elegida.owner
+                session.document = elegida.folder / elegida.document
+                session.consent = registro
+                session.start_index = len(ready.log)
+                session.drafted = False
+                session.state = "working"
+                auditoria.record(
+                    "recording_recovered",
+                    actor=session.professional,
+                    owner=elegida.owner,
+                    data={"started": elegida.started.isoformat(timespec="seconds")},
+                )
+                audio = elegida.folder / RECORDING_NAME
+                documento = elegida.folder / elegida.document
+            threading.Thread(
+                target=procesar,
+                args=(ready, elegida.owner, audio, documento, registro),
+                daemon=True,
+            ).start()
             self._json(200, {"ok": True})
 
         def _start(self) -> None:
@@ -1640,6 +1797,18 @@ def serve(
                         consent=registro,
                         clock=clock,
                     )
+                    # Sin clave del equipo no hay marcador: la siguiente ejecución no podría
+                    # leerlo, y una grabación que no se puede recuperar no se guarda (87).
+                    if ready.seal_key is not None:
+                        write_marker(
+                            session.workdir,
+                            owner=owner,
+                            consent_digest=registro.digest,
+                            professional=actor().id,
+                            started=now().astimezone(),
+                            document=documento.name,
+                            key=ready.seal_key,
+                        )
                     session.live.start()
                     with plain_copy(documento, clave(ready)) as historia:
                         session.view = history_view(historia, "")
@@ -1763,6 +1932,84 @@ def _page(
 """
 
 
+def _duracion(delta: timedelta) -> str:
+    total = max(int(delta.total_seconds()), 0)
+    horas, resto = divmod(total, 3600)
+    minutos, segundos = divmod(resto, 60)
+    return f"{horas}:{minutos:02d}:{segundos:02d}" if horas else f"{minutos:02d}:{segundos:02d}"
+
+
+def _recover_card(
+    w: AppWording, pending: Interrupted, expires: datetime | None
+) -> str:
+    """La tarjeta de una grabación que AIDA no llegó a terminar (87). Solo se llama para
+    quien la grabó: la ver es ya un permiso."""
+    e = html.escape
+    titular = f"<b>{e(pending.owner)}</b>"
+    inicio = pending.started
+    meta = w["recover_meta"].format(
+        titular,
+        inicio.strftime("%d/%m/%Y"),
+        inicio.strftime("%H:%M"),
+        f"<b>{_duracion(pending.duration())}</b>",
+    )
+    caduca = (
+        f'<p class="recover-expiry">'
+        f'{e(w["recover_expiry"].format(expires.strftime("%d/%m/%Y"), expires.strftime("%H:%M")))}'
+        "</p>"
+        if expires is not None
+        else ""
+    )
+    return f"""<div class="recover" id="recover">
+        <div class="recover-head"><svg><use href="#i-alert"/></svg>
+          <strong>{e(w["recover_title"])}</strong></div>
+        <p class="recover-meta">{meta}</p>
+        {caduca}
+        <div class="recover-actions" id="recover-actions">
+          <button type="button" class="btn btn-primary" id="recover-go"
+            data-recording="{e(pending.folder.name)}">
+            <svg><use href="#i-play"/></svg>{e(w["recover_go"])}</button>
+          <button type="button" class="btn btn-danger" id="recover-drop">
+            {e(w["recover_drop"])}</button>
+        </div>
+        <div class="recover-confirm" id="recover-confirm" hidden>
+          <p style="margin:0 0 .6rem">{w["recover_confirm"].format(titular)}</p>
+          <div class="recover-actions" style="margin-left:0">
+            <button type="button" class="btn" id="recover-back">
+              {e(w["recover_back"])}</button>
+            <button type="button" class="btn btn-danger" id="recover-yes">
+              {e(w["recover_yes"])}</button>
+          </div>
+        </div>
+      </div>"""
+
+
+_JS_RECOVER = """
+const recuperable = document.getElementById('recover');
+if (recuperable) {
+  const id = document.getElementById('recover-go').dataset.recording;
+  const acciones = document.getElementById('recover-actions');
+  const confirmar = document.getElementById('recover-confirm');
+  const enviar = async (path) => {
+    const cabeceras = { 'Content-Type': 'application/json' };
+    const sent = await post(path, JSON.stringify({ id: id }), cabeceras);
+    if (!sent.ok) { fail((await sent.json()).error); return; }
+    location.reload();
+  };
+  document.getElementById('recover-drop').addEventListener('click', () => {
+    acciones.hidden = true;
+    confirmar.hidden = false;
+  });
+  document.getElementById('recover-back').addEventListener('click', () => {
+    confirmar.hidden = true;
+    acciones.hidden = false;
+  });
+  document.getElementById('recover-yes').addEventListener('click', () => enviar('/descartar'));
+  document.getElementById('recover-go').addEventListener('click', () => enviar('/recuperar'));
+}
+"""
+
+
 def _start_page(
     w: AppWording,
     brand: str,
@@ -1774,6 +2021,8 @@ def _start_page(
     consent: ConsentTexts | None = None,
     professional: Professional | None = None,
     license: LicenseState | None = None,
+    pending: Interrupted | None = None,
+    pending_expires: datetime | None = None,
 ) -> str:
     e = html.escape
     textos = consent if consent is not None else load_consent_texts()
@@ -1799,9 +2048,11 @@ def _start_page(
         if ready.cloud
         else ""
     )
+    tarjeta = _recover_card(w, pending, pending_expires) if pending is not None else ""
     body = f"""<section class="screen" id="s-start">
   <div class="stage">
     <div class="panel-card">
+      {tarjeta}
       <h2>{e(w["title_start"])}</h2>
       <p class="lead" id="lead">{e(w["lead_upload"])}</p>
       <label class="label" for="owner">{e(w["owner_label"])}</label>
@@ -1879,6 +2130,8 @@ def _start_page(
     )
     enlace = _license_chip(w, license) + _user_chip(w, professional)
     script += _identity_script(w)
+    if pending is not None:
+        script += _JS_RECOVER
     if settings:
         enlace += (
             f'\n    <button type="button" class="head-link" id="to-settings">'
