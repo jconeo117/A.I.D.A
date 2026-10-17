@@ -6,4 +6,4 @@ sus propias licencias. Sin clave (`None`), ninguna licencia es válida: no hay m
 desarrollo que se la salte.
 """
 
-PUBLIC_KEY: str | None = None
+PUBLIC_KEY: str | None = "Qc5Fr2gWf5JJgJzxJTvR9BSyFbBi828Q2+H+hFHvVLw="
