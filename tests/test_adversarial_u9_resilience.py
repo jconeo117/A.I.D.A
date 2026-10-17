@@ -160,9 +160,7 @@ def test_cache_wrong_key_returns_none(tmp_path: Path, fernet_key: bytes) -> None
     assert cache_reader.load(owner=owner) is None
 
 
-def test_cache_zero_and_negative_ttl_expire_immediately(
-    tmp_path: Path, fernet_key: bytes
-) -> None:
+def test_cache_zero_and_negative_ttl_expire_immediately(tmp_path: Path, fernet_key: bytes) -> None:
     """Verifica el comportamiento con TTL cero y negativo: el registro expira
     de inmediato sin lanzar excepciones aritméticas.
     """
@@ -239,7 +237,6 @@ def test_cache_unlinking_race_condition_suppresses_filenotfounderror(
     assert cache.load(owner=owner) is None
 
 
-
 def test_cache_path_traversal_via_owner_escapes_cache_directory(
     tmp_path: Path, fernet_key: bytes
 ) -> None:
@@ -273,7 +270,6 @@ def test_cache_path_traversal_via_owner_escapes_cache_directory(
     assert cache.load(owner=subdir_owner) == "Contenido subdirectorio"
 
 
-
 # ---------------------------------------------------------------------------
 # 2. Resiliencia en STT y OCR (capture.py)
 # ---------------------------------------------------------------------------
@@ -286,6 +282,7 @@ def test_whisper_stt_wraps_engine_exceptions_in_transcription_error(
     (caída de CUDA, modelo corrupto, fallo de decodificación) se envuelve
     rigurosamente en `TranscriptionError`.
     """
+
     class CrashingWhisperModel:
         def transcribe(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("CUDA Out of Memory in forward pass")
@@ -304,6 +301,7 @@ def test_whisper_stt_wraps_generator_stream_exceptions_in_transcription_error(
     """Comprueba que excepciones ocurridas durante la iteración del generador
     de segmentos de audio se envuelven también en `TranscriptionError`.
     """
+
     class CrashingSegmentGeneratorModel:
         def transcribe(self, *args: Any, **kwargs: Any) -> Any:
             def segment_gen() -> Any:
@@ -327,6 +325,7 @@ def test_tesseract_ocr_wraps_engine_exceptions_in_ocr_error(tmp_path: Path) -> N
     """Comprueba que fallos del binario del sistema o de la librería pytesseract
     se envuelven limpiamente en `OCRError`.
     """
+
     class CrashingTesseract:
         def image_to_string(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("Tesseract segmentation fault (core dumped)")
@@ -353,6 +352,7 @@ def test_tesseract_ocr_wraps_missing_file_or_bad_format_in_ocr_error(
 
 def test_tesseract_ocr_reads_multipage_pdf_in_order(tmp_path: Path) -> None:
     """PDF de dos páginas devuelve los textos unidos por '\n\n' en orden de página."""
+
     class MultiPageTesseract:
         def image_to_string(self, img: Any, *args: Any, **kwargs: Any) -> str:
             return f"P{img.height}"
@@ -365,7 +365,6 @@ def test_tesseract_ocr_reads_multipage_pdf_in_order(tmp_path: Path) -> None:
     ocr = LocalTesseractOCR(MultiPageTesseract())
     result = ocr.read(pdf_path)
     assert result == "P120\n\nP240"
-
 
 
 def test_tesseract_ocr_passes_pil_image_for_both_pdf_and_non_pdf(
@@ -415,6 +414,7 @@ def test_tesseract_ocr_wraps_corrupt_pdf_in_ocr_error(tmp_path: Path) -> None:
 
 def test_tesseract_ocr_handles_uppercase_pdf_extension(tmp_path: Path) -> None:
     """Sufijo en mayúsculas (.PDF) toma la rama PDF."""
+
     class UpperTesseract:
         def image_to_string(self, *args: Any, **kwargs: Any) -> str:
             return "Texto extraido de PDF en mayusculas"
@@ -445,9 +445,7 @@ class MockWhisperBackend:
 
 
 class MockTesseractBackend:
-    def __init__(
-        self, text: str = "Historia clinica previa: cefalea tensional recurrente"
-    ) -> None:
+    def __init__(self, text: str = "Historia clinica previa: cefalea tensional recurrente") -> None:
         self.text = text
 
     def image_to_string(self, *args: Any, **kwargs: Any) -> str:
@@ -499,7 +497,7 @@ def test_consultation_run_event_emission_order_and_payload(
     )
 
     owner = ontology.AgentId("paciente_auditoria")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -568,7 +566,7 @@ def test_consultation_run_empty_catalog_matches_emits_empty_data_dict(
     )
 
     owner = ontology.AgentId("paciente_sin_matches")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -612,7 +610,7 @@ def test_consultation_run_failure_in_stt_stops_pipeline_before_emitting_events(
     )
 
     owner = ontology.AgentId("p_fail_stt")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     with pytest.raises(TranscriptionError):
         consultation.run(
             owner=owner,
@@ -655,7 +653,7 @@ def test_consultation_run_failure_in_ocr_preserves_only_stt_event(
     )
 
     owner = ontology.AgentId("p_fail_ocr")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     with pytest.raises(OCRError):
         consultation.run(
             owner=owner,
@@ -695,7 +693,7 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_none = c_none.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent_none = c_none.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_none.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_none
     ).summary_markdown
@@ -725,7 +723,7 @@ def test_consultation_run_unexpected_provider_types_gracefully_fallback_to_markd
             cache=cache,
             log=EventLog(window=100),
         )
-        consent = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+        consent = c.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
         res = c.run(
             owner=owner,
             audio_path=audio_path,
@@ -764,7 +762,7 @@ def test_consultation_run_provider_exception_currently_escapes_uncaught(
     )
 
     owner = ontology.AgentId("paciente_proveedor_caido")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
 
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
@@ -815,7 +813,7 @@ def test_consultation_run_with_neutral_wording_has_no_medical_domain_literals(
     )
 
     owner = ontology.AgentId("agente_agnostico")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent
     )
@@ -874,7 +872,7 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_ref = c_reference.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent_ref = c_reference.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_reference.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_ref
     ).summary_markdown
@@ -896,7 +894,9 @@ def test_consultation_run_provider_non_spoken_reply_with_text_falls_back_to_mark
         log=EventLog(window=100),
     )
 
-    consent_adv = c_adversarial.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent_adv = c_adversarial.record_consent(
+        cloud=True, owner=owner, mode="uploaded", actor=_ACTOR
+    )
     result = c_adversarial.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_adv
     )
@@ -936,7 +936,7 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
         cache=cache,
         log=EventLog(window=100),
     )
-    consent_base = c_baseline.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent_base = c_baseline.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     expected_fallback = c_baseline.run(
         owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_base
     ).summary_markdown
@@ -1016,7 +1016,9 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        consent_p = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+        consent_p = consultation.record_consent(
+            cloud=True, owner=owner, mode="uploaded", actor=_ACTOR
+        )
         res = consultation.run(
             owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_p
         )
@@ -1052,7 +1054,9 @@ def test_consultation_run_adversarial_rogue_objects_and_exceptions_stress_harnes
             cache=cache,
             log=EventLog(window=100),
         )
-        consent_e = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+        consent_e = consultation.record_consent(
+            cloud=True, owner=owner, mode="uploaded", actor=_ACTOR
+        )
         res = consultation.run(
             owner=owner, audio_path=audio_path, history_path=history_path, consent=consent_e
         )
@@ -1093,7 +1097,7 @@ def test_consultation_run_with_history_does_not_call_ocr(
 
     owner = ontology.AgentId("paciente_precargado")
     history_precargada = "Historia clínica precargada en memoria sin OCR"
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run_with_history(
         owner=owner,
         audio_path=audio_path,
@@ -1140,7 +1144,7 @@ def test_consultation_run_calls_ocr_exactly_once(
     )
 
     owner = ontology.AgentId("paciente_con_ocr")
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,
@@ -1202,7 +1206,7 @@ def test_consultation_run_delegates_to_run_with_history(
 
     monkeypatch.setattr(consultation, "run_with_history", mock_run_with_history)
 
-    consent = consultation.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     result = consultation.run(
         owner=owner,
         audio_path=audio_path,
@@ -1217,7 +1221,3 @@ def test_consultation_run_delegates_to_run_with_history(
         "history_text": "Historia del OCR",
         "consent": consent,
     }
-
-
-
-

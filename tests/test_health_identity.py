@@ -94,15 +94,14 @@ def _permitir_servidor_app_local(monkeypatch: pytest.MonkeyPatch) -> None:
 # Helpers para dobles y servidor de pruebas
 # ---------------------------------------------------------------------------
 
+
 class _DummySTT(LocalWhisperSTT):
     def __init__(self, segments: tuple[TranscriptSegment, ...] | None = None) -> None:
         super().__init__(model=object())
         self._segments = (
             segments
             if segments is not None
-            else (
-                TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla izquierda"),
-            )
+            else (TranscriptSegment(0.0, 2.0, "consulta hoy por dolor en rodilla izquierda"),)
         )
 
     def transcribe(self, path: Path) -> str:
@@ -156,9 +155,7 @@ def _crear_consultation(
         wording=default_summary_wording(),
         stt=_DummySTT(),
         ocr=_DummyOCR(),
-        catalog_index=build_index(
-            (DiagnosticCode("M255", "Dolor en articulación", 4, "cat"),)
-        ),
+        catalog_index=build_index((DiagnosticCode("M255", "Dolor en articulación", 4, "cat"),)),
         provider=None,
         cache=ConsultationCache(tmp_path / "cache", key=key),
         log=event_log,
@@ -505,7 +502,7 @@ def test_consultation_review_sin_actor_lanza_identity_error_y_no_audita(tmp_path
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Sin antecedentes.",
-        consent=consultation.record_consent(owner=owner, mode="uploaded", actor=actor),
+        consent=consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=actor),
     )
 
     with pytest.raises(IdentityError) as exc:
@@ -540,7 +537,7 @@ def test_consultation_review_con_actor_audita_review_saved_y_show_recupera_texto
         owner=owner,
         audio_path=Path("/tmp/audio.wav"),
         history_text="Dolor de rodilla.",
-        consent=consultation.record_consent(owner=owner, mode="uploaded", actor=actor),
+        consent=consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=actor),
     )
 
     note = consultation.render_note(prepared)
@@ -594,9 +591,9 @@ def test_audit_show_con_blob_alterado_lanza_value_error(tmp_path: Path) -> None:
     assert audit.show(blob)["draft"] == "original"
 
     # Alteramos el blob en disco cifrando contenido diferente con la misma clave
-    texto_falso = json.dumps(
-        {"draft": "alterado"}, ensure_ascii=False, sort_keys=True
-    ).encode("utf-8")
+    texto_falso = json.dumps({"draft": "alterado"}, ensure_ascii=False, sort_keys=True).encode(
+        "utf-8"
+    )
     (blobs_dir / f"{blob}.bin").write_bytes(Fernet(key).encrypt(texto_falso))
 
     with pytest.raises(ValueError, match="no corresponde a su huella"):
@@ -624,7 +621,7 @@ def test_record_consent_con_actor_incluye_label_en_workstation_y_audita(tmp_path
     actor = Professional(id="p_99", name="Dra. Laura Gómez", registry="52.341.889")
     owner = AgentId("paciente_consentimiento")
 
-    rec = consultation.record_consent(owner=owner, mode="uploaded", actor=actor)
+    rec = consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=actor)
 
     # workstation empieza por el label del profesional
     assert rec.workstation.startswith(f"{actor.label()} @ ")
@@ -728,6 +725,9 @@ def test_app_post_perfil_fuera_de_first_profile_y_ajustes_da_409_y_desde_ajustes
         download_model=lambda: None,
         reader_version=lambda: "1.0",
         cache_key_since=lambda: 0.0,
+        local_only=lambda: False,
+        save_local_only=lambda v: None,
+        destinations=(),
     )
 
     url, _, _, _, _ = _lanzar_servidor_identity(
@@ -860,7 +860,7 @@ def test_app_bloqueo_por_inactividad_en_start_y_no_en_review_y_desbloqueo(tmp_pa
     )
     httpx.post(
         f"{url}/empezar",
-        json={"owner": "paciente_nobloq", "consent": True},
+        json={"owner": "paciente_nobloq", "consent": True, "cloud": True},
         timeout=5.0,
     )
     for _ in range(30):
@@ -918,7 +918,7 @@ def test_app_cambiar_en_review_da_409_y_en_start_pasa_a_who_y_audita_cierre(tmp_
     )
     httpx.post(
         f"{url}/empezar",
-        json={"owner": "paciente_cambio", "consent": True},
+        json={"owner": "paciente_cambio", "consent": True, "cloud": True},
         timeout=5.0,
     )
     for _ in range(30):
@@ -967,7 +967,7 @@ def test_app_historia_vista_dos_veces_audita_una_sola_vez(tmp_path: Path) -> Non
     )
     httpx.post(
         f"{url}/empezar",
-        json={"owner": "paciente_historia", "consent": True},
+        json={"owner": "paciente_historia", "consent": True, "cloud": True},
         timeout=5.0,
     )
     for _ in range(30):
@@ -1022,7 +1022,7 @@ def test_app_guardar_revision_audita_review_saved_con_profesional_de_sesion(tmp_
     )
     httpx.post(
         f"{url}/empezar",
-        json={"owner": "paciente_guardar", "consent": True},
+        json={"owner": "paciente_guardar", "consent": True, "cloud": True},
         timeout=5.0,
     )
     for _ in range(30):
@@ -1181,7 +1181,7 @@ def test_record_consent_sin_actor_lanza_identity_error_sin_linea_ni_evento(tmp_p
     consultation, event_log, _ = _crear_consultation(tmp_path)
     owner = AgentId("doc_no_actor")
     with pytest.raises(IdentityError) as exc:
-        consultation.record_consent(owner=owner, mode="uploaded", actor=None)  # type: ignore[arg-type]
+        consultation.record_consent(cloud=True, owner=owner, mode="uploaded", actor=None)  # type: ignore[arg-type]
     assert exc.value.code == "no_actor"
     assert len(consultation._consents.records()) == 0
     assert not any(e.kind == EventKind.CONSENT_RECORDED for e in event_log)
@@ -1440,4 +1440,3 @@ def test_app_actor_sin_profesional_en_estado_que_registra_falla_sin_auditar(
     assert len(record_calls) == 0
     # No se escribe nada en la auditoría
     assert len(list(audit.lines())) == audit_lines_before
-

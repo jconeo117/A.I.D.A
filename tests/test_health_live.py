@@ -107,7 +107,9 @@ def test_live_session_feed_pcm_y_snapshot(tmp_path: Path) -> None:
     consultation = _crear_consultation(tmp_path)
     transcriber = _MockLiveTranscriber()
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -143,7 +145,9 @@ def test_live_session_wav_muestras_exactas(tmp_path: Path) -> None:
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -175,7 +179,9 @@ def test_live_session_pausa_no_escribe_pcm_y_snapshot_marca_pause(tmp_path: Path
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -217,7 +223,9 @@ def test_live_session_edit_field_bloquea_campo_frente_a_redaccion(tmp_path: Path
     """
     consultation = _crear_consultation(tmp_path)
     spec_motivo = SectionSpec("motivo", "Motivo", (), codable=True, in_note=True)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -271,7 +279,9 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
 
     consultation = _crear_consultation(tmp_path)
     spec_motivo = SectionSpec("motivo", "Motivo", (), codable=True, in_note=True)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -339,7 +349,6 @@ def test_live_session_redaccion_condiciones_y_no_concurrente(
         session.stop()
 
 
-
 def test_live_session_set_code_rejected_y_snapshot(tmp_path: Path) -> None:
     """Caso 8 (§B.2): set_code(c, False) y rejected() lo devuelve; snapshot
 
@@ -347,7 +356,9 @@ def test_live_session_set_code_rejected_y_snapshot(tmp_path: Path) -> None:
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -394,7 +405,9 @@ def test_live_session_transcriptor_error_offline_true_y_continua(tmp_path: Path)
     consultation = _crear_consultation(tmp_path)
     transcriber = _MockLiveTranscriber()
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -432,7 +445,9 @@ def test_live_session_error_documento_historia_vacia_y_continua(tmp_path: Path) 
         raise OSError("archivo inaccesible")
 
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -459,7 +474,9 @@ def test_live_session_stop_cierra_wav_y_feed_posterior_ignorado(tmp_path: Path) 
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_01"), mode="recorded", actor=_ACTOR
+    )
     session = LiveSession(
         consultation=consultation,
         owner="doc_01",
@@ -499,7 +516,9 @@ def test_live_session_feed_solo_audio_pcm_sealed_y_recording_wav(tmp_path: Path)
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
-    consent = consultation.record_consent(owner=AgentId("doc_85"), mode="recorded", actor=_ACTOR)
+    consent = consultation.record_consent(
+        cloud=True, owner=AgentId("doc_85"), mode="recorded", actor=_ACTOR
+    )
     sesion_dir = tmp_path / "sesion"
     sesion_dir.mkdir()
     session = LiveSession(
@@ -524,4 +543,3 @@ def test_live_session_feed_solo_audio_pcm_sealed_y_recording_wav(tmp_path: Path)
         frames = w.readframes(w.getnframes())
         assert frames == part
     session.stop()
-

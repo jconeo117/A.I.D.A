@@ -279,7 +279,7 @@ def test_consent_otro_dueno_lanza_consent_missing_error_cero_llamadas_stt(
     audio = tmp_path / "audio.wav"
     audio.write_bytes(_crear_wav_minimo())
 
-    consent = c.record_consent(owner=owner_bueno, mode="uploaded", actor=_ACTOR)
+    consent = c.record_consent(cloud=True, owner=owner_bueno, mode="uploaded", actor=_ACTOR)
 
     with pytest.raises(ConsentMissingError):
         c.transcribe(owner=owner_ajeno, audio_path=audio, consent=consent)
@@ -302,6 +302,7 @@ def test_consent_record_forjado_a_mano_lanza_consent_missing_error_cero_llamadas
         mode="uploaded",
         version="v1",
         text_sha256="abc",
+        cloud=True,
         workstation=workstation(),
         at="2026-10-06T10:00:00-05:00",
         prev=_GENESIS,
@@ -321,7 +322,7 @@ def test_consent_valido_transcribe_llama_stt_una_vez(tmp_path: Path) -> None:
     audio = tmp_path / "audio.wav"
     audio.write_bytes(_crear_wav_minimo())
 
-    consent = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    consent = c.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
     res = c.transcribe(owner=owner, audio_path=audio, consent=consent)
 
     assert "cefalea" in res
@@ -361,7 +362,7 @@ def test_record_consent_modo_desconocido_lanza_value_error_sin_linea_ni_evento(
     owner = AgentId("doc_modo")
 
     with pytest.raises(ValueError, match="modo de autorización desconocido"):
-        c.record_consent(owner=owner, mode="inventado", actor=_ACTOR)
+        c.record_consent(cloud=True, owner=owner, mode="inventado", actor=_ACTOR)
 
     assert len(list(log)) == 0
     assert len(c._consents.records()) == 0
@@ -383,6 +384,7 @@ def test_consent_ledger_append_encadena_prev_y_digest(tmp_path: Path) -> None:
         mode="uploaded",
         version="v1",
         text="Texto 1",
+        cloud=True,
         workstation="ws1",
         at="2026-10-06T10:00:00-05:00",
     )
@@ -393,6 +395,7 @@ def test_consent_ledger_append_encadena_prev_y_digest(tmp_path: Path) -> None:
             json.dumps(
                 {
                     "at": "2026-10-06T10:00:00-05:00",
+                    "cloud": "true",
                     "mode": "uploaded",
                     "owner": "doc_chain",
                     "prev": _GENESIS,
@@ -411,6 +414,7 @@ def test_consent_ledger_append_encadena_prev_y_digest(tmp_path: Path) -> None:
         mode="recorded",
         version="v1",
         text="Texto 2",
+        cloud=True,
         workstation="ws1",
         at="2026-10-06T10:05:00-05:00",
     )
@@ -428,6 +432,7 @@ def test_consent_ledger_con_archivo_permisos_0600_y_recarga(tmp_path: Path) -> N
         mode="uploaded",
         version="v1",
         text="Texto",
+        cloud=True,
         workstation="ws",
         at="2026-10-06T10:00:00-05:00",
     )
@@ -445,6 +450,7 @@ def test_consent_ledger_con_archivo_permisos_0600_y_recarga(tmp_path: Path) -> N
         mode="recorded",
         version="v1",
         text="Texto",
+        cloud=True,
         workstation="ws",
         at="2026-10-06T10:10:00-05:00",
     )
@@ -465,6 +471,7 @@ def test_consent_ledger_verify_detecta_corrupciones(tmp_path: Path) -> None:
             mode="uploaded",
             version="v1",
             text=f"Texto {i}",
+            cloud=True,
             workstation="ws",
             at=f"2026-10-06T10:0{i}:00-05:00",
         )
@@ -504,40 +511,58 @@ def test_consent_huella_del_texto_y_version_exactas_de_consent_yaml() -> None:
     """14. La huella del texto es la del texto exacto de consent.yaml para el modo,
     y la versión, la del archivo."""
     textos = load_consent_texts()
-    assert textos.version == "v1"
+    assert textos.version == "v2"
 
     for modo in ("recorded", "uploaded"):
-        texto_modo = textos.modes[modo].text
-        huella_calculada = hashlib.sha256(texto_modo.encode("utf-8")).hexdigest()
-        assert len(huella_calculada) == 64
+        texto_modo_cloud = textos.read_text(modo, cloud=True)
+        huella_calculada_cloud = hashlib.sha256(texto_modo_cloud.encode("utf-8")).hexdigest()
+        assert len(huella_calculada_cloud) == 64
+        texto_modo_local = textos.read_text(modo, cloud=False)
+        huella_calculada_local = hashlib.sha256(texto_modo_local.encode("utf-8")).hexdigest()
+        assert len(huella_calculada_local) == 64
+        assert huella_calculada_cloud != huella_calculada_local
 
 
 def test_consent_texts_line_formato_exacto() -> None:
-    """15. ConsentTexts.line da «Autorización registrada · grabada · 06/10/2026 10:32 · texto v1»
-    para una autorización de esa fecha."""
+    """15. ConsentTexts.line da «Autorización registrada · grabada · 06/10/2026 10:32
+    · texto v2 · con nube» para una autorización de esa fecha."""
     textos = load_consent_texts()
     rec = ConsentRecord(
         owner=AgentId("doc_test"),
         mode="recorded",
-        version="v1",
+        version="v2",
         text_sha256="abc",
+        cloud=True,
         workstation="ws",
         at="2026-10-06T10:32:00-05:00",
         prev=_GENESIS,
         digest="xyz",
     )
     linea = textos.line(rec)
-    assert linea == "Autorización registrada · grabada · 06/10/2026 10:32 · texto v1"
+    assert linea == "Autorización registrada · grabada · 06/10/2026 10:32 · texto v2 · con nube"
 
 
 def test_load_consent_texts_valida_claves_obligatorias(tmp_path: Path) -> None:
     """16. load_consent_texts revienta si falta version, line_template o cualquiera de
     las cuatro claves."""
     base = {
-        "version": "v1",
-        "line_template": "Autorización registrada · {0} · {1} · texto {2}",
-        "recorded": {"title": "T", "text": "X", "check": "C", "label": "grabada"},
-        "uploaded": {"title": "T", "text": "X", "check": "C", "label": "subida"},
+        "version": "v2",
+        "line_template": "Autorización registrada · {0} · {1} · texto {2} · {3}",
+        "cloud_labels": {"true": "con nube", "false": "solo en este equipo"},
+        "recorded": {
+            "title": "T",
+            "text": "X",
+            "check": "C",
+            "label": "grabada",
+            "cloud": {"text": "XT", "check": "XC"},
+        },
+        "uploaded": {
+            "title": "T",
+            "text": "X",
+            "check": "C",
+            "label": "subida",
+            "cloud": {"text": "XT", "check": "XC"},
+        },
     }
 
     # Falta version
@@ -571,14 +596,19 @@ def test_record_consent_emite_consent_recorded_sin_content(tmp_path: Path) -> No
     c = _build_consultation(tmp_path, log=log)
     owner = AgentId("doc_audit")
 
-    rec = c.record_consent(owner=owner, mode="uploaded", actor=_ACTOR)
+    rec = c.record_consent(cloud=True, owner=owner, mode="uploaded", actor=_ACTOR)
 
     eventos = [e for e in log if e.kind == EventKind.CONSENT_RECORDED]
     assert len(eventos) == 1
     ev = eventos[0]
     assert ev.owner == owner
     assert ev.tick == 0
-    assert ev.data == {"mode": "uploaded", "version": rec.version, "digest": rec.digest}
+    assert ev.data == {
+        "mode": "uploaded",
+        "version": rec.version,
+        "digest": rec.digest,
+        "cloud": "true",
+    }
     assert ev.content is None
 
 
@@ -662,7 +692,7 @@ def test_servidor_empezar_con_consent_registra_y_pasa_a_vivo_o_analisis(
         )
         r_subir = httpx.post(
             f"{url_up}/empezar",
-            json={"owner": "HC-001", "consent": True, "recorded": False},
+            json={"owner": "HC-001", "consent": True, "recorded": False, "cloud": True},
             timeout=5.0,
         )
         assert r_subir.status_code == 200
@@ -695,7 +725,7 @@ def test_servidor_empezar_con_consent_registra_y_pasa_a_vivo_o_analisis(
         )
         r_grabar = httpx.post(
             f"{url_rec}/empezar",
-            json={"owner": "HC-002", "consent": True, "recorded": True},
+            json={"owner": "HC-002", "consent": True, "recorded": True, "cloud": True},
             timeout=5.0,
         )
         assert r_grabar.status_code == 200
@@ -910,6 +940,7 @@ def test_cli_consents_lista_cadena_integra_y_falla_si_rota(
         mode="uploaded",
         version="v1",
         text="Texto",
+        cloud=True,
         workstation="ws",
         at="2026-10-06T10:00:00-05:00",
     )
@@ -918,6 +949,7 @@ def test_cli_consents_lista_cadena_integra_y_falla_si_rota(
         mode="recorded",
         version="v1",
         text="Texto",
+        cloud=True,
         workstation="ws",
         at="2026-10-06T10:05:00-05:00",
     )

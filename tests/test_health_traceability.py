@@ -426,6 +426,7 @@ def _crear_consultation_test(
         matches=(),
         grouped_sections=((sec_mot, ("cefalea",)), (sec_ant, ())),
         encounter=encounter,
+        cloud=True,
     )
     flag = (
         c.absence_flags(prepared, note)[0]
@@ -687,7 +688,9 @@ def test_app_guardar_bloquea_ausencia_pendiente_y_guarda_confirmada(tmp_path: Pa
             headers={"X-Name": "historia.pdf"},
             timeout=5.0,
         )
-        httpx.post(f"{url}/empezar", json={"owner": "HC-01", "consent": True}, timeout=5.0)
+        httpx.post(
+            f"{url}/empezar", json={"owner": "HC-01", "consent": True, "cloud": True}, timeout=5.0
+        )
 
         for _ in range(50):
             est = httpx.get(f"{url}/estado", timeout=5.0).json()

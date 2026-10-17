@@ -648,16 +648,18 @@ def test_consultation_sin_cache_key_crea_clave_y_falla_por_audio(
     perfil = _crear_perfil_cli(monkeypatch)
 
     with pytest.raises(FileNotFoundError):
-        main([
-            "--consultation",
-            "--as",
-            perfil,
-            "--audio",
-            "audio.wav",
-            "--history",
-            "historia.png",
-            "--consent",
-        ])
+        main(
+            [
+                "--consultation",
+                "--as",
+                perfil,
+                "--audio",
+                "audio.wav",
+                "--history",
+                "historia.png",
+                "--consent",
+            ]
+        )
 
     captured = capsys.readouterr()
     assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
@@ -4310,6 +4312,7 @@ def test_consultation_cli_ui_nota_se_redacta_una_sola_vez(
             "--llm",
             "openai",
             "--consent",
+            "--consent-cloud",
         ]
     )
     captured = capsys.readouterr()
@@ -4815,4 +4818,3 @@ def test_run_caches_y_launch_health_leen_retencion(
     run.launch_health(args, lic_mock, arm_mock)
     assert len(llamadas_serve) == 1
     assert llamadas_serve[0]["retention_days"] == 999
-

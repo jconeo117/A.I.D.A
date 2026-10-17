@@ -119,11 +119,14 @@ def _crear_app_ready(
     fail_stt: bool = False,
     store: ReviewMetricsStore | None = None,
     live_stt: LiveTranscriber | None = None,
+    local_model: bool = True,
 ) -> AppReady:
     log = EventLog()
+    stt = _DummySTT(fail=fail_stt)
     consultation = Consultation(
         wording=default_summary_wording(),
-        stt=_DummySTT(fail=fail_stt),
+        stt=stt,
+        local_stt=stt,
         ocr=_DummyOCR(),
         catalog_index=build_index((DiagnosticCode("I10X", "Hipertensión esencial", 4, "cat"),)),
         provider=None,
@@ -141,6 +144,7 @@ def _crear_app_ready(
         cloud=True,
         writer="modelo-prueba",
         live_stt=live_stt,
+        local_model=local_model,
     )
 
 
@@ -276,9 +280,7 @@ def test_load_app_wording_pack_real_y_errores(tmp_path: Path) -> None:
         load_app_wording(sin_app)
 
     # 2. Falta una clave en app
-    datos = yaml.safe_load(
-        Path("packs/health/consultorio/ui.yaml").read_text(encoding="utf-8")
-    )
+    datos = yaml.safe_load(Path("packs/health/consultorio/ui.yaml").read_text(encoding="utf-8"))
     del datos["app"]["title_start"]
     sin_clave = tmp_path / "sin_clave.yaml"
     sin_clave.write_text(yaml.safe_dump(datos), encoding="utf-8")
@@ -305,7 +307,9 @@ def test_draft_for_screen_y_close_from_screen(tmp_path: Path) -> None:
 
     owner = AgentId("HC-01")
     actor = Professional(id="t", name="Prueba", registry="0")
-    consent = ready.consultation.record_consent(owner=owner, mode="uploaded", actor=actor)
+    consent = ready.consultation.record_consent(
+        cloud=True, owner=owner, mode="uploaded", actor=actor
+    )
     prepared = ready.consultation.prepare(
         owner=owner,
         audio_path=audio,
@@ -739,9 +743,7 @@ def test_servidor_rutas_vivo_fuera_de_live_y_campo_desconocido(tmp_path: Path) -
         assert r_pau.status_code == 409
 
         # Pasamos a live
-        httpx.post(
-            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
-        )
+        httpx.post(f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"})
         r_emp = httpx.post(
             f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
         )
@@ -760,6 +762,7 @@ def test_servidor_ruta_vivo_desde_n_y_tipos_linea(tmp_path: Path) -> None:
 
     con kind 'q', 'a' o 'pause'.
     """
+
     class _MockLiveSTT:
         def __init__(self) -> None:
             self._frases = ["¿Tiene dolor de cabeza?", "Sí, me duele mucho."]
@@ -782,11 +785,10 @@ def test_servidor_ruta_vivo_desde_n_y_tipos_linea(tmp_path: Path) -> None:
         vad_factory=lambda: _vad,
     )
     try:
+        httpx.post(f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"})
         httpx.post(
-            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
-        )
-        httpx.post(
-            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
+            f"{url}/empezar",
+            json={"owner": "HC-01", "recorded": True, "consent": True, "cloud": True},
         )
 
         speech = (np.ones(512 * 5, dtype=np.int16) * 10000).tobytes()
@@ -847,12 +849,8 @@ def test_servidor_terminar_a_review_con_edicion_y_rechazo_vivo(tmp_path: Path) -
     ready = _crear_app_ready(tmp_path, store=store)
     url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
     try:
-        httpx.post(
-            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
-        )
-        httpx.post(
-            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
-        )
+        httpx.post(f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"})
+        httpx.post(f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True})
 
         # Médico edita un campo y quita un código en vivo
         r_ed = httpx.post(
@@ -907,12 +905,8 @@ def test_servidor_guardar_revision_sin_cambios_registra_metricas(tmp_path: Path)
     ready = _crear_app_ready(tmp_path, store=store)
     url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
     try:
-        httpx.post(
-            f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"}
-        )
-        httpx.post(
-            f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True}
-        )
+        httpx.post(f"{url}/documento", content=b"%PDF-1.4 dummy", headers={"X-Name": "doc.pdf"})
+        httpx.post(f"{url}/empezar", json={"owner": "HC-01", "recorded": True, "consent": True})
 
         httpx.post(
             f"{url}/campo",
@@ -1017,6 +1011,9 @@ def _dummy_app_tools(
         download_model=download_fn or (lambda: None),
         reader_version=reader_version_fn or (lambda: "5.3.0"),
         cache_key_since=cache_since_fn or (lambda: 1700000000.0),
+        local_only=lambda: False,
+        save_local_only=lambda v: None,
+        destinations=(),
     )
 
 
@@ -1028,7 +1025,7 @@ def test_servidor_sin_tools_sin_enlace_ajustes_y_post_ajustes_404(tmp_path: Path
         resp = httpx.get(url, timeout=5.0)
         assert resp.status_code == 200
         assert 'id="to-settings"' not in resp.text
-        assert 'Ajustes' not in resp.text
+        assert "Ajustes" not in resp.text
         resp_post = httpx.post(f"{url}/ajustes", timeout=5.0)
         assert resp_post.status_code == 404
     finally:
@@ -1048,7 +1045,7 @@ def test_servidor_con_tools_lleva_enlace_y_post_ajustes_200(tmp_path: Path) -> N
         resp = httpx.get(url, timeout=5.0)
         assert resp.status_code == 200
         assert 'id="to-settings"' in resp.text
-        assert 'Ajustes' in resp.text
+        assert "Ajustes" in resp.text
 
         resp_post = httpx.post(f"{url}/ajustes", timeout=5.0)
         assert resp_post.status_code == 200
@@ -1363,6 +1360,7 @@ def test_app_archivos_sellados_y_sin_restos_en_claro(tmp_path: Path) -> None:
     con la transcripción fallando), no queda ninguna carpeta aida-claro-*.
     """
     from aida.platform.sealed import PLAIN_PREFIX
+
     pytest.importorskip("av", reason="requiere el extra de captura (av)")
     wording = load_app_wording()
 
@@ -1424,9 +1422,7 @@ def test_app_archivos_sellados_y_sin_restos_en_claro(tmp_path: Path) -> None:
             headers={"X-Name": "historia.pdf"},
             timeout=5.0,
         )
-        httpx.post(
-            f"{url_f}/empezar", json={"owner": "PAC-85-FAIL", "consent": True}, timeout=5.0
-        )
+        httpx.post(f"{url_f}/empezar", json={"owner": "PAC-85-FAIL", "consent": True}, timeout=5.0)
 
         for _ in range(50):
             estado = httpx.get(f"{url_f}/estado", timeout=5.0).json()
@@ -1438,6 +1434,3 @@ def test_app_archivos_sellados_y_sin_restos_en_claro(tmp_path: Path) -> None:
     finally:
         httpx.post(f"{url_f}/salir", timeout=5.0)
         hilo_f.join(timeout=5.0)
-
-
-
