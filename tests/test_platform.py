@@ -26,13 +26,14 @@ import json
 import os
 import re
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from aida import run
@@ -41,7 +42,7 @@ from aida.arms.health.review_ui import load_ui_settings
 from aida.platform import _public_key
 from aida.platform.arms import ArmManifest, discover, load_manifest
 from aida.platform.audit import AuditLog
-from aida.platform.identity import ProfileStore
+from aida.platform.identity import Professional, ProfileStore
 from aida.platform.license import (
     WARN_DAYS,
     License,
@@ -770,3 +771,171 @@ def test_tools_licencias_keygen_sign_show(
     out_show = capsys.readouterr().out
     assert "estado: valid" in out_show
     assert "Hospital Central" in out_show
+
+
+def test_audit_purge_texts(tmp_path: Path) -> None:
+    """B.2 §6: AuditLog.purge_texts: con dos revisiones guardadas y un corte posterior,
+    borra los dos textos, deja UNA línea texts_purged con count = 2 y el autor;
+    las líneas originales siguen; un corte anterior a todo => 0 y NINGUNA línea nueva;
+    show de un borrado => ValueError con 'plazo de retención'.
+    """
+    key = Fernet.generate_key()
+    blobs_dir = tmp_path / "blobs"
+    log_path = tmp_path / "audit.jsonl"
+    actor = Professional(id="prof_1", name="Dra. Gómez", registry="52.341.889")
+    now_dt = datetime(2026, 10, 16, 12, 0, 0).astimezone()
+
+    audit = AuditLog(log_path, blobs=blobs_dir, key=key, now=lambda: now_dt)
+
+    l1 = audit.record("review_saved", actor=actor, texts={"nota": "primera consulta"})
+    l2 = audit.record("review_saved", actor=actor, texts={"nota": "segunda consulta"})
+    blob1, blob2 = l1["blob"], l2["blob"]
+    assert blob1 and blob2
+    assert (blobs_dir / f"{blob1}.bin").is_file()
+    assert (blobs_dir / f"{blob2}.bin").is_file()
+    assert audit.show(blob1) == {"nota": "primera consulta"}
+
+    corte_anterior = now_dt - timedelta(days=1)
+    borrados_0 = audit.purge_texts(corte_anterior, actor=actor)
+    assert borrados_0 == 0
+    assert len(audit.lines()) == 2
+    assert not any(linea["kind"] == "texts_purged" for linea in audit.lines())
+
+    corte_posterior = now_dt + timedelta(minutes=1)
+    borrados_2 = audit.purge_texts(corte_posterior, actor=actor)
+    assert borrados_2 == 2
+    assert not (blobs_dir / f"{blob1}.bin").exists()
+    assert not (blobs_dir / f"{blob2}.bin").exists()
+
+    lineas = audit.lines()
+    assert len(lineas) == 3
+    assert lineas[0]["kind"] == "review_saved"
+    assert lineas[1]["kind"] == "review_saved"
+    assert lineas[2]["kind"] == "texts_purged"
+    assert lineas[2]["actor"] == actor.id
+    datos_purga = json.loads(lineas[2]["data"])
+    assert datos_purga["count"] == "2"
+
+    with pytest.raises(ValueError, match="ese texto se borró al cumplir su plazo de retención"):
+        audit.show(blob1)
+
+
+def test_app_retention_days_en_serve(tmp_path: Path) -> None:
+    """B.2 §7: serve(…, retention_days=0): al entrar con PIN, el borrado corre
+    y lo firma ese profesional; con retention_days=None, no corre.
+    """
+    key = Fernet.generate_key()
+    blobs = tmp_path / "blobs"
+    audit_file = tmp_path / "audit.jsonl"
+    actor_previo = Professional(id="prev", name="Previo", registry="000")
+    audit = AuditLog(audit_file, blobs=blobs, key=key)
+    l1 = audit.record("review_saved", actor=actor_previo, texts={"dato": "viejo"})
+    huella_previa = l1["blob"]
+    assert (blobs / f"{huella_previa}.bin").exists()
+
+    store = ProfileStore(tmp_path / "profiles.json")
+    store.create(name="Dr. Juan", registry="12345", pin="9999")
+
+    info: dict[str, Any] = {}
+    listo = threading.Event()
+
+    def _abrir1(u: str) -> None:
+        info["url"] = u
+        listo.set()
+
+    ready = _crear_app_ready(tmp_path)
+    lic_valida = LicenseState(
+        status="valid",
+        license=License("l", "c", ("health",), date.today(), date.today()),
+    )
+    hilo = threading.Thread(
+        target=serve,
+        args=(lambda: ready,),
+        kwargs={
+            "settings": load_ui_settings(),
+            "wording": load_app_wording(),
+            "open_browser": _abrir1,
+            "vad_factory": lambda: _dummy_vad,
+            "profiles": store,
+            "audit": audit,
+            "license": lic_valida,
+            "retention_days": 0,
+        },
+        daemon=True,
+    )
+    hilo.start()
+    listo.wait(timeout=5.0)
+    url = info["url"]
+    try:
+        prof_id = store.professionals()[0].id
+        r_entrar = httpx.post(
+            f"{url}/entrar", json={"profile": prof_id, "pin": "9999"}, timeout=5.0
+        )
+        assert r_entrar.status_code == 200
+
+        assert not (blobs / f"{huella_previa}.bin").exists()
+        lineas_purged = [linea for linea in audit.lines() if linea["kind"] == "texts_purged"]
+        assert len(lineas_purged) == 1
+        assert lineas_purged[0]["actor"] == prof_id
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+    # Con retention_days=None no corre
+    blobs2 = tmp_path / "blobs2"
+    audit2 = AuditLog(tmp_path / "audit2.jsonl", blobs=blobs2, key=key)
+    l2 = audit2.record("review_saved", actor=actor_previo, texts={"dato": "viejo2"})
+    h2 = l2["blob"]
+    assert (blobs2 / f"{h2}.bin").exists()
+
+    store2 = ProfileStore(tmp_path / "profiles2.json")
+    store2.create(name="Dr. Pedro", registry="67890", pin="1111")
+    info2: dict[str, Any] = {}
+    listo2 = threading.Event()
+
+    def _abrir2(u: str) -> None:
+        info2["url"] = u
+        listo2.set()
+
+    hilo2 = threading.Thread(
+        target=serve,
+        args=(lambda: ready,),
+        kwargs={
+            "settings": load_ui_settings(),
+            "wording": load_app_wording(),
+            "open_browser": _abrir2,
+            "vad_factory": lambda: _dummy_vad,
+            "profiles": store2,
+            "audit": audit2,
+            "license": lic_valida,
+            "retention_days": None,
+        },
+        daemon=True,
+    )
+    hilo2.start()
+    listo2.wait(timeout=5.0)
+    url2 = info2["url"]
+    try:
+        prof_id2 = store2.professionals()[0].id
+        r_entrar2 = httpx.post(
+            f"{url2}/entrar", json={"profile": prof_id2, "pin": "1111"}, timeout=5.0
+        )
+        assert r_entrar2.status_code == 200
+
+        assert (blobs2 / f"{h2}.bin").exists()
+        assert not any(linea["kind"] == "texts_purged" for linea in audit2.lines())
+    finally:
+        httpx.post(f"{url2}/salir", timeout=5.0)
+        hilo2.join(timeout=5.0)
+
+
+def test_tools_licencias_show_archivo_inexistente(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """B.2 §10: tools/licencias.py show con un archivo que no existe => 1 y 'no existe'."""
+    archivo_inexistente = tmp_path / "no_existe_para_nada.json"
+    rc = licencias.show(archivo_inexistente)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"error: no existe {archivo_inexistente}" in err
+

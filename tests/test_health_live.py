@@ -29,7 +29,7 @@ from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 from aida.arms.health.codes import DiagnosticCode
 from aida.arms.health.consultation import Consultation, PreparedConsultation
 from aida.arms.health.extract import build_health_extractor
-from aida.arms.health.live import LiveSession, line_kind
+from aida.arms.health.live import LiveSession, line_kind, recording_wav
 from aida.arms.health.match import build_index
 from aida.arms.health.note import ClinicalNote, RenderedNote
 from aida.arms.health.sections import SectionSpec, load_sections
@@ -138,8 +138,8 @@ def test_live_session_feed_pcm_y_snapshot(tmp_path: Path) -> None:
 
 def test_live_session_wav_muestras_exactas(tmp_path: Path) -> None:
     """Caso 4 (§B.2): El WAV de la sesión tiene exactamente las muestras
-
-    enviadas fuera de pausa.
+    enviadas fuera de pausa (adaptado plan 85a: grabación sellada reconstruida
+    con recording_wav).
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
@@ -158,17 +158,20 @@ def test_live_session_wav_muestras_exactas(tmp_path: Path) -> None:
     part2 = (np.ones(512 * 3, dtype=np.int16) * 222).tobytes()
     session.feed(part1)
     session.feed(part2)
-    wav_path = session.stop()
+    sealed_path = session.stop()
+    assert sealed_path == session.audio_path
 
-    with wave.open(str(wav_path), "rb") as w:
+    destino_wav = tmp_path / "audio_reconstruido.wav"
+    recording_wav(session.audio_path, session.seal_key, destino_wav)
+    with wave.open(str(destino_wav), "rb") as w:
         frames = w.readframes(w.getnframes())
         assert frames == part1 + part2
 
 
 def test_live_session_pausa_no_escribe_pcm_y_snapshot_marca_pause(tmp_path: Path) -> None:
     """Caso 5 (§B.2, M2): En pausa, feed no escribe nada al WAV y snapshot
-
-    trae una línea pause.
+    trae una línea pause (adaptado plan 85a: grabación sellada reconstruida
+    con recording_wav).
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
@@ -197,8 +200,11 @@ def test_live_session_pausa_no_escribe_pcm_y_snapshot_marca_pause(tmp_path: Path
     lines = snap["lines"]
     assert any(line["kind"] == "pause" for line in lines)
 
-    wav_path = session.stop()
-    with wave.open(str(wav_path), "rb") as w:
+    sealed_path = session.stop()
+    assert sealed_path == session.audio_path
+    destino_wav = tmp_path / "audio_reconstruido.wav"
+    recording_wav(session.audio_path, session.seal_key, destino_wav)
+    with wave.open(str(destino_wav), "rb") as w:
         frames = w.readframes(w.getnframes())
         assert frames == part1 + part2
         assert paused_part not in frames
@@ -447,9 +453,9 @@ def test_live_session_error_documento_historia_vacia_y_continua(tmp_path: Path) 
 
 
 def test_live_session_stop_cierra_wav_y_feed_posterior_ignorado(tmp_path: Path) -> None:
-    """Caso 11 (§B.2): stop cierra el WAV y devuelve su ruta; feed después de
-
-    stop no hace nada.
+    """Caso 11 (§B.2): stop cierra el archivo sellado y devuelve su ruta; feed
+    después de stop no hace nada (adaptado plan 85a: grabación sellada reconstruida
+    con recording_wav).
     """
     consultation = _crear_consultation(tmp_path)
     secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
@@ -467,14 +473,16 @@ def test_live_session_stop_cierra_wav_y_feed_posterior_ignorado(tmp_path: Path) 
     initial_pcm = (np.ones(512 * 2, dtype=np.int16) * 44).tobytes()
     session.feed(initial_pcm)
 
-    wav_path = session.stop()
-    assert wav_path == session.audio_path
-    assert wav_path.exists()
+    sealed_path = session.stop()
+    assert sealed_path == session.audio_path
+    assert sealed_path.exists()
 
     # feed posterior no hace nada y no falla
     session.feed((np.ones(512 * 3, dtype=np.int16) * 55).tobytes())
 
-    with wave.open(str(wav_path), "rb") as w:
+    destino_wav = tmp_path / "audio_reconstruido.wav"
+    recording_wav(session.audio_path, session.seal_key, destino_wav)
+    with wave.open(str(destino_wav), "rb") as w:
         frames = w.readframes(w.getnframes())
         assert frames == initial_pcm
 
@@ -483,3 +491,37 @@ def test_line_kind() -> None:
     """line_kind clasifica con 'q' interrogaciones y 'a' respuestas."""
     assert line_kind("¿Qué síntomas tiene?") == "q"
     assert line_kind("Siento dolor de cabeza.") == "a"
+
+
+def test_live_session_feed_solo_audio_pcm_sealed_y_recording_wav(tmp_path: Path) -> None:
+    """B.2 §5: El vivo: tras feed, en la carpeta solo audio.pcm.sealed;
+    recording_wav da las muestras enviadas.
+    """
+    consultation = _crear_consultation(tmp_path)
+    secciones = (SectionSpec("motivo", "Motivo", (), codable=True, in_note=True),)
+    consent = consultation.record_consent(owner=AgentId("doc_85"), mode="recorded", actor=_ACTOR)
+    sesion_dir = tmp_path / "sesion"
+    sesion_dir.mkdir()
+    session = LiveSession(
+        consultation=consultation,
+        owner="doc_85",
+        note_sections=secciones,
+        history_text=lambda: "",
+        workdir=sesion_dir,
+        transcriber=None,
+        vad=_fake_vad,
+        consent=consent,
+    )
+    part = (np.ones(512 * 4, dtype=np.int16) * 333).tobytes()
+    session.feed(part)
+
+    archivos = [f.name for f in sesion_dir.iterdir()]
+    assert archivos == ["audio.pcm.sealed"]
+
+    destino = tmp_path / "reconstruido.wav"
+    recording_wav(session.audio_path, session.seal_key, destino)
+    with wave.open(str(destino), "rb") as w:
+        frames = w.readframes(w.getnframes())
+        assert frames == part
+    session.stop()
+

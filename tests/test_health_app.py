@@ -613,16 +613,23 @@ def test_servidor_fallo_transcripcion_pasa_a_problem_y_limpia_workdir(tmp_path: 
 
 
 def test_servidor_limpia_carpetas_huerfanas_al_arrancar(tmp_path: Path) -> None:
-    """Caso 17 (§B.4, M6): Las carpetas aida-sesion-* existentes antes de serve se
-    borran al arrancar para evitar fuga de audios en claro tras caídas previas."""
+    """Caso 17 (§B.4, M6, 85a M4): Las carpetas aida-sesion-* y aida-claro-* existentes antes
+    de serve se borran al arrancar para evitar fuga de audios en claro tras caídas previas."""
+    from aida.platform.sealed import PLAIN_PREFIX
+
     huerfana = Path(tempfile.gettempdir()) / f"{_WORKDIR_PREFIX}huerfana-{uuid.uuid4()}"
     huerfana.mkdir(parents=True, exist_ok=True)
     (huerfana / "audio-secreto.wav").write_bytes(b"datos sensibles")
+
+    claro_huerfana = Path(tempfile.gettempdir()) / f"{PLAIN_PREFIX}huerfana-{uuid.uuid4()}"
+    claro_huerfana.mkdir(parents=True, exist_ok=True)
+    (claro_huerfana / "audio.wav").write_bytes(b"claro sensible")
 
     ready = _crear_app_ready(tmp_path)
     url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
     try:
         assert not huerfana.exists()
+        assert not claro_huerfana.exists()
     finally:
         httpx.post(f"{url}/salir", timeout=5.0)
         hilo.join(timeout=5.0)
@@ -1348,5 +1355,89 @@ def test_servidor_ajustes_refleja_origenes_clave_y_oculta_descarga(tmp_path: Pat
     finally:
         httpx.post(f"{url2}/salir", timeout=5.0)
         hilo2.join(timeout=5.0)
+
+
+def test_app_archivos_sellados_y_sin_restos_en_claro(tmp_path: Path) -> None:
+    """B.2 §4: La aplicación: tras /audio y /documento, la carpeta de sesión solo tiene
+    *.sealed y ninguno empieza por RIFF, ID3 ni %PDF; tras procesar (con éxito y
+    con la transcripción fallando), no queda ninguna carpeta aida-claro-*.
+    """
+    from aida.platform.sealed import PLAIN_PREFIX
+    pytest.importorskip("av", reason="requiere el extra de captura (av)")
+    wording = load_app_wording()
+
+    # 1. Camino con éxito
+    ready = _crear_app_ready(tmp_path)
+    url, _token, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, wording=wording)
+    try:
+        wav_data = _crear_wav_minimo()
+        doc_data = b"%PDF-1.4 Documento de prueba clinica"
+        httpx.post(
+            f"{url}/audio", content=wav_data, headers={"X-Name": "consulta.wav"}, timeout=5.0
+        )
+        httpx.post(
+            f"{url}/documento", content=doc_data, headers={"X-Name": "historia.pdf"}, timeout=5.0
+        )
+
+        carpetas = sorted(
+            Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        assert len(carpetas) >= 1
+        workdir = carpetas[0]
+
+        archivos = list(workdir.iterdir())
+        assert len(archivos) == 2
+        assert all(f.name.endswith(".sealed") for f in archivos)
+        for f in archivos:
+            cabecera = f.read_bytes()[:10]
+            assert not cabecera.startswith(b"RIFF")
+            assert not cabecera.startswith(b"ID3")
+            assert not cabecera.startswith(b"%PDF")
+
+        httpx.post(f"{url}/empezar", json={"owner": "PAC-85", "consent": True}, timeout=5.0)
+        for _ in range(50):
+            estado = httpx.get(f"{url}/estado", timeout=5.0).json()
+            if estado.get("state") == "review":
+                break
+            time.sleep(0.1)
+        assert estado.get("state") == "review"
+        assert list(Path(tempfile.gettempdir()).glob(f"{PLAIN_PREFIX}*")) == []
+    finally:
+        httpx.post(f"{url}/salir", timeout=5.0)
+        hilo.join(timeout=5.0)
+
+    # 2. Con fallo de transcripción
+    ready_fail = _crear_app_ready(tmp_path, fail_stt=True)
+    url_f, _token_f, _port_f, hilo_f, _ = _lanzar_servidor_app(lambda: ready_fail, wording=wording)
+    try:
+        httpx.post(
+            f"{url_f}/audio",
+            content=_crear_wav_minimo(),
+            headers={"X-Name": "consulta.wav"},
+            timeout=5.0,
+        )
+        httpx.post(
+            f"{url_f}/documento",
+            content=b"%PDF-1.4 doc",
+            headers={"X-Name": "historia.pdf"},
+            timeout=5.0,
+        )
+        httpx.post(
+            f"{url_f}/empezar", json={"owner": "PAC-85-FAIL", "consent": True}, timeout=5.0
+        )
+
+        for _ in range(50):
+            estado = httpx.get(f"{url_f}/estado", timeout=5.0).json()
+            if estado.get("state") == "problem":
+                break
+            time.sleep(0.1)
+        assert estado.get("state") == "problem"
+        assert list(Path(tempfile.gettempdir()).glob(f"{PLAIN_PREFIX}*")) == []
+    finally:
+        httpx.post(f"{url_f}/salir", timeout=5.0)
+        hilo_f.join(timeout=5.0)
+
 
 

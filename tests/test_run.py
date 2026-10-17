@@ -4776,3 +4776,43 @@ def test_check_consult_cache_key_invalida_en_archivo_nombra_ruta(
     captured = capsys.readouterr()
     assert str(archivo) in captured.err
     assert "AIDA_CONSULT_CACHE_KEY" not in captured.err
+
+
+def test_run_caches_y_launch_health_leen_retencion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """B.2 §9: run: las cachés se construyen con los plazos del pack
+    (24 h y 1 h en segundos), y launch_health pasa retention_days = audit_texts_days.
+    """
+    from aida import run
+    from aida.arms.health.retention import Retention
+
+    ret_mock = Retention(audit_texts_days=999, transcripts_hours=48, summaries_hours=3)
+    monkeypatch.setattr("aida.arms.health.retention.load_retention", lambda: ret_mock)
+
+    stt_mock = MagicMock()
+    trans = run._transcription(stt_mock, Fernet.generate_key().decode())
+    assert hasattr(trans, "_cache")
+    assert trans._cache._ttl == 48 * 3600
+
+    parser = run._construir_parser()
+    args = parser.parse_args(
+        ["--consultation", "--audio", "a.wav", "--history", "h.pdf", "--owner", "o"]
+    )
+    c = run._build_consultation(
+        args, stt=MagicMock(), ocr=MagicMock(), key=Fernet.generate_key().decode()
+    )
+    assert c is not None
+    assert c._cache._ttl == 3 * 3600
+
+    llamadas_serve: list[dict[str, Any]] = []
+    monkeypatch.setattr("aida.arms.health.app.serve", lambda *a, **kw: llamadas_serve.append(kw))
+    arm_mock = MagicMock()
+    arm_mock.id = "health"
+    arm_mock.name = "Salud"
+    lic_mock = MagicMock()
+
+    run.launch_health(args, lic_mock, arm_mock)
+    assert len(llamadas_serve) == 1
+    assert llamadas_serve[0]["retention_days"] == 999
+
