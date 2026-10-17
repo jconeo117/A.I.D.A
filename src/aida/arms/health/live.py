@@ -30,6 +30,7 @@ from aida.arms.health.sections import SectionSpec
 from aida.arms.health.segment import is_interrogative
 from aida.engine.events import EventLog
 from aida.engine.ontology import AgentId
+from aida.platform.sealed import SealedAppender, read_appended
 
 if TYPE_CHECKING:
     from aida.voice.diarize import TranscriptSegment
@@ -61,6 +62,26 @@ class _Field:
     updated: float = 0.0
 
 
+RECORDING_NAME = "audio.pcm.sealed"
+
+
+def _ephemeral_key() -> bytes:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key()
+
+
+def recording_wav(sealed: Path, key: bytes, target: Path) -> Path:
+    """La grabación sellada, como WAV de 16 kHz mono: lo que necesita el análisis final.
+    Quien llama decide dónde vive ese claro, y lo borra."""
+    with wave.open(str(target), "wb") as salida:
+        salida.setnchannels(1)
+        salida.setsampwidth(2)
+        salida.setframerate(RATE)
+        salida.writeframes(read_appended(sealed, key))
+    return target
+
+
 class LiveSession:
     """Una consulta grabándose. Los métodos públicos los llama el servidor desde sus
     hilos; todo lo que comparten va bajo un candado."""
@@ -77,6 +98,7 @@ class LiveSession:
         vad: Callable[[np.ndarray], np.ndarray],
         consent: ConsentRecord | None,
         clock: Callable[[], float] = time.monotonic,
+        seal_key: bytes | None = None,
     ) -> None:
         # Antes de abrir el WAV: sin autorización no se graba ni un trozo (plan 82).
         consultation.require_consent(AgentId(owner), consent)
@@ -91,11 +113,11 @@ class LiveSession:
         self._lock = threading.Lock()
         self._chunks: queue.Queue[np.ndarray | None] = queue.Queue()
         self._buffer = np.zeros(0, dtype=np.float32)
-        # Abierto toda la sesión y cerrado en `stop`: un `with` no cabe aquí.
-        self._wav = wave.open(str(workdir / "audio.wav"), "wb")  # noqa: SIM115
-        self._wav.setnchannels(1)
-        self._wav.setsampwidth(2)
-        self._wav.setframerate(RATE)
+        # La grabación, sellada por trozos (plan 85a): nunca en claro en disco. Sin
+        # clave del equipo, una de esta sesión: se pierde con el proceso, pero tampoco
+        # queda en claro.
+        self._seal_key = seal_key if seal_key is not None else _ephemeral_key()
+        self._recording = SealedAppender(workdir / RECORDING_NAME, self._seal_key)
         self._lines: list[tuple[str, str]] = []
         self._fields = {spec.section_id: _Field(spec=spec) for spec in note_sections}
         self._order = tuple(spec.section_id for spec in note_sections)
@@ -115,7 +137,12 @@ class LiveSession:
 
     @property
     def audio_path(self) -> Path:
-        return self._workdir / "audio.wav"
+        """La grabación sellada (PCM por trozos). Para leerla, `recording_wav`."""
+        return self._recording.path
+
+    @property
+    def seal_key(self) -> bytes:
+        return self._seal_key
 
     @property
     def consent(self) -> ConsentRecord | None:
@@ -138,7 +165,7 @@ class LiveSession:
         with self._lock:
             if self._paused or self._stopped:
                 return
-            self._wav.writeframes(pcm)
+            self._recording.append(pcm)
         muestras = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         self._buffer = np.concatenate((self._buffer, muestras))
         while self._buffer.size >= CHUNK:
@@ -181,8 +208,6 @@ class LiveSession:
         self._chunks.put(None)
         for hilo in self._threads:
             hilo.join(timeout=30)
-        with self._lock:
-            self._wav.close()
         return self.audio_path
 
     def mine(self) -> Mapping[str, str]:

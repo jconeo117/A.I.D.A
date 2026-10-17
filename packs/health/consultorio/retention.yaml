@@ -1,0 +1,15 @@
+# Cuánto se guarda cada cosa (plan 85a, Ley 1581: política de borrado declarada).
+#
+# El audio no tiene plazo: se borra al terminar la sesión, y lo que un proceso caído
+# dejara en claro, al arrancar.
+#
+# Los textos cifrados de la auditoría (el borrador de AIDA y la versión final de cada
+# revisión): 15 años, alineado con la conservación de la historia clínica en Colombia
+# (Resolución 839 de 2017). A confirmar con el asesor. Pasado el plazo se borran los
+# textos; la línea de auditoría queda, y el borrado deja la suya.
+audit_texts_days: 5475
+
+# Las cachés cifradas: la transcripción, para no volver a transcribir lo mismo en el día;
+# el resumen, para la consulta en curso.
+transcripts_hours: 24
+summaries_hours: 1

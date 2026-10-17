@@ -102,6 +102,9 @@ def show(archivo: Path) -> int:
     sys.path.insert(0, str(RAIZ / "src"))
     from aida.platform.license import read_license
 
+    if not archivo.is_file():
+        print(f"error: no existe {archivo}", file=sys.stderr)
+        return 1
     estado = read_license(archivo.read_text(encoding="utf-8"), today=date.today())
     print(f"estado: {estado.status}")
     if estado.license is not None:

@@ -19,9 +19,9 @@ import tempfile
 import threading
 import time
 import webbrowser
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
 import yaml
+from cryptography.fernet import Fernet
 
 from aida.arms.health.audio import to_wav
 from aida.arms.health.capture import ModelUnavailableError, TranscriptionError
@@ -39,7 +40,13 @@ from aida.arms.health.consultation import (
     ConsultationResult,
     PreparedConsultation,
 )
-from aida.arms.health.live import LiveSession, LiveTranscriber, line_kind
+from aida.arms.health.live import (
+    RECORDING_NAME,
+    LiveSession,
+    LiveTranscriber,
+    line_kind,
+    recording_wav,
+)
 from aida.arms.health.note import RenderedNote
 from aida.arms.health.review import ReviewItem, review_items
 from aida.arms.health.review_ui import (
@@ -62,6 +69,12 @@ from aida.engine.ontology import AgentId
 from aida.platform.audit import AuditLog
 from aida.platform.identity import IdentityError, Professional, ProfileStore
 from aida.platform.license import LicenseState, read_license
+from aida.platform.sealed import (
+    plain_copy,
+    plain_directory,
+    purge_plain_leftovers,
+    seal_bytes,
+)
 from aida.resources import data_root, user_dir
 
 _RAIZ = data_root()
@@ -736,6 +749,9 @@ class AppReady:
     local_model: bool = True
     """Si hay modelo local de respaldo (plan 78). Sin él se trabaja con la nube, y el
     inicio lo avisa: una consulta sin conexión no se podría transcribir."""
+    seal_key: bytes | None = None
+    """Con qué se sella lo que se guarda durante una sesión (plan 85a): la clave del
+    equipo. Sin ella, una de esta ejecución, que se pierde al cerrar."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -913,9 +929,11 @@ def serve(
     arm_id: str = "health",
     arm_name: str = "",
     today: Callable[[], date] = date.today,
+    retention_days: int | None = None,
 ) -> None:
     """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
     Una sesión cada vez: mientras una se procesa, no empieza otra."""
+    purge_plain_leftovers()
     for resto in sorted(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*")):
         shutil.rmtree(resto, ignore_errors=True)
     secciones: Sequence[SectionSpec] = (
@@ -936,6 +954,22 @@ def serve(
         profiles if profiles is not None else ProfileStore(user_dir("config") / "profiles.json")
     )
     auditoria = audit if audit is not None else AuditLog()
+    # Sin clave del equipo, una de esta ejecución: tampoco queda nada en claro.
+    efimera = Fernet.generate_key()
+
+    def clave(ready: AppReady | None) -> bytes:
+        if ready is not None and ready.seal_key is not None:
+            return ready.seal_key
+        return efimera
+
+    def retener(actor: Professional) -> None:
+        """Con el candado tomado, al abrir sesión: borra los textos de auditoría que
+        cumplieron su plazo (plan 85a), firmado por quien abre."""
+        if retention_days is None:
+            return
+        corte = datetime.now().astimezone() - timedelta(days=retention_days)
+        auditoria.purge_texts(corte, actor=actor)
+
     # La licencia vigente en esta sesión; cambia si se carga otra desde la aplicación.
     licencia = [license]
     inactividad = wording.idle_lock_minutes * 60
@@ -1017,18 +1051,22 @@ def serve(
         excluded: frozenset[str] = frozenset(),
     ) -> None:
         try:
-            wav = audio.with_name("audio-16k.wav")
-            to_wav(audio, wav)
-            prepared = ready.consultation.prepare(
-                owner=AgentId(owner),
-                audio_path=wav,
-                history_text=lambda: ready.reader.read(document),
-                consent=consent,
-            )
-            draft = _keep_mine(
-                draft_for_screen(ready.consultation, prepared), mine or {}, secciones
-            )
-            vista = history_view(document, prepared.history)
+            # En claro solo aquí dentro, y en temporales propios que se borran al salir
+            # del `with`, haya ido bien o no (plan 85a).
+            with (
+                _plain_audio(audio, clave(ready)) as wav,
+                plain_copy(document, clave(ready)) as historia,
+            ):
+                prepared = ready.consultation.prepare(
+                    owner=AgentId(owner),
+                    audio_path=wav,
+                    history_text=lambda: ready.reader.read(historia),
+                    consent=consent,
+                )
+                draft = _keep_mine(
+                    draft_for_screen(ready.consultation, prepared), mine or {}, secciones
+                )
+                vista = history_view(historia, prepared.history)
         except (TranscriptionError, ModelUnavailableError) as exc:
             with lock:
                 session.clean()
@@ -1278,6 +1316,7 @@ def serve(
                         perfil = str(pedido.get("profile", ""))
                         session.professional = perfiles.verify(perfil, str(pedido.get("pin", "")))
                         auditoria.record("session_opened", actor=session.professional)
+                        retener(session.professional)
                         tras_identificarse()
                         self._json(200, {"ok": True})
                     elif (
@@ -1330,6 +1369,7 @@ def serve(
             if primero:
                 session.professional = nuevo
                 auditoria.record("session_opened", actor=nuevo)
+                retener(nuevo)
                 tras_identificarse()
             self._json(200, {"ok": True})
 
@@ -1440,8 +1480,10 @@ def serve(
                 if session.workdir is None:
                     session.workdir = Path(tempfile.mkdtemp(prefix=_WORKDIR_PREFIX))
                 sufijo = _safe_suffix(self.headers.get("X-Name", ""))
-                destino = session.workdir / f"{accion}{sufijo}"
-                destino.write_bytes(datos)
+                # Sellado al escribirlo (plan 85a): lo subido nunca está en claro en disco.
+                destino = session.workdir / f"{accion}{sufijo}.sealed"
+                ready = session.ready
+                seal_bytes(destino, datos, clave(ready if isinstance(ready, AppReady) else None))
                 if accion == "audio":
                     session.audio = destino
                 else:
@@ -1520,15 +1562,17 @@ def serve(
                         consultation=ready.consultation,
                         owner=owner,
                         note_sections=secciones,
-                        history_text=lambda: ready.reader.read(documento),
+                        history_text=lambda: _read_sealed(ready.reader, documento, clave(ready)),
                         workdir=session.workdir,
                         transcriber=ready.live_stt,
                         vad=crear_vad(),
+                        seal_key=clave(ready),
                         consent=registro,
                         clock=clock,
                     )
                     session.live.start()
-                    session.view = history_view(documento, "")
+                    with plain_copy(documento, clave(ready)) as historia:
+                        session.view = history_view(historia, "")
                     session.state = "live"
                     self._json(200, {"ok": True})
                     return
@@ -2426,6 +2470,26 @@ document.getElementById('other').addEventListener('click', async () => {
   location.reload();
 });
 """
+
+
+@contextlib.contextmanager
+def _plain_audio(audio: Path, key: bytes) -> Iterator[Path]:
+    """El audio de la sesión, como WAV de 16 kHz en un temporal propio. La grabación del
+    vivo ya es PCM a 16 kHz; lo subido se descifra y se convierte."""
+    with plain_directory() as carpeta:
+        destino = carpeta / "audio-16k.wav"
+        if audio.name == RECORDING_NAME:
+            recording_wav(audio, key, destino)
+            yield destino
+            return
+        with plain_copy(audio, key) as original:
+            to_wav(original, destino)
+        yield destino
+
+
+def _read_sealed(reader: DocumentReader, document: Path, key: bytes) -> str:
+    with plain_copy(document, key) as historia:
+        return reader.read(historia)
 
 
 def _license_file() -> Path:

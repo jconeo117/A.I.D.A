@@ -346,6 +346,7 @@ def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManif
     la aplicación de salud se monta con piezas de esta CLI; pasará al brazo cuando llegue
     el segundo (102)."""
     from aida.arms.health.app import load_app_wording, serve
+    from aida.arms.health.retention import load_retention
     from aida.arms.health.review_ui import load_ui_settings
 
     serve(
@@ -359,6 +360,7 @@ def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManif
         license_path=_license_path(),
         arm_id=arm.id,
         arm_name=arm.name,
+        retention_days=load_retention().audit_texts_days,
     )
     return 0
 
@@ -453,14 +455,17 @@ def _transcription(stt: object | None, key: str) -> object:
     Si falta la credencial, no se avisa a medias ni se falla: se usa el local y
     se dice. Un consultorio sin clave tiene que poder trabajar.
     """
-
     from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.retention import load_retention
     from aida.arms.health.transcription import FallbackTranscription
     from aida.arms.health.transcripts import CachedSTT, TranscriptCache
 
     ajustes = load_capture_settings()
+    # El plazo, del pack (plan 85a): una política de borrado declarada, no escrita aquí.
     cache = TranscriptCache(
-        user_dir("cache") / "transcripciones", key=key.encode()
+        user_dir("cache") / "transcripciones",
+        key=key.encode(),
+        ttl_seconds=load_retention().transcripts_hours * 3600,
     )
     cache.purge_expired()
     prompt = hashlib.blake2b(
@@ -633,6 +638,8 @@ def _build_consultation(
     Recibe STT y OCR ya construidos: quien llama decide si los comparte
     con el bucle de conversación (rama --mic) o los crea solo para esto.
     """
+    from aida.arms.health.retention import load_retention
+
     if key is None:
         key = _check_consult_cache_key()
         if key is None:
@@ -678,7 +685,9 @@ def _build_consultation(
         match_top_n=cotejo.top_n,
         provider=cast(Any, _cognition(args, ajustes_nota)),
         cache=ConsultationCache(
-            user_dir("cache") / "consultas", key=key.encode()
+            user_dir("cache") / "consultas",
+            key=key.encode(),
+            ttl_seconds=load_retention().summaries_hours * 3600,
         ),
         log=log if log is not None else EventLog(),
         diarizer=cast(Any, diarizer),
@@ -752,6 +761,7 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
         writer=escritor,
         live_stt=_live_transcriber(),
         local_model=local,
+        seal_key=key.encode(),
     )
 
 

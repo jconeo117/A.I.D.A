@@ -38,6 +38,7 @@ KINDS = (
     "review_saved",
     "exported",
     "license_loaded",
+    "texts_purged",
 )
 
 
@@ -112,11 +113,39 @@ class AuditLog:
             raise ValueError("sin carpeta de textos o sin clave no se puede mostrar")
         from cryptography.fernet import Fernet
 
-        claro = Fernet(self._key).decrypt((self._blobs / f"{blob}.bin").read_bytes())
+        archivo = self._blobs / f"{blob}.bin"
+        if not archivo.is_file():
+            # Borrado por retención (plan 85a): la línea queda, el texto no.
+            raise ValueError("ese texto se borró al cumplir su plazo de retención")
+        claro = Fernet(self._key).decrypt(archivo.read_bytes())
         if hashlib.sha256(claro).hexdigest() != blob:
             raise ValueError("el texto guardado no corresponde a su huella")
         datos = json.loads(claro)
         return dict(datos)
+
+    def purge_texts(self, cutoff: datetime, *, actor: Professional) -> int:
+        """Borra los textos cifrados de las líneas anteriores a `cutoff` (plan 85a: la
+        retención declarada en el pack). Las líneas quedan: la auditoría no pierde el
+        rastro, solo el contenido. Si borra algo, lo dice con una línea propia, firmada
+        por quien la provoca; si no hay nada que borrar, no escribe nada."""
+        if self._blobs is None:
+            return 0
+        borrados = 0
+        for linea in self._chain.lines():
+            huella = linea.get("blob", "")
+            if not huella or datetime.fromisoformat(linea["at"]) >= cutoff:
+                continue
+            archivo = self._blobs / f"{huella}.bin"
+            if archivo.is_file():
+                archivo.unlink()
+                borrados += 1
+        if borrados:
+            self.record(
+                "texts_purged",
+                actor=actor,
+                data={"count": str(borrados), "before": cutoff.isoformat(timespec="seconds")},
+            )
+        return borrados
 
     def lines(self) -> tuple[dict[str, str], ...]:
         return self._chain.lines()
