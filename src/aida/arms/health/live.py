@@ -101,8 +101,7 @@ class LiveSession:
         seal_key: bytes | None = None,
     ) -> None:
         # Antes de abrir el WAV: sin autorización no se graba ni un trozo (plan 82).
-        consultation.require_consent(AgentId(owner), consent)
-        self._consent = consent
+        self._consent = consultation.require_consent(AgentId(owner), consent)
         self._consultation = consultation
         self._owner = AgentId(owner)
         self._history_text = history_text
@@ -321,7 +320,11 @@ class LiveSession:
             texto = "\n".join(t for k, t in self._lines if k == "line")
             historia = self._history or ""
         preparado = self._consultation.analyze(
-            owner=self._owner, transcript=texto, history_text=historia, log=EventLog()
+            owner=self._owner,
+            transcript=texto,
+            history_text=historia,
+            cloud=self._consent.cloud,
+            log=EventLog(),
         )
         origenes = {
             CodeOrigin.TODAY: "today", CodeOrigin.HISTORY: "history", CodeOrigin.BOTH: "both"

@@ -27,7 +27,7 @@ from aida.engine.explain import explain_deliberation
 from aida.engine.loop import Loop
 from aida.engine.pack import PackError, describe_pack, load_pack
 from aida.engine.state import AgentState, ExecutionState
-from aida.keys import cloud_key
+from aida.keys import cloud_key, local_only, save_local_only
 from aida.resources import data_root, user_dir
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from aida.arms.health.note import NoteSettings
     from aida.arms.health.review import Answer, ReviewItem
     from aida.arms.health.transcription import CloudWhisperSTT
+    from aida.arms.health.transcripts import TranscriptCache
     from aida.engine.events import EventLog
     from aida.platform.arms import ArmManifest
     from aida.platform.audit import AuditLog
@@ -154,6 +155,12 @@ def _construir_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="declara que quien es grabado autorizó la grabación y su tratamiento (plan 82); "
         "sin ella --consultation y --mic --history no transcriben",
+    )
+    parser.add_argument(
+        "--consent-cloud",
+        action="store_true",
+        help="con --consent: también autorizó el procesamiento en la nube (plan 85b); "
+        "sin ella, todo en este equipo",
     )
     parser.add_argument(
         "--as",
@@ -436,6 +443,62 @@ def _review_metrics_path() -> Path:
     return user_dir("data") / "revisiones.jsonl"
 
 
+def _transcript_cache(key: str) -> TranscriptCache:
+    """La caché de transcripciones, con su plazo del pack (plan 85a): una política de
+    borrado declarada, no escrita aquí."""
+    from aida.arms.health.retention import load_retention
+    from aida.arms.health.transcripts import TranscriptCache
+
+    cache = TranscriptCache(
+        user_dir("cache") / "transcripciones",
+        key=key.encode(),
+        ttl_seconds=load_retention().transcripts_hours * 3600,
+    )
+    cache.purge_expired()
+    return cache
+
+
+def _prompt_fingerprint(ajustes: CaptureSettings) -> str:
+    return hashlib.blake2b(ajustes.transcription_prompt.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _local_transcription(stt: object | None, key: str) -> object | None:
+    """El respaldo local con su propia caché, etiquetado como local (`I-138`). `None` sin
+    modelo local: la composición de la nube no lo necesita para existir."""
+    from aida.arms.health.capture import load_capture_settings
+    from aida.arms.health.transcripts import CachedSTT
+
+    if stt is None:
+        return None
+    ajustes = load_capture_settings()
+    return CachedSTT(
+        stt,
+        _transcript_cache(key),
+        model=(
+            f"local:{ajustes.model}:{ajustes.device}:{ajustes.compute_type}:"
+            f"{_prompt_fingerprint(ajustes)}"
+        ),
+        no_speech_threshold=ajustes.no_speech_threshold,
+    )
+
+
+def _local_cognition() -> object | None:
+    """El proveedor de redacción de este equipo: lo único que sirve sin autorización de
+    nube (plan 85b)."""
+    return build_provider("ollama")
+
+
+def _local_note_candidates() -> tuple[tuple[str, Any], ...]:
+    local = build_provider("ollama")
+    return () if local is None else ((f"ollama/{local.model}", local),)
+
+
+def _cloud_allowed() -> bool:
+    """La nube solo existe con clave y sin «solo en este equipo»: es el mismo criterio
+    que decide la aplicación y la CLI, leído en un solo sitio (plan 85b)."""
+    return cloud_key() is not None and not local_only()
+
+
 def _transcription(stt: object | None, key: str) -> object:
     """El transcriptor que verá la consulta: la nube si el pack la declara, con
     el modelo local de respaldo, y **una caché por camino**.
@@ -456,35 +519,18 @@ def _transcription(stt: object | None, key: str) -> object:
     se dice. Un consultorio sin clave tiene que poder trabajar.
     """
     from aida.arms.health.capture import load_capture_settings
-    from aida.arms.health.retention import load_retention
     from aida.arms.health.transcription import FallbackTranscription
-    from aida.arms.health.transcripts import CachedSTT, TranscriptCache
+    from aida.arms.health.transcripts import CachedSTT
 
     ajustes = load_capture_settings()
-    # El plazo, del pack (plan 85a): una política de borrado declarada, no escrita aquí.
-    cache = TranscriptCache(
-        user_dir("cache") / "transcripciones",
-        key=key.encode(),
-        ttl_seconds=load_retention().transcripts_hours * 3600,
-    )
-    cache.purge_expired()
-    prompt = hashlib.blake2b(
-        ajustes.transcription_prompt.encode("utf-8"), digest_size=8
-    ).hexdigest()
-
-    local = (
-        CachedSTT(
-            stt,
-            cache,
-            model=f"local:{ajustes.model}:{ajustes.device}:{ajustes.compute_type}:{prompt}",
-            no_speech_threshold=ajustes.no_speech_threshold,
-        )
-        if stt is not None
-        else None
-    )
+    local = _local_transcription(stt, key)
     if ajustes.provider != "cloud":
         if local is None:
             raise ValueError("el pack declara transcripción local y no hay modelo local")
+        return local
+    if local_only():
+        if local is None:
+            raise ValueError("«solo en este equipo» sin modelo local no hay con qué transcribir")
         return local
     api_key = cloud_key()
     if not api_key:
@@ -495,8 +541,11 @@ def _transcription(stt: object | None, key: str) -> object:
 
     nube = CachedSTT(
         _cloud_stt(ajustes, api_key),
-        cache,
-        model=f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:{prompt}",
+        _transcript_cache(key),
+        model=(
+            f"cloud:{ajustes.cloud_model}:{ajustes.cloud_language}:"
+            f"{_prompt_fingerprint(ajustes)}"
+        ),
         no_speech_threshold=ajustes.no_speech_threshold,
     )
 
@@ -623,6 +672,28 @@ def _cognition_candidates(
     return tuple(candidatos)
 
 
+def _cloud_countries(args: argparse.Namespace, note_settings: NoteSettings) -> tuple[str, ...]:
+    from aida.arms.health.capture import load_capture_settings
+
+    paises: list[str] = []
+    ajustes_cap = load_capture_settings()
+    if (
+        ajustes_cap.provider == "cloud"
+        and cloud_key() is not None
+        and not local_only()
+        and ajustes_cap.cloud_country
+    ):
+        paises.append(ajustes_cap.cloud_country)
+    nombre_llm = args.llm or os.environ.get("AIDA_LLM_PROVIDER") or note_settings.provider
+    if nombre_llm not in ("ollama", "ninguno", "none"):
+        if nombre_llm not in note_settings.provider_countries:
+            raise ValueError(f"el proveedor de nota {nombre_llm!r} no declara país en note.yaml")
+        pais = note_settings.provider_countries[nombre_llm]
+        if pais and pais not in paises:
+            paises.append(pais)
+    return tuple(paises)
+
+
 def _build_consultation(
     args: argparse.Namespace,
     *,
@@ -648,7 +719,11 @@ def _build_consultation(
     from aida.arms.health.cache import ConsultationCache
     from aida.arms.health.capture import LocalTesseractOCR
     from aida.arms.health.codes import load_catalog, load_reference_catalog
-    from aida.arms.health.consent import ConsentLedger, load_consent_texts
+    from aida.arms.health.consent import (
+        ConsentLedger,
+        check_cloud_countries,
+        load_consent_texts,
+    )
     from aida.arms.health.consultation import Consultation
     from aida.arms.health.history import load_history_layout
     from aida.arms.health.lexicon import load_lexicon
@@ -673,6 +748,8 @@ def _build_consultation(
             f"aida: aviso: {fallo} no redactó la nota, responde {responde}",
             file=sys.stderr,
         )
+
+    check_cloud_countries(load_consent_texts(), _cloud_countries(args, ajustes_nota))
 
     return Consultation(
         wording=default_summary_wording(),
@@ -707,6 +784,9 @@ def _build_consultation(
         consent_texts=load_consent_texts(),
         traceability=load_traceability(),
         note_sections=tuple(s for s in load_sections().sections if s.in_note),
+        local_stt=cast(Any, _local_transcription(stt, key)),
+        local_provider=cast(Any, _local_cognition()),
+        local_note_providers=cast(Any, _local_note_candidates()),
     )
 
 
@@ -735,7 +815,7 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
     # Sin modelo local se trabaja con la nube (plan 78); sin ninguno de los dos no hay
     # con qué transcribir, y la aplicación ofrece descargarlo.
     local = local_model_available()
-    if not local and cloud_key() is None:
+    if not local and not _cloud_allowed():
         return AppProblem("model")
     stt = build_local_capture()[0] if local else None
     ocr = build_document_reader()
@@ -751,17 +831,21 @@ def _app_build(args: argparse.Namespace) -> AppReady | AppProblem:
     )
     if consultation is None:
         return AppProblem("cache_key")
-    candidatos = _cognition_candidates(args, load_note_settings())
+    solo = local_only()
+    candidatos = (
+        _local_note_candidates() if solo else _cognition_candidates(args, load_note_settings())
+    )
     escritor = candidatos[0][0].replace("/", " · ") if candidatos else None
     return AppReady(
         consultation=consultation,
         reader=ocr,
         log=log,
-        cloud=cloud_key() is not None,
+        cloud=_cloud_allowed(),
         writer=escritor,
-        live_stt=_live_transcriber(),
+        live_stt=None if solo else _live_transcriber(),
         local_model=local,
         seal_key=key.encode(),
+        local_only=solo,
     )
 
 
@@ -776,6 +860,7 @@ def _app_tools() -> AppTools:
         local_model_available,
         local_model_bytes,
     )
+    from aida.arms.health.note import load_note_settings
     from aida.keys import (
         cache_key_created,
         check_cloud_key,
@@ -784,6 +869,15 @@ def _app_tools() -> AppTools:
     )
 
     ajustes = load_capture_settings()
+    ajustes_nota = load_note_settings()
+    nombre_nota = os.environ.get("AIDA_LLM_PROVIDER") or ajustes_nota.provider
+    pais_nota = ajustes_nota.provider_countries.get(nombre_nota, "")
+    destinos: list[tuple[str, str]] = []
+    if ajustes.provider == "cloud" and ajustes.cloud_country:
+        destinos.append(("transcription", f"{ajustes.cloud_label} · {ajustes.cloud_country}"))
+    if nombre_nota != "ollama" and pais_nota:
+        destinos.append(("note", f"{nombre_nota} · {pais_nota}"))
+
     return AppTools(
         cloud_key_source=cloud_key_source,
         check_cloud_key=lambda clave: check_cloud_key(clave, base_url=ajustes.cloud_base_url),
@@ -795,6 +889,9 @@ def _app_tools() -> AppTools:
         download_model=lambda: download_local_model(ajustes),
         reader_version=document_reader_version,
         cache_key_since=cache_key_created,
+        local_only=local_only,
+        save_local_only=save_local_only,
+        destinations=tuple(destinos),
     )
 
 
@@ -969,6 +1066,7 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
                                 owner=AgentId(args.owner),
                                 mode="recorded",
                                 actor=profesional_voz,
+                                cloud=args.consent_cloud,
                             ),
                         )
                     except (TranscriptionError, ModelUnavailableError) as exc:
@@ -1149,7 +1247,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if profesional is None:
             return 1
         autorizacion = consultation.record_consent(
-            owner=AgentId(args.owner), mode="uploaded", actor=profesional
+            owner=AgentId(args.owner),
+            mode="uploaded",
+            actor=profesional,
+            cloud=args.consent_cloud,
         )
         linea_autorizacion = load_consent_texts().line(autorizacion)
 

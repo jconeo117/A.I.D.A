@@ -1,33 +1,47 @@
 # La autorización de quien es grabado (plan 82).
 #
-# BORRADOR v1: lo valida el responsable con su asesor legal antes de usarlo con
+# BORRADOR v2: lo valida el responsable con su asesor legal antes de usarlo con
 # pacientes reales. Cambiar un texto es subir `version`: el registro guarda la
 # versión y la huella del texto exacto que se leyó, y un texto cambiado sin subir
 # la versión se delata por la huella.
 #
-# Dice que el audio puede procesarse fuera de Colombia porque hoy la transcripción en
-# la nube lo hace: sin esa frase la autorización no sería informada (plan 85).
-version: "v1"
-line_template: "Autorización registrada · {0} · {1} · texto {2}"
+# Desde la 85b la nube va en su casilla aparte, con su propio país: la autorización
+# de grabar no arrastra el envío fuera de este equipo. `cloud` se lee tras `text`
+# solo si el paciente marcó la casilla, y `consultation` comprueba que el país de
+# cada proveedor en uso aparezca en ese texto.
+version: "v2"
+line_template: "Autorización registrada · {0} · {1} · texto {2} · {3}"
+cloud_labels:
+  "true": "con nube"
+  "false": "solo en este equipo"
 
 recorded:
   title: "Léale esto al paciente antes de grabar"
   text: >-
     AIDA, el asistente de este consultorio, va a grabar y transcribir esta consulta
-    para ayudarme a redactar su historia clínica. Para transcribirla, el audio puede
-    procesarse en un servicio de un proveedor fuera de Colombia. Se guarda cifrado en
-    este equipo, el audio se borra al terminar, y yo reviso todo lo que quede en su
-    historia. Puede negarse sin que cambie su atención, y puede pedir en cualquier
-    momento conocer, corregir o suprimir sus datos. ¿Autoriza la grabación?
+    para ayudarme a redactar su historia clínica. Se guarda cifrado en este equipo, el
+    audio se borra al terminar, y yo reviso todo lo que quede en su historia. Puede
+    negarse sin que cambie su atención, y puede pedir en cualquier momento conocer,
+    corregir o suprimir sus datos. ¿Autoriza la grabación?
   check: "El paciente lo escuchó y autoriza la grabación."
   label: "grabada"
+  cloud:
+    text: >-
+      Además, para transcribirla mejor, el audio y la conversación pueden procesarse en
+      un servicio de un proveedor en Estados Unidos. ¿Lo autoriza también?
+    check: "Autoriza también el procesamiento en la nube, fuera de Colombia."
 
 uploaded:
   title: "Autorización de la grabación"
   text: >-
     Esta consulta se grabó fuera de AIDA. Antes de procesarla, confirme que el
-    paciente autorizó la grabación y que se transcriba con AIDA: puede procesarse en
-    un servicio de un proveedor fuera de Colombia, se guarda cifrada en este equipo,
-    el audio se borra al terminar y usted revisa todo lo que quede en su historia.
+    paciente autorizó la grabación y que se transcriba con AIDA: se guarda cifrada en
+    este equipo, el audio se borra al terminar y usted revisa todo lo que quede en su
+    historia.
   check: "El paciente autorizó la grabación y su tratamiento con AIDA."
   label: "subida"
+  cloud:
+    text: >-
+      Para transcribirla y redactar la nota, el audio y la conversación pueden
+      procesarse en un servicio de un proveedor en Estados Unidos.
+    check: "Autorizó también el procesamiento en la nube, fuera de Colombia."

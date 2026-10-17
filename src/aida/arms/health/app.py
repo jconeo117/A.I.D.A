@@ -119,6 +119,19 @@ _CLAVES_APP = (
     "check_cache",
     "check_writer",
     "check_no_writer",
+    "cloud_note",
+    "cloud_needs_local",
+    "check_local_setting",
+    "where_title",
+    "where_lead",
+    "where_toggle",
+    "where_out",
+    "where_local",
+    "where_transcription",
+    "where_note",
+    "where_fallback",
+    "where_reader",
+    "where_here",
     "missing_owner",
     "missing_audio",
     "missing_document",
@@ -516,7 +529,34 @@ _CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
   line-height: 1.55; color: var(--ink-2);
 }
 .consent-card .consent { margin-top: .75rem; font-weight: 600; color: var(--ink); }
-.consent-card.done { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }"""
+.consent-card.done { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
+
+/* La 85b: la nube, con su propia autorización */
+.consent-card .consent + .consent { margin-top: .45rem; font-weight: 500; color: var(--ink-2); }
+.consent-note { margin: .35rem 0 0 1.6rem; font-size: .8rem; color: var(--muted); }
+.consent-note[hidden] { display: none; }
+
+/* La 85b: dónde se procesan los datos */
+.toggle-row { display: flex; align-items: center; gap: .8rem; margin-top: .8rem; }
+.toggle {
+  width: 42px; height: 24px; border-radius: 999px; background: var(--line-2); position: relative;
+  border: 0; cursor: pointer; flex: none;
+}
+.toggle::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #fff; transition: left .15s;
+}
+.toggle[aria-checked="true"] { background: var(--brand); }
+.toggle[aria-checked="true"]::after { left: 21px; }
+.where {
+  margin: .8rem 0 0; padding: 0; list-style: none; display: grid; gap: .4rem;
+  font-size: .86rem;
+}
+.where li { display: flex; justify-content: space-between; gap: 1rem; }
+.where span { color: var(--muted); }
+.where b { font-weight: 600; }
+.where .off { color: var(--muted); text-decoration: line-through; }"""
 
 _ICONS_PAGES = _ICONS_SETTINGS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
 
@@ -752,6 +792,9 @@ class AppReady:
     seal_key: bytes | None = None
     """Con qué se sella lo que se guarda durante una sesión (plan 85a): la clave del
     equipo. Sin ella, una de esta ejecución, que se pierde al cerrar."""
+    local_only: bool = False
+    """«Procesar solo en este equipo» (plan 85b): con él no hay casilla de nube ni vivo
+    en la nube, aunque haya clave."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -774,6 +817,12 @@ class AppTools:
     reventar si el lector no está."""
     cache_key_since: Callable[[], float | None]
     """Cuándo se creó la clave de la caché; `None` si viene del entorno."""
+    local_only: Callable[[], bool]
+    save_local_only: Callable[[bool], None]
+    destinations: tuple[tuple[str, str], ...]
+    """(qué, dónde) de lo que sale en la nube: [("transcription", "OpenAI · Estados
+    Unidos"), ("note", "openai · Estados Unidos")]. Lo monta quien lanza: la aplicación
+    no sabe qué proveedores hay."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1257,7 +1306,10 @@ def serve(
                 self._finish()
             elif accion == "licencia":
                 self._license()
-            elif accion in ("ajustes", "clave-probar", "clave-guardar", "modelo") and tools:
+            elif (
+                accion in ("ajustes", "clave-probar", "clave-guardar", "modelo", "solo-local")
+                and tools
+            ):
                 self._settings(accion, tools)
             elif accion == "volver":
                 with lock:
@@ -1393,6 +1445,17 @@ def serve(
                     session.download = "running"
                     session.download_detail = ""
                 threading.Thread(target=descargar, args=(herramientas,), daemon=True).start()
+                self._json(200, {"ok": True})
+                return
+            if accion == "solo-local":
+                try:
+                    on = json.loads(self._body() or b"{}").get("on")
+                except (ValueError, AttributeError):
+                    on = None
+                if not isinstance(on, bool):
+                    self._json(400, {"ok": False})
+                    return
+                herramientas.save_local_only(on)
                 self._json(200, {"ok": True})
                 return
             datos = self._body()
@@ -1549,11 +1612,18 @@ def serve(
                 if pedido.get("consent") is not True:
                     self._json(400, {"error": wording["missing_consent"]})
                     return
+                # La nube solo si la casilla está marcada y la hay (plan 85b): una petición a
+                # mano no abre lo que la pantalla no ofrece.
+                nube = pedido.get("cloud") is True and ready.cloud
+                if not nube and not ready.local_model:
+                    self._json(400, {"error": wording["cloud_needs_local"]})
+                    return
                 session.owner = owner
                 registro = ready.consultation.record_consent(
                     owner=AgentId(owner),
                     mode="recorded" if grabando else "uploaded",
                     actor=actor(),
+                    cloud=nube,
                 )
                 session.consent = registro
                 if grabando and session.workdir is not None:
@@ -1564,7 +1634,7 @@ def serve(
                         note_sections=secciones,
                         history_text=lambda: _read_sealed(ready.reader, documento, clave(ready)),
                         workdir=session.workdir,
-                        transcriber=ready.live_stt,
+                        transcriber=ready.live_stt if nube else None,
                         vad=crear_vad(),
                         seal_key=clave(ready),
                         consent=registro,
@@ -1708,7 +1778,9 @@ def _start_page(
     e = html.escape
     textos = consent if consent is not None else load_consent_texts()
     chips = (
-        (w["check_cloud"] if ready.cloud else w["check_local_only"], ready.cloud),
+        (w["check_local_setting"], True)
+        if ready.local_only
+        else (w["check_cloud"] if ready.cloud else w["check_local_only"], ready.cloud),
         (w["check_local"] if ready.local_model else w["check_no_local"], ready.local_model),
         (w["check_cache"], True),
         (
@@ -1719,6 +1791,13 @@ def _start_page(
     checks = "".join(
         f'<span class="check{"" if ok else " warn"}"><span class="dot"></span>{e(t)}</span>'
         for t, ok in chips
+    )
+    casilla_nube = (
+        f'<label class="consent" id="cloud-box"><input type="checkbox" id="cloud">\n'
+        f'          <span id="cloud-check"></span></label>\n'
+        f'        <p class="consent-note" id="cloud-note">{e(w["cloud_note"])}</p>'
+        if ready.cloud
+        else ""
     )
     body = f"""<section class="screen" id="s-start">
   <div class="stage">
@@ -1760,6 +1839,7 @@ def _start_page(
         <p class="consent-text" id="consent-text"></p>
         <label class="consent"><input type="checkbox" id="consent">
           <span id="consent-check"></span></label>
+        {casilla_nube}
       </div>
       <div class="checks">{checks}</div>
     </div>
@@ -1783,7 +1863,12 @@ def _start_page(
     # paciente sale del pack, nunca del código.
     autorizaciones = json.dumps(
         {
-            modo: {"title": t.title, "text": t.text, "check": t.check}
+            modo: {
+                "title": t.title,
+                "text": t.text,
+                "check": t.check,
+                "cloud": {"text": t.cloud.text, "check": t.cloud.check},
+            }
             for modo, t in sorted(textos.modes.items())
         },
         ensure_ascii=False,
@@ -1929,6 +2014,13 @@ document.getElementById('consent').addEventListener('change', () => {
     'done', document.getElementById('consent').checked);
   update();
 });
+const casillaNube = document.getElementById('cloud');
+if (casillaNube) {
+  casillaNube.addEventListener('change', () => {
+    document.getElementById('cloud-box').classList.toggle('done', casillaNube.checked);
+    document.getElementById('cloud-note').hidden = casillaNube.checked;
+  });
+}
 
 function setMode(next) {
   mode = next;
@@ -1939,10 +2031,17 @@ function setMode(next) {
   // Otro modo es otro texto: lo marcado para uno no vale para el otro.
   const texto = CONSENT[mode === 'record' ? 'recorded' : 'uploaded'];
   document.getElementById('consent-title').textContent = texto.title;
-  document.getElementById('consent-text').textContent = texto.text;
+  document.getElementById('consent-text').textContent = casillaNube
+    ? texto.text + ' ' + texto.cloud.text : texto.text;
   document.getElementById('consent-check').textContent = texto.check;
   document.getElementById('consent').checked = false;
   document.getElementById('consent-box').classList.remove('done');
+  if (casillaNube) {
+    document.getElementById('cloud-check').textContent = texto.cloud.check;
+    casillaNube.checked = false;
+    document.getElementById('cloud-box').classList.remove('done');
+    document.getElementById('cloud-note').hidden = false;
+  }
   document.getElementById('lead').textContent = mode === 'upload' ? W.lead_upload : W.lead_record;
   document.querySelector('#go span').textContent =
     mode === 'upload' ? W.start_button : W.record_button;
@@ -1972,6 +2071,7 @@ async function send(audio, name) {
     owner: owner.value.trim(),
     recorded: mode === 'record',
     consent: document.getElementById('consent').checked,
+    cloud: !!document.getElementById('cloud')?.checked,
   });
   const go = await post('/empezar', body, { 'Content-Type': 'application/json' });
   if (!go.ok) { fail((await go.json()).error); return; }
@@ -2076,6 +2176,7 @@ def _settings_page(
           <div class="result fail" id="key-fail" hidden><svg><use href="#i-alert"/></svg>
             <span></span></div>
         </div>
+        {_where_block(w, tools)}
         <div class="setting">
           <div class="setting-head"><svg><use href="#i-download"/></svg>
             <h3>{e(w["model_title"])}</h3>{estado_modelo}</div>
@@ -2110,6 +2211,40 @@ def _settings_page(
     )
 
 
+def _where_block(w: AppWording, tools: AppTools) -> str:
+    """Qué sale de este equipo y a qué país (plan 85b). El país es lo último de «dónde»
+    —«OpenAI · Estados Unidos»—: lo monta quien lanza, y así la aplicación no conoce
+    los proveedores."""
+    e = html.escape
+    solo_aqui = tools.local_only()
+    destinos = () if solo_aqui else tools.destinations
+    paises = list(dict.fromkeys(donde.split(" · ")[-1] for _que, donde in tools.destinations))
+    if destinos:
+        saliente = e(w["where_out"].format(", ".join(paises)))
+        estado = f'<span class="status warn" id="where-status">{saliente}</span>'
+    else:
+        estado = f'<span class="status ok" id="where-status">{e(w["where_local"])}</span>'
+    etiquetas = {"transcription": w["where_transcription"], "note": w["where_note"]}
+    clase = "cloud off" if solo_aqui else "cloud"
+    filas = "".join(
+        f'<li><span>{e(etiquetas.get(que, que))}</span><b class="{clase}">{e(donde)}</b></li>'
+        for que, donde in tools.destinations
+    )
+    return f"""<div class="setting">
+          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["where_title"])}</h3>
+            {estado}</div>
+          <p>{e(w["where_lead"])}</p>
+          <div class="toggle-row"><button type="button" class="toggle" role="switch"
+            aria-checked="{"true" if solo_aqui else "false"}" id="local-only"></button>
+            <strong>{e(w["where_toggle"])}</strong></div>
+          <ul class="where" id="where">
+            {filas}
+            <li><span>{e(w["where_fallback"])}</span><b>{e(w["where_here"])}</b></li>
+            <li><span>{e(w["where_reader"])}</span><b>{e(w["where_here"])}</b></li>
+          </ul>
+        </div>"""
+
+
 def _download_block(w: AppWording, download: str) -> str:
     e = html.escape
     corriendo = download == "running"
@@ -2128,7 +2263,22 @@ def _settings_script(w: AppWording, token: str, tools: AppTools) -> str:
         "model_progress", "model_downloading", "model_download", "model_failed",
     )
     textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
-    return f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_SETTINGS}"
+    return (
+        f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_SETTINGS}"
+        f"\n{_JS_LOCAL_ONLY}"
+    )
+
+
+_JS_LOCAL_ONLY = """
+document.getElementById('local-only').addEventListener('click', async () => {
+  const on = document.getElementById('local-only').getAttribute('aria-checked') !== 'true';
+  await fetch('/' + TOKEN + '/solo-local', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ on: on }),
+  });
+  location.reload();
+});
+"""
 
 
 def _model_page(

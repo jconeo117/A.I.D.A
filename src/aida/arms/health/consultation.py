@@ -120,6 +120,14 @@ class PreparedConsultation:
     matches: tuple[MatchedCode, ...]
     grouped_sections: tuple[tuple[SectionSpec, tuple[str, ...]], ...] | None
     encounter: Encounter | None
+    cloud: bool
+    """Si la consulta salió a la nube: decide qué proveedor de redacción se usa, y el
+    borrador lo tiene que saber para no atribuirse un modelo que no escribió."""
+
+
+class CloudNotAuthorizedError(ConsentMissingError):
+    """Sin nube autorizada y sin modelo local no hay con qué transcribir. Hereda de la
+    falta de autorización para que quien ya la captura capture también este caso."""
 
 
 class AbsenceUnresolvedError(ValueError):
@@ -163,12 +171,18 @@ class Consultation:
         audit: AuditLog | None = None,
         traceability: TraceabilitySettings | None = None,
         note_sections: tuple[SectionSpec, ...] = (),
+        local_stt: LocalWhisperSTT | None = None,
+        local_provider: CognitionProvider | None = None,
+        local_note_providers: tuple[tuple[str, CognitionProvider], ...] = (),
     ) -> None:
         self._wording = wording
         self._stt = stt
+        self._local_stt = local_stt
         self._ocr = ocr
         self._index = catalog_index
         self._provider = provider
+        self._local_provider = local_provider
+        self._local_note_providers = local_note_providers
         self._cache = cache
         self._log = log
         self._threshold = match_threshold
@@ -207,14 +221,15 @@ class Consultation:
         return self._audit
 
     def record_consent(
-        self, *, owner: AgentId, mode: str, actor: Professional
+        self, *, owner: AgentId, mode: str, actor: Professional, cloud: bool
     ) -> ConsentRecord:
         """Registra que `owner` autorizó, con el texto vigente del pack, y lo deja en
         el journal y en la auditoría. Es lo que abre `transcribe` para ese dueño.
 
         Quien la recogió es siempre un profesional identificado, con el equipo
         (`I-156`): antes de escribir nada, porque una autorización sin autor no se
-        puede deshacer de una cadena."""
+        puede deshacer de una cadena. `cloud` no tiene valor por defecto: decidir si la
+        consulta sale del equipo no puede ocurrir por omisión (plan 85b)."""
         if actor is None:
             raise IdentityError("no_actor", "una autorización sin autor no se registra")
         if mode not in MODES:
@@ -226,7 +241,8 @@ class Consultation:
             owner=owner,
             mode=mode,
             version=textos.version,
-            text=textos.modes[mode].text,
+            text=textos.read_text(mode, cloud=cloud),
+            cloud=cloud,
             workstation=f"{actor.label()} @ {self._operator()}",
             at=self._now().isoformat(timespec="seconds"),
         )
@@ -234,25 +250,38 @@ class Consultation:
             "consent_recorded",
             actor=actor,
             owner=str(owner),
-            data={"mode": mode, "version": record.version, "consent": record.digest},
+            data={
+                "mode": mode,
+                "version": record.version,
+                "consent": record.digest,
+                "cloud": "true" if cloud else "false",
+            },
         )
         self._log.emit(
             tick=0,
             kind=EventKind.CONSENT_RECORDED,
             owner=owner,
-            data={"mode": mode, "version": record.version, "digest": record.digest},
+            data={
+                "mode": mode,
+                "version": record.version,
+                "digest": record.digest,
+                "cloud": "true" if cloud else "false",
+            },
         )
         return record
 
-    def require_consent(self, owner: AgentId, consent: ConsentRecord | None) -> None:
+    def require_consent(self, owner: AgentId, consent: ConsentRecord | None) -> ConsentRecord:
         """La puerta, y la única: la llaman `transcribe` y el vivo antes de tocar el
-        audio. Una autorización de otro dueño, o que no esté en el registro, no vale."""
+        audio. Una autorización de otro dueño, o que no esté en el registro, no vale.
+        Devuelve la misma autorización ya validada, para que quien transcribe sepa si
+        hay nube sin volver a preguntarlo."""
         if consent is None:
             raise ConsentMissingError("no hay autorización registrada para transcribir")
         if consent.owner != owner:
             raise ConsentMissingError("la autorización es de otro dueño")
         if not self._consents.contains(consent):
             raise ConsentMissingError("la autorización no está en el registro")
+        return consent
 
     def run(
         self,
@@ -295,7 +324,7 @@ class Consultation:
         facts = self._build_facts(
             prepared.transcript, prepared.history, prepared.matches, prepared.grouped_sections
         )
-        summary = self._redact(facts)
+        summary = self._redact(facts, cloud=prepared.cloud)
 
         result = ConsultationResult(
             owner=prepared.owner,
@@ -320,7 +349,7 @@ class Consultation:
             grouped_sections=prepared.grouped_sections,
             conversation=tuple(prepared.transcript.split("\n")),
             settings=self._note_settings,
-            providers=self._note_providers,
+            providers=self._note_providers if prepared.cloud else self._local_note_providers,
             on_fallback=self._note_on_fallback,
         )
         if self._traceability is None:
@@ -367,8 +396,14 @@ class Consultation:
         exactamente el mismo análisis."""
         if self._extractor is not None and self._segmenter is None:
             raise ValueError("extracción activa pero no hay segmentador configurado")
-        transcript = self.transcribe(owner=owner, audio_path=audio_path, consent=consent)
-        return self.analyze(owner=owner, transcript=transcript, history_text=history_text)
+        autorizado = self.require_consent(owner, consent)
+        transcript = self.transcribe(owner=owner, audio_path=audio_path, consent=autorizado)
+        return self.analyze(
+            owner=owner,
+            transcript=transcript,
+            history_text=history_text,
+            cloud=autorizado.cloud,
+        )
 
     def transcribe(
         self, *, owner: AgentId, audio_path: Path, consent: ConsentRecord | None
@@ -376,13 +411,25 @@ class Consultation:
         """Todo audio que se convierte en texto pasa por aquí (plan 82): la subida, el
         final de una grabación y la CLI. Por eso la puerta está aquí y no en la
         interfaz."""
-        self.require_consent(owner, consent)
+        autorizado = self.require_consent(owner, consent)
+        stt = self._transcriber(autorizado)
         if self._diarizer is not None:
-            return self._diarize_and_label(owner, audio_path)
+            return self._diarize_and_label(owner, audio_path, stt)
         if self._segmenter is not None:
-            segments = self._stt.transcribe_segments(audio_path)
+            segments = stt.transcribe_segments(audio_path)
             return "\n".join(s.text for s in segments)
-        return self._stt.transcribe(audio_path)
+        return stt.transcribe(audio_path)
+
+    def _transcriber(self, consent: ConsentRecord) -> LocalWhisperSTT:
+        """Con la nube autorizada, lo compuesto (nube y respaldo); sin ella, solo lo
+        local, y si no hay, se dice: nunca se cae a la nube (plan 85b)."""
+        if consent.cloud:
+            return self._stt
+        if self._local_stt is None:
+            raise CloudNotAuthorizedError(
+                "sin nube autorizada y sin modelo local no hay con qué transcribir"
+            )
+        return self._local_stt
 
     def analyze(
         self,
@@ -390,6 +437,7 @@ class Consultation:
         owner: AgentId,
         transcript: str,
         history_text: str | Callable[[], str],
+        cloud: bool,
         log: EventLog | None = None,
     ) -> PreparedConsultation:
         """El análisis de un texto ya transcrito. Una sola puerta: la usan `prepare`
@@ -491,6 +539,7 @@ class Consultation:
             matches=matches,
             grouped_sections=grouped_sections,
             encounter=encounter,
+            cloud=cloud,
         )
 
     def _codable_texts(
@@ -568,14 +617,14 @@ class Consultation:
                     equivalentes.append(CodableText(query=termino, source=codable.source))
         return (*afirmados, *equivalentes)
 
-    def _diarize_and_label(self, owner: AgentId, audio_path: Path) -> str:
+    def _diarize_and_label(self, owner: AgentId, audio_path: Path, stt: LocalWhisperSTT) -> str:
         if self._wording.professional_label is None or self._wording.patient_label is None:
             raise ValueError(
                 "diarización activa pero wording no trae professional_label/patient_label"
             )
         if self._diarizer is None:
             raise RuntimeError("diarizador no configurado")
-        segments = self._stt.transcribe_segments(audio_path)
+        segments = stt.transcribe_segments(audio_path)
         turns = self._diarizer.diarize(audio_path)
         pairs = merge_by_speaker(segments, turns)
 
@@ -633,11 +682,14 @@ class Consultation:
             facts.append(self._wording.no_match_text)
         return facts
 
-    def _redact(self, facts: list[str]) -> str:
+    def _redact(self, facts: list[str], *, cloud: bool) -> str:
+        """Sin nube autorizada, el proveedor de nube no recibe ni una llamada: lo que
+        salió de este equipo es lo que el paciente autorizó (plan 85b)."""
         briefing = self._wording.system_prompt + "\n\n" + "\n".join(f"- {f}" for f in facts)
-        if self._provider is not None:
+        proveedor = self._provider if cloud else self._local_provider
+        if proveedor is not None:
             try:
-                result: object | None = self._provider.think(briefing, SpokenReply)
+                result: object | None = proveedor.think(briefing, SpokenReply)
             except Exception:
                 # Un proveedor que levanta no puede tumbar la consulta: se sigue
                 # con el markdown determinista.

@@ -22,6 +22,7 @@ _CACHE_ENV = "AIDA_CONSULT_CACHE_KEY"
 _CLOUD_ENV = ("AIDA_STT_API_KEY", "OPENAI_API_KEY")
 _CACHE_FILE = "cache.key"
 _CLOUD_FILE = "stt.key"
+_LOCAL_ONLY_FILE = "solo-local"
 
 
 def _write_private(path: Path, value: str) -> None:
@@ -82,6 +83,20 @@ def cloud_key_source() -> str | None:
 
 def save_cloud_key(value: str) -> None:
     _write_private(user_dir("config") / _CLOUD_FILE, value.strip())
+
+
+def local_only() -> bool:
+    """«Procesar solo en este equipo» (plan 85b). Un archivo y no una variable: lo cambia
+    el profesional desde Ajustes y tiene que sobrevivir a cerrar AIDA."""
+    return (user_dir("config") / _LOCAL_ONLY_FILE).is_file()
+
+
+def save_local_only(value: bool) -> None:
+    ruta = user_dir("config") / _LOCAL_ONLY_FILE
+    if value:
+        _write_private(ruta, "")
+    else:
+        ruta.unlink(missing_ok=True)
 
 
 def check_cloud_key(value: str, *, base_url: str, timeout: float = 10.0) -> tuple[bool, str]:

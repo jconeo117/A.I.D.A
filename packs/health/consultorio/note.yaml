@@ -39,6 +39,13 @@ system_prompt: >-
 provider: "openai"
 provider_model: "gpt-4.1-mini"
 
+# El país de cada proveedor de redacción en la nube (plan 85b). `ollama` no va: es este
+# equipo. Un proveedor sin país aquí no se usa con autorización de nube.
+provider_countries:
+  openai: "Estados Unidos"
+  claude: "Estados Unidos"
+  gemini: "Estados Unidos"
+
 # Encabezado de cada apartado en el archivo exportado.
 field_heading: "### {}"
 

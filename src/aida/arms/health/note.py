@@ -8,8 +8,8 @@ rechazar un código no obliga a redactarla de nuevo.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -56,6 +56,7 @@ class NoteSettings:
     provenance_template: str
     fallback_notice: str
     edited_template: str
+    provider_countries: Mapping[str, str] = field(default_factory=dict)
 
 
 def load_note_settings(path: Path | None = None) -> NoteSettings:
@@ -72,6 +73,14 @@ def load_note_settings(path: Path | None = None) -> NoteSettings:
     ]
     if faltan:
         raise ValueError(f"faltan claves en {ruta}: {faltan}")
+    paises = raw.get("provider_countries")
+    dict_paises: dict[str, str] = {}
+    if isinstance(paises, dict):
+        dict_paises = {
+            str(k): str(v)
+            for k, v in paises.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
     return NoteSettings(
         system_prompt=raw["system_prompt"],
         provider=raw["provider"],
@@ -80,6 +89,7 @@ def load_note_settings(path: Path | None = None) -> NoteSettings:
         provenance_template=raw["provenance_template"],
         fallback_notice=raw["fallback_notice"],
         edited_template=raw["edited_template"],
+        provider_countries=dict_paises,
     )
 
 

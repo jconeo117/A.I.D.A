@@ -34,6 +34,11 @@ cloud_timestamps: false
 
 cloud_language: es
 cloud_base_url: https://api.openai.com
+
+# Quién transcribe en la nube y en qué país (plan 85b). El país tiene que aparecer en el
+# texto de la casilla de la nube de consent.yaml: si no, la consulta no se monta.
+cloud_label: "OpenAI"
+cloud_country: "Estados Unidos"
 timeout_seconds: 120.0
 
 # Cuánto se espera a **establecer** la conexión, aparte de cuánto se espera a la

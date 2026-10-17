@@ -62,6 +62,8 @@ class CaptureSettings:
     cloud_timestamps: bool
     # Opcional: la batería construye ajustes a mano y no lo necesita.
     model_download_mb: int = 0
+    cloud_label: str = ""
+    cloud_country: str = ""
 
 
 def load_capture_settings(path: Path | None = None) -> CaptureSettings:
@@ -144,6 +146,8 @@ def load_capture_settings(path: Path | None = None) -> CaptureSettings:
         transcription_prompt=str(prompt),
         cloud_timestamps=timestamps,
         model_download_mb=int(raw.get("model_download_mb", 0)),
+        cloud_label=str(raw.get("cloud_label", "")),
+        cloud_country=str(raw.get("cloud_country", "")),
     )
 
 
