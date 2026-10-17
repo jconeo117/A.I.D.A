@@ -85,6 +85,7 @@ def test_user_dir_en_linux(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("AIDA_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("AIDA_DATA_DIR", raising=False)
 
     assert user_dir("config") == tmp_path / ".config" / "aida"
     assert user_dir("cache") == tmp_path / ".cache" / "aida"
@@ -103,6 +104,7 @@ def test_user_dir_en_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setenv("APPDATA", str(roaming))
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.delenv("AIDA_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("AIDA_DATA_DIR", raising=False)
 
     assert user_dir("config") == roaming / "AIDA"
     assert user_dir("cache") == local / "AIDA" / "cache"
@@ -118,6 +120,7 @@ def test_aida_config_dir_pisa_solo_config(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     override = tmp_path / "custom_config_dir"
     monkeypatch.setenv("AIDA_CONFIG_DIR", str(override))
+    monkeypatch.delenv("AIDA_DATA_DIR", raising=False)
 
     assert user_dir("config") == override
     assert user_dir("cache") == tmp_path / ".cache" / "aida"

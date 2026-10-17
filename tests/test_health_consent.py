@@ -88,6 +88,7 @@ from aida.engine.events import EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.platform.identity import Professional, ProfileStore, workstation
 from aida.platform.license import License, LicenseState
+from aida.resources import user_dir
 from aida.run import main
 from aida.voice.diarize import TranscriptSegment
 from tests.conftest import _ORIGINAL_HANDLE_REQUEST
@@ -933,7 +934,9 @@ def test_cli_consents_lista_cadena_integra_y_falla_si_rota(
     falso_home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", lambda: falso_home)
 
-    ruta_consents = falso_home / ".local" / "share" / "aida" / "autorizaciones.jsonl"
+    ruta_consents = user_dir("data") / "autorizaciones.jsonl"
+    if ruta_consents.exists():
+        ruta_consents.unlink()
     ledger = ConsentLedger(ruta_consents)
     ledger.append(
         owner=AgentId("HC-0042"),

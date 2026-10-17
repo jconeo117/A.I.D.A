@@ -62,6 +62,7 @@ from aida.arms.health.live import LiveTranscriber
 from aida.arms.health.match import build_index
 from aida.arms.health.metrics import ReviewMetricsStore
 from aida.arms.health.note import RenderedNote, load_note_settings
+from aida.arms.health.recovery import sessions_root
 from aida.arms.health.review import Answer, ItemKind, Verdict
 from aida.arms.health.review_ui import ReviewSubmission, UISettings, load_ui_settings
 from aida.arms.health.sections import SectionSpec
@@ -526,7 +527,7 @@ def test_servidor_flujo_completo_review_guardar_y_limpieza(tmp_path: Path) -> No
         assert r_hist.content == doc_bytes
 
         # Comprobar que existe la carpeta temporal de sesión
-        carpetas_sesion = list(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*"))
+        carpetas_sesion = list(sessions_root().glob(f"{_WORKDIR_PREFIX}*"))
         assert len(carpetas_sesion) >= 1
         sesion_dir = carpetas_sesion[0]
 
@@ -592,7 +593,7 @@ def test_servidor_fallo_transcripcion_pasa_a_problem_y_limpia_workdir(tmp_path: 
             timeout=5.0,
         )
 
-        carpetas = list(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*"))
+        carpetas = list(sessions_root().glob(f"{_WORKDIR_PREFIX}*"))
         assert len(carpetas) >= 1
         sesion_dir = carpetas[0]
 
@@ -621,7 +622,7 @@ def test_servidor_limpia_carpetas_huerfanas_al_arrancar(tmp_path: Path) -> None:
     de serve se borran al arrancar para evitar fuga de audios en claro tras caídas previas."""
     from aida.platform.sealed import PLAIN_PREFIX
 
-    huerfana = Path(tempfile.gettempdir()) / f"{_WORKDIR_PREFIX}huerfana-{uuid.uuid4()}"
+    huerfana = sessions_root() / f"{_WORKDIR_PREFIX}huerfana-{uuid.uuid4()}"
     huerfana.mkdir(parents=True, exist_ok=True)
     (huerfana / "audio-secreto.wav").write_bytes(b"datos sensibles")
 
@@ -1378,7 +1379,7 @@ def test_app_archivos_sellados_y_sin_restos_en_claro(tmp_path: Path) -> None:
         )
 
         carpetas = sorted(
-            Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*"),
+            sessions_root().glob(f"{_WORKDIR_PREFIX}*"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )

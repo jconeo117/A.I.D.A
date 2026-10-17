@@ -27,6 +27,7 @@ from cryptography.fernet import Fernet
 import aida.engine.loop as loop
 from aida import __version__
 from aida.cognition.briefing import SpokenReply, fallback_free_chat_reply
+from aida.resources import user_dir
 from aida.run import main
 from aida.voice.diarize import TranscriptSegment
 
@@ -2358,7 +2359,7 @@ def test_consultation_cli_review_registra_completed_true(
     capsys.readouterr()
     assert codigo == 0
 
-    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    metrics_path = user_dir("data") / "revisiones.jsonl"
     assert metrics_path.exists()
     lines = metrics_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
@@ -2433,7 +2434,7 @@ def test_consultation_cli_review_cortado_registra_completed_false_y_sale_con_uno
     assert codigo == 1
     assert "revisión incompleta" in captured.err
 
-    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    metrics_path = user_dir("data") / "revisiones.jsonl"
     assert metrics_path.exists()
     lines = metrics_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
@@ -2462,7 +2463,7 @@ def test_cli_review_stats_sin_nada_y_con_registros(
     # 2. Con archivo escrito a partir de los dos registros del caso 6
     from aida.arms.health.metrics import ReviewMetricsStore, ReviewRecord
 
-    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    metrics_path = user_dir("data") / "revisiones.jsonl"
     store = ReviewMetricsStore(metrics_path)
     r1 = ReviewRecord(
         completed=True,
@@ -2571,6 +2572,10 @@ def test_cli_sin_review_no_mide(
     img = image_mod.new("RGB", (20, 20), color="white")
     img.save(img_path)
 
+    metrics_path = user_dir("data") / "revisiones.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
     perfil = _crear_perfil_cli(monkeypatch)
     codigo = main(
         [
@@ -2590,7 +2595,6 @@ def test_cli_sin_review_no_mide(
     capsys.readouterr()
     assert codigo == 0
 
-    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
     assert not metrics_path.exists()
 
 
@@ -3595,7 +3599,7 @@ def test_consultation_cli_ui_con_review_llama_collect_review_y_pasa_elapsed(
     assert len(captured_items) > 0
     assert recorded_elapsed == [42.5]
 
-    metrics_path = tmp_path / ".local" / "share" / "aida" / "revisiones.jsonl"
+    metrics_path = user_dir("data") / "revisiones.jsonl"
     assert metrics_path.exists()
     lines = metrics_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
@@ -4790,7 +4794,12 @@ def test_run_caches_y_launch_health_leen_retencion(
     from aida import run
     from aida.arms.health.retention import Retention
 
-    ret_mock = Retention(audit_texts_days=999, transcripts_hours=48, summaries_hours=3)
+    ret_mock = Retention(
+        audit_texts_days=999,
+        transcripts_hours=48,
+        summaries_hours=3,
+        interrupted_hours=72,
+    )
     monkeypatch.setattr("aida.arms.health.retention.load_retention", lambda: ret_mock)
 
     stt_mock = MagicMock()
@@ -4818,3 +4827,4 @@ def test_run_caches_y_launch_health_leen_retencion(
     run.launch_health(args, lic_mock, arm_mock)
     assert len(llamadas_serve) == 1
     assert llamadas_serve[0]["retention_days"] == 999
+    assert llamadas_serve[0]["interrupted_hours"] == 72

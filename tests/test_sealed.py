@@ -79,16 +79,15 @@ def test_sealed_appender_concatenacion_y_tolerancia_truncamiento(tmp_path: Path)
     archivo_roto = tmp_path / "stream_truncado.pcm.sealed"
     archivo_roto.write_bytes(b"\n".join([lineas[0], lineas[1], linea_truncada]) + b"\n")
 
-    # Documentación del comportamiento con la rota:
-    # 1. read_appended sobre un archivo completo que contiene una línea rota falla con InvalidToken
-    #    porque Fernet no puede descifrar el token incompleto.
-    with pytest.raises(InvalidToken):
-        read_appended(archivo_roto, clave)
+    # 1. Con la última línea truncada (corte a mitad de escritura), read_appended tolera
+    #    el corte y devuelve los trozos completos anteriores (87).
+    assert read_appended(archivo_roto, clave) == trozo1 + trozo2
 
-    # 2. Las líneas anteriores siguen siendo 100% íntegras y legibles al leer hasta la rota
-    archivo_recuperado = tmp_path / "stream_recuperado.pcm.sealed"
-    archivo_recuperado.write_bytes(b"\n".join(archivo_roto.read_bytes().splitlines()[:2]) + b"\n")
-    assert read_appended(archivo_recuperado, clave) == trozo1 + trozo2
+    # 2. Con una línea rota en medio (daño real), falla con InvalidToken
+    archivo_medio_roto = tmp_path / "stream_medio_roto.pcm.sealed"
+    archivo_medio_roto.write_bytes(b"\n".join([lineas[0], linea_truncada, lineas[2]]) + b"\n")
+    with pytest.raises(InvalidToken):
+        read_appended(archivo_medio_roto, clave)
 
 
 def test_plain_copy_y_purge_leftovers(tmp_path: Path) -> None:

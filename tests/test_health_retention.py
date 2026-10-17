@@ -19,38 +19,70 @@ def test_load_retention_pack_real_y_validaciones(tmp_path: Path) -> None:
     assert real.audit_texts_days == 5475
     assert real.transcripts_hours == 24
     assert real.summaries_hours == 1
+    assert real.interrupted_hours == 72
 
     archivo = tmp_path / "retention.yaml"
     archivo.write_text(
-        yaml.safe_dump({"audit_texts_days": 30, "transcripts_hours": 12, "summaries_hours": 2})
+        yaml.safe_dump(
+            {
+                "audit_texts_days": 30,
+                "transcripts_hours": 12,
+                "summaries_hours": 2,
+                "interrupted_hours": 24,
+            }
+        )
     )
     propia = load_retention(archivo)
     assert propia.audit_texts_days == 30
     assert propia.transcripts_hours == 12
     assert propia.summaries_hours == 2
+    assert propia.interrupted_hours == 24
 
     # Plazo ausente
-    archivo.write_text(yaml.safe_dump({"audit_texts_days": 30, "transcripts_hours": 12}))
+    archivo.write_text(
+        yaml.safe_dump({"audit_texts_days": 30, "transcripts_hours": 12, "summaries_hours": 2})
+    )
     with pytest.raises(ValueError, match="enteros positivos"):
         load_retention(archivo)
 
     # Plazo cero
     archivo.write_text(
-        yaml.safe_dump({"audit_texts_days": 0, "transcripts_hours": 12, "summaries_hours": 2})
+        yaml.safe_dump(
+            {
+                "audit_texts_days": 0,
+                "transcripts_hours": 12,
+                "summaries_hours": 2,
+                "interrupted_hours": 24,
+            }
+        )
     )
     with pytest.raises(ValueError, match="enteros positivos"):
         load_retention(archivo)
 
     # Plazo negativo
     archivo.write_text(
-        yaml.safe_dump({"audit_texts_days": 30, "transcripts_hours": -5, "summaries_hours": 2})
+        yaml.safe_dump(
+            {
+                "audit_texts_days": 30,
+                "transcripts_hours": -5,
+                "summaries_hours": 2,
+                "interrupted_hours": 24,
+            }
+        )
     )
     with pytest.raises(ValueError, match="enteros positivos"):
         load_retention(archivo)
 
     # Plazo booleano
     archivo.write_text(
-        yaml.safe_dump({"audit_texts_days": True, "transcripts_hours": 12, "summaries_hours": 2})
+        yaml.safe_dump(
+            {
+                "audit_texts_days": True,
+                "transcripts_hours": 12,
+                "summaries_hours": 2,
+                "interrupted_hours": 24,
+            }
+        )
     )
     with pytest.raises(ValueError, match="enteros positivos"):
         load_retention(archivo)

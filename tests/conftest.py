@@ -13,6 +13,8 @@ un `ConnectError` es lo que los proveedores ya tratan como «no responde».
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -35,7 +37,12 @@ def _sin_claves_del_equipo(
     guarda en `~/.config/aida`, un equipo con `stt.key` hacía que los tests que
     esperan «sin clave de nube» la encontraran; y sin clave de caché, AIDA la
     crearía en la carpeta real."""
+    data_dir = tmp_path_factory.mktemp("data-aida")
+    repo_root = Path(__file__).resolve().parents[1]
+    (data_dir / "packs").symlink_to(repo_root / "packs")
+    (data_dir / "data").symlink_to(repo_root / "data")
     monkeypatch.setenv("AIDA_CONFIG_DIR", str(tmp_path_factory.mktemp("config-aida")))
+    monkeypatch.setenv("AIDA_DATA_DIR", str(data_dir))
 
 
 @pytest.fixture(scope="session")
