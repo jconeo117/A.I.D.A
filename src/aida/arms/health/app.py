@@ -18,13 +18,10 @@ import shutil
 import tempfile
 import threading
 import time
-import webbrowser
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from secrets import token_urlsafe
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
@@ -59,8 +56,6 @@ from aida.arms.health.recovery import (
 )
 from aida.arms.health.review import ReviewItem, review_items
 from aida.arms.health.review_ui import (
-    _CSS,
-    _ICONS,
     _ICONS_CONSENT,
     HistoryView,
     ReviewSubmission,
@@ -77,13 +72,27 @@ from aida.engine.events import Event, EventKind, EventLog
 from aida.engine.ontology import AgentId
 from aida.platform.audit import AuditLog
 from aida.platform.identity import IdentityError, Professional, ProfileStore
-from aida.platform.license import LicenseState, read_license
+from aida.platform.license import LicenseState
 from aida.platform.sealed import (
     plain_copy,
     plain_directory,
     purge_plain_leftovers,
     seal_bytes,
 )
+from aida.platform.web.pages import (
+    JS_TO_SETTINGS,
+    identity_script,
+    license_block,
+    license_chip,
+    license_page,
+    page_frame,
+    profiles_block,
+    readonly_page,
+    settings_frame,
+    user_chip,
+)
+from aida.platform.web.shell import Response, ShellContext, json_response, run_shell
+from aida.platform.web.wording import SHELL_KEYS, load_shell_wording
 from aida.resources import data_root, user_dir
 
 _RAIZ = data_root()
@@ -94,7 +103,7 @@ _OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 métricas y en el nombre de los archivos exportados, y lo que no es un nombre no es
 un dato que haya que proteger."""
 
-_MAX_BYTES = 512 * 1024 * 1024
+
 
 _WORKDIR_PREFIX = "aida-sesion-"
 """Las sesiones viven en carpetas con este prefijo, dentro de `sessions_root()`. Al
@@ -103,7 +112,6 @@ sí lo tienen se conservan para recuperarlas (87). Las que quedaran en `/tmp` de
 versiones anteriores se siguen borrando: nadie las va a recuperar."""
 
 _CLAVES_APP = (
-    "header_place",
     "title_start",
     "title_working",
     "title_problem",
@@ -159,17 +167,12 @@ _CLAVES_APP = (
     "ready",
     "start_button",
     "record_button",
-    "exit_label",
-    "closed_text",
     "recording_pill",
     "stop_button",
     "working_lead",
     "working_count",
-    "pill_ready",
     "pill_working",
-    "pill_problem",
     "retry_label",
-    "back_label",
     "nothing_saved",
     "problem_capture_title",
     "problem_capture_detail",
@@ -203,9 +206,6 @@ _CLAVES_APP = (
     "pause_mark",
     "new_label",
     "new_count",
-    "settings_label",
-    "title_settings",
-    "settings_lead",
     "key_title",
     "key_text",
     "key_status_file",
@@ -238,66 +238,11 @@ _CLAVES_APP = (
     "cipher_env",
     "cipher_ok",
     "check_no_local",
-    "title_first_run",
     "pill_preparing",
     "problem_model_title",
-    "who_title",
-    "who_lead",
-    "who_add",
-    "who_add_hint",
-    "registry_short",
-    "pin_label",
-    "enter_button",
-    "first_title",
-    "first_lead",
-    "first_name",
-    "first_registry",
-    "first_pin",
-    "first_pin2",
-    "first_hint",
-    "first_button",
-    "first_pin_mismatch",
-    "locked_title",
-    "locked_lead",
-    "unlock_button",
-    "other_professional",
-    "title_locked",
-    "title_who",
-    "pill_locked",
-    "change_professional",
-    "profiles_title",
-    "profiles_text",
-    "profiles_add",
-    "profiles_added",
-    "identity_missing",
-    "identity_pin_format",
-    "identity_duplicate",
-    "identity_unknown",
-    "identity_bad_pin",
-    "identity_wait",
-    "license_title",
-    "license_client",
-    "license_arms",
-    "license_until",
-    "license_load",
-    "license_status_valid",
-    "license_status_expiring",
-    "license_status_expired",
-    "license_status_missing",
-    "license_status_invalid",
-    "license_warn",
-    "license_missing_title",
-    "license_missing_lead",
-    "license_rejected",
-    "readonly_title",
-    "readonly_lead",
     "readonly_item_consents",
     "readonly_item_audit",
     "readonly_item_texts",
-    "readonly_hint",
-    "pill_readonly",
-    "license_readonly",
-    "go_settings",
 )
 
 _CSS_EXTRA = """.mode {
@@ -465,32 +410,9 @@ _ICONS_EXTRA = """  <symbol id="i-audio" viewBox="0 0 24 24">
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
   </symbol>"""
 
-_ICONS_APP = _ICONS.replace("</defs></svg>", _ICONS_EXTRA + "\n</defs></svg>")
 
-_CSS_SETTINGS = """/* La 78: ajustes y primer arranque */
-.head-link {
-  display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .75rem;
-  border-radius: 999px; font-size: .8rem; color: var(--head-ink);
-  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
-}
-.head-link svg { width: 15px; height: 15px; }
-.settings { display: flex; flex-direction: column; gap: 1rem; margin-top: 1.25rem; }
-.setting {
-  border: 1px solid var(--line); border-radius: var(--r); padding: 1rem 1.15rem;
-  background: var(--surface);
-}
-.setting-head { display: flex; align-items: center; gap: .6rem; }
-.setting-head h3 { margin: 0; font-size: .95rem; font-weight: 650; }
-.setting-head svg { width: 18px; height: 18px; color: var(--brand); }
-.setting p { margin: .35rem 0 0; color: var(--muted); font-size: .85rem; }
-.status {
-  margin-left: auto; display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem;
-  font-weight: 600; padding: .15rem .6rem; border-radius: 999px;
-}
-.status.ok { background: var(--ok-soft, #e6f4ec); color: #1a7f4b; }
-.status.warn { background: var(--warn-soft); color: var(--warn); }
-.status.fail { background: var(--off-soft); color: var(--off); }
-.key-row { display: flex; gap: .6rem; margin-top: .8rem; }
+
+_CSS_AJUSTES_SALUD = """.key-row { display: flex; gap: .6rem; margin-top: .8rem; }
 .key-row .input {
   flex: 1; font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
   font-size: .9rem;
@@ -529,9 +451,7 @@ _ICONS_SETTINGS_EXTRA = """  <symbol id="i-gear" viewBox="0 0 24 24">
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>"""
 
-_ICONS_SETTINGS = _ICONS_APP.replace(
-    "</defs></svg>", _ICONS_SETTINGS_EXTRA + "\n</defs></svg>"
-)
+
 
 _CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
 .consent-card {
@@ -598,91 +518,17 @@ _CSS_CONSENT = """/* La 82: la autorización, antes de grabar o subir */
 .btn-danger { color: var(--off); border-color: color-mix(in srgb, var(--off) 35%, var(--line)); }
 .btn-danger:hover { color: white; background: var(--off); border-color: var(--off); }"""
 
-_ICONS_PAGES = _ICONS_SETTINGS.replace("</defs></svg>", _ICONS_CONSENT + "\n</defs></svg>")
 
-_CSS_IDENTITY = """/* La 83: quién atiende */
-.who {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem;
-  margin-top: 1.25rem;
-}
-.person {
-  display: flex; align-items: center; gap: .75rem; padding: .85rem 1rem; text-align: left;
-  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
-  cursor: pointer;
-  font: inherit; color: var(--ink);
-}
-.person:hover { border-color: var(--line-2); }
-.person[aria-pressed="true"] {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
-}
-.person .avatar {
-  width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; flex: none;
-  background: color-mix(in srgb, var(--brand) 14%, var(--surface)); color: var(--brand);
-  font-weight: 700;
-}
-.person strong { display: block; font-size: .92rem; }
-.person small { color: var(--muted); font-size: .78rem; }
-.person.add { border-style: dashed; color: var(--muted); }
-.person.add .avatar { background: var(--surface-2); color: var(--muted); }
-.pin-row { display: flex; gap: .6rem; align-items: center; margin-top: 1.25rem; }
-.pin-row .input { max-width: 220px; letter-spacing: .35em; font-size: 1.1rem; text-align: center; }
-.pin-error { color: var(--off); font-size: .85rem; }
-.pin-error[hidden] { display: none; }
-.head-user {
-  display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .75rem;
-  border-radius: 999px;
-  font-size: .8rem; color: var(--head-ink); background: rgba(255,255,255,.07);
-  border: 1px solid rgba(255,255,255,.1);
-}
-.head-user svg { width: 15px; height: 15px; }
-.lock-icon {
-  width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center;
-  margin: 0 auto .75rem;
-  background: var(--surface-2); color: var(--brand);
-}
-.lock-icon svg { width: 28px; height: 28px; }
-.center { text-align: center; }
-.center .pin-row { justify-content: center; }
-.head-user[hidden], .head-link[hidden] { display: none; }
-button.head-user { cursor: pointer; font: inherit; font-size: .8rem; }
-.fields-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem 1rem; margin-top: 1rem; }"""
 
-_ICONS_IDENTITY = """  <symbol id="i-user" viewBox="0 0 24 24">
-    <circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>
-  </symbol>
-  <symbol id="i-lock" viewBox="0 0 24 24">
-    <rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
-  </symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>"""
 
-_CSS_LICENSE = """/* La 100: la licencia */
-.head-warn {
-  display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .75rem;
-  border-radius: 999px;
-  font-size: .78rem; font-weight: 600; color: #fde68a; background: rgba(180, 83, 9, .28);
-  border: 1px solid rgba(253, 230, 138, .25);
-}
-.head-warn[hidden] { display: none; }
-.license-row {
-  display: grid; grid-template-columns: auto 1fr; gap: .3rem .9rem; margin-top: .7rem;
-  font-size: .86rem;
-}
-.license-row dt { color: var(--muted); }
-.license-row dd { margin: 0; }
-.readonly-list {
-  margin: .9rem 0 0; padding: 0; list-style: none; display: grid; gap: .45rem; font-size: .88rem;
-}
-.readonly-list li { display: flex; gap: .5rem; align-items: center; color: var(--ink-2); }
-.readonly-list svg { width: 16px; height: 16px; color: var(--brand); }"""
 
-_ICONS_LICENSE = """  <symbol id="i-badge" viewBox="0 0 24 24">
-    <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5Z"/><path d="M9 12h6M12 9v6"/>
-  </symbol>"""
 
-_ICONS_ALL = _ICONS_PAGES.replace(
-    "</defs></svg>", _ICONS_IDENTITY + "\n" + _ICONS_LICENSE + "\n</defs></svg>"
-)
+
+
+
+
+
+
 
 _CSS_LIVE = """/* La 77b: la consulta en vivo */
 .field-state {
@@ -757,7 +603,7 @@ _ICONS_LIVE_EXTRA = """  <symbol id="i-lock" viewBox="0 0 24 24">
     <path d="M12.5 10.1a10 10 0 0 1 6.5 2.8M8.5 16.4a5 5 0 0 1 7 0M12 20h.01M2 2l20 20"/>
   </symbol>"""
 
-_ICONS_LIVE = _ICONS_APP.replace("</defs></svg>", _ICONS_LIVE_EXTRA + "\n</defs></svg>")
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -775,28 +621,7 @@ class AppWording:
         return self.texts[clave]
 
 
-def load_app_wording(path: Path | None = None) -> AppWording:
-    ruta = path if path is not None else _UI_POR_DEFECTO
-    raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
-    seccion = raw.get("app") if isinstance(raw, dict) else None
-    if not isinstance(seccion, dict):
-        raise ValueError(f"falta la sección 'app' en {ruta}")
-    faltan = [clave for clave in _CLAVES_APP if not isinstance(seccion.get(clave), str)]
-    if faltan:
-        raise ValueError(f"faltan claves en la sección 'app' de {ruta}: {faltan}")
-    pasos = seccion.get("steps")
-    if not isinstance(pasos, list) or len(pasos) != 5 or not all(
-        isinstance(p, str) for p in pasos
-    ):
-        raise ValueError(f"'app.steps' debe ser una lista de cinco cadenas en {ruta}")
-    minutos = seccion.get("idle_lock_minutes")
-    if not isinstance(minutos, int | float) or isinstance(minutos, bool) or minutos <= 0:
-        raise ValueError(f"'app.idle_lock_minutes' debe ser un número positivo en {ruta}")
-    return AppWording(
-        texts={clave: seccion[clave] for clave in _CLAVES_APP},
-        steps=tuple(pasos),
-        idle_lock_minutes=float(minutos),
-    )
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,53 +770,7 @@ def progress(events: Sequence[Event], *, drafted: bool) -> tuple[bool, ...]:
     )
 
 
-@dataclass
-class _Session:
-    ready: AppReady | AppProblem
-    state: str = "start"
-    workdir: Path | None = None
-    audio: Path | None = None
-    document: Path | None = None
-    owner: str = ""
-    start_index: int = 0
-    drafted: bool = False
-    draft: ReviewDraft | None = None
-    view: HistoryView | None = None
-    problem: AppProblem | None = None
-    started: float = 0.0
-    live: LiveSession | None = None
-    mine: Mapping[str, str] = field(default_factory=dict)
-    excluded: frozenset[str] = frozenset()
-    consent: ConsentRecord | None = None
-    """La autorización de la sesión en curso (plan 82): la revisión la enseña."""
-    professional: Professional | None = None
-    """Quién atiende (plan 83). Sobrevive a `clean`: termina una consulta, no la sesión
-    del profesional."""
-    last_activity: float = 0.0
-    history_seen: bool = False
-    download: str = "idle"
-    """`idle`, `running`, `done` o `failed`: la descarga del modelo sobrevive a cambiar
-    de pantalla, y `clean` no la toca."""
-    download_detail: str = ""
 
-    def clean(self) -> None:
-        """Lo subido o grabado no se queda en disco: el audio en claro es lo más
-        sensible de una sesión, y la transcripción ya vive en la caché cifrada."""
-        if self.live is not None:
-            self.live.stop()
-        self.live = None
-        self.mine = {}
-        self.excluded = frozenset()
-        self.consent = None
-        self.history_seen = False
-        if self.workdir is not None:
-            shutil.rmtree(self.workdir, ignore_errors=True)
-        self.workdir = None
-        self.audio = None
-        self.document = None
-        self.draft = None
-        self.view = None
-        self.drafted = False
 
 
 def _safe_suffix(name: str) -> str:
@@ -999,937 +778,10 @@ def _safe_suffix(name: str) -> str:
     return sufijo if re.fullmatch(r"\.[a-z0-9]{1,8}", sufijo) else ""
 
 
-def serve(
-    build: Callable[[], AppReady | AppProblem],
-    *,
-    settings: UISettings,
-    wording: AppWording,
-    open_browser: Callable[[str], None] | None = None,
-    clock: Callable[[], float] = time.monotonic,
-    now: Callable[[], datetime] = datetime.now,
-    vad_factory: Callable[[], Callable[[Any], Any]] | None = None,
-    note_sections: Sequence[SectionSpec] | None = None,
-    tools: AppTools | None = None,
-    consent_texts: ConsentTexts | None = None,
-    profiles: ProfileStore | None = None,
-    audit: AuditLog | None = None,
-    license: LicenseState,
-    license_path: Path | None = None,
-    arm_id: str = "health",
-    arm_name: str = "",
-    today: Callable[[], date] = date.today,
-    retention_days: int | None = None,
-    interrupted_hours: int | None = None,
-    sessions: Path | None = None,
-) -> None:
-    """Levanta la aplicación y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
-    Una sesión cada vez: mientras una se procesa, no empieza otra."""
-    raiz = sessions if sessions is not None else sessions_root()
-    raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
-    purge_plain_leftovers()
-    for resto in sorted(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*")):
-        shutil.rmtree(resto, ignore_errors=True)
-    purge_unmarked(raiz)
-    secciones: Sequence[SectionSpec] = (
-        note_sections
-        if note_sections is not None
-        else tuple(s for s in load_sections().sections if s.in_note)
-    )
-    if vad_factory is None:
-        from aida.voice.listen import vad_from_faster_whisper
-
-        crear_vad: Callable[[], Callable[[Any], Any]] = vad_from_faster_whisper
-    else:
-        crear_vad = vad_factory
-    textos = consent_texts if consent_texts is not None else load_consent_texts()
-    token = token_urlsafe(16)
-    lock = threading.Lock()
-    perfiles = (
-        profiles if profiles is not None else ProfileStore(user_dir("config") / "profiles.json")
-    )
-    auditoria = audit if audit is not None else AuditLog()
-    # Sin clave del equipo, una de esta ejecución: tampoco queda nada en claro.
-    efimera = Fernet.generate_key()
-
-    def clave(ready: AppReady | None) -> bytes:
-        if ready is not None and ready.seal_key is not None:
-            return ready.seal_key
-        return efimera
-
-    def pendiente() -> Interrupted | None:
-        """La grabación interrumpida más antigua de quien atiende, si la hay (87)."""
-        ready = session.ready
-        if (
-            session.professional is None
-            or not isinstance(ready, AppReady)
-            or ready.seal_key is None
-        ):
-            return None
-        for interrumpida in interrupted(raiz, ready.seal_key):
-            if interrumpida.professional == session.professional.id:
-                return interrumpida
-        return None
-
-    def retener(actor: Professional) -> None:
-        """Con el candado tomado, al abrir sesión: borra lo que cumplió su plazo, firmado
-        por quien abre. Los textos de auditoría (85a) y las grabaciones interrumpidas
-        (87), de cualquiera: lo que nadie recuperó no se queda para siempre."""
-        ahora = now().astimezone()
-        if retention_days is not None:
-            auditoria.purge_texts(ahora - timedelta(days=retention_days), actor=actor)
-        if interrupted_hours is None:
-            return
-        llave = clave(session.ready if isinstance(session.ready, AppReady) else None)
-        legibles = {i.folder: i for i in interrupted(raiz, llave)}
-        for carpeta in expired(raiz, llave, interrupted_hours, ahora):
-            empieza, legible = started_at(carpeta, llave)
-            duenio = legibles.get(carpeta)
-            shutil.rmtree(carpeta, ignore_errors=True)
-            auditoria.record(
-                "recording_purged",
-                actor=actor,
-                owner=duenio.owner if duenio is not None else "",
-                data={
-                    "started": empieza.isoformat(timespec="seconds"),
-                    "readable": "true" if legible else "false",
-                },
-            )
-
-    # La licencia vigente en esta sesión; cambia si se carga otra desde la aplicación.
-    licencia = [license]
-    inactividad = wording.idle_lock_minutes * 60
-    session = _Session(ready=build())
-    # Nadie entra sin decir quién es (plan 83): lo primero es elegir perfil, o crear el
-    # primero si el equipo es nuevo.
-    session.state = "who" if perfiles.professionals() else "first_profile"
-
-    def tras_identificarse() -> None:
-        """Con el candado tomado: adonde se va después de entrar o desbloquear."""
-        session.last_activity = clock()
-        if isinstance(session.ready, AppProblem):
-            session.state = "problem"
-            session.problem = session.ready
-        else:
-            session.state = "start"
-            session.problem = None
-
-    def vigilar() -> None:
-        """Con el candado tomado, en cada petición. Bloquea si pasó el plazo sin uso, y
-        solo donde no hay nada a medias: en una grabación, un proceso o una revisión,
-        nunca. Lo que estuviera subido se descarta, como al recargar."""
-        if session.professional is None:
-            return
-        ahora = clock()
-        reposo = session.state in ("start", "settings", "problem")
-        if reposo and ahora - session.last_activity > inactividad:
-            session.clean()
-            session.state = "locked"
-            auditoria.record("locked", actor=session.professional)
-            return
-        if session.state != "locked":
-            session.last_activity = ahora
-
-    def actor() -> Professional:
-        """Con el candado tomado y en un estado identificado: quien firma lo que se
-        registra. Una sola puerta para estrechar el tipo (`I-156`); si alguna vez falta,
-        revienta en vez de escribir un registro sin autor."""
-        if session.professional is None:
-            raise IdentityError("no_actor", "no hay profesional en la sesión")
-        return session.professional
-
-    def identificado() -> bool:
-        return session.professional is not None and session.state not in (
-            "who", "first_profile", "locked",
-        )
-
-    def reconstruir() -> None:
-        """Con el candado tomado. Vuelve a montar todo: una clave guardada o un modelo
-        descargado se notan sin cerrar AIDA (`I-152`)."""
-        session.clean()
-        session.ready = build()
-        if isinstance(session.ready, AppProblem):
-            session.state = "problem"
-            session.problem = session.ready
-        else:
-            session.state = "start"
-            session.problem = None
-
-    def descargar(herramientas: AppTools) -> None:
-        try:
-            herramientas.download_model()
-        except Exception as exc:  # frontera: una descarga fallida no tumba el http_server
-            with lock:
-                session.download = "failed"
-                session.download_detail = f"{type(exc).__name__}: {exc}"
-            return
-        with lock:
-            session.download = "done"
-            session.download_detail = ""
-
-    def procesar(
-        ready: AppReady,
-        owner: str,
-        audio: Path,
-        document: Path,
-        consent: ConsentRecord | None,
-        mine: Mapping[str, str] | None = None,
-        excluded: frozenset[str] = frozenset(),
-    ) -> None:
-        try:
-            # En claro solo aquí dentro, y en temporales propios que se borran al salir
-            # del `with`, haya ido bien o no (plan 85a).
-            with (
-                _plain_audio(audio, clave(ready)) as wav,
-                plain_copy(document, clave(ready)) as historia,
-            ):
-                prepared = ready.consultation.prepare(
-                    owner=AgentId(owner),
-                    audio_path=wav,
-                    history_text=lambda: ready.reader.read(historia),
-                    consent=consent,
-                )
-                draft = _keep_mine(
-                    draft_for_screen(ready.consultation, prepared), mine or {}, secciones
-                )
-                vista = history_view(historia, prepared.history)
-        except (TranscriptionError, ModelUnavailableError) as exc:
-            with lock:
-                session.clean()
-                session.state = "problem"
-                session.problem = AppProblem("transcription", str(exc))
-            return
-        except Exception as exc:  # frontera del adaptador: un fallo no tumba el http_server
-            with lock:
-                session.clean()
-                session.state = "problem"
-                session.problem = AppProblem("processing", f"{type(exc).__name__}: {exc}")
-            return
-        with lock:
-            # Lo que propuso AIDA, sin los textos (van cifrados con la revisión
-            # guardada): qué códigos y qué campos con contenido.
-            auditoria.record(
-                "draft_generated",
-                actor=actor(),
-                owner=owner,
-                data={
-                    "codes": ",".join(sorted(m.diagnostic.code for m in prepared.matches)),
-                    "fields": ",".join(
-                        sorted(spec.section_id for spec, texto in draft.note.fields if texto)
-                    ),
-                },
-            )
-            session.drafted = True
-            session.mine = dict(mine or {})
-            session.excluded = excluded
-            session.draft = draft
-            session.view = vista
-            session.started = clock()
-            session.state = "review"
-
-    def pagina() -> str:
-        momento = now()
-        marca = settings.wording.brand
-        if session.state == "first_profile":
-            return _first_profile_page(wording, marca, token, momento)
-        if session.state == "who":
-            return _who_page(wording, marca, token, perfiles.professionals(), momento)
-        if session.state == "locked" and session.professional is not None:
-            return _locked_page(wording, marca, token, session.professional, momento)
-        if session.state == "review" and session.draft is not None and session.view:
-            borrador = session.draft
-            return _render_page(
-                borrador.prepared.matches,
-                borrador.note,
-                borrador.prepared.transcript,
-                session.view,
-                session.owner,
-                momento,
-                settings.wording,
-                token,
-                overrides=session.mine,
-                excluded=session.excluded,
-                consent_line=textos.line(session.consent) if session.consent else None,
-                trace=borrador.trace,
-            )
-        if session.state == "live" and session.live is not None:
-            return _live_page(
-                wording, settings, token, session.owner, momento, secciones, session.view
-            )
-        if session.state == "working":
-            return _working_page(wording, marca, token, session.owner, momento)
-        if session.state == "settings" and tools is not None:
-            return _settings_page(
-                wording, marca, token, tools, momento, session.download,
-                profiles=perfiles.professionals(), professional=session.professional,
-                license=licencia[0],
-            )
-        # La licencia (plan 100): sin una válida, la pantalla de cargarla; caducada, solo
-        # lectura. Las dos, después de identificarse: cargar una licencia es un registro
-        # y tiene autor.
-        if licencia[0].status in ("missing", "invalid"):
-            return _license_page(wording, marca, token, licencia[0], momento, session.professional)
-        if not licencia[0].allows(arm_id) and session.state == "start":
-            return _readonly_page(
-                wording, marca, token, licencia[0], momento, session.professional, arm_name
-            )
-        if session.state == "problem" and session.problem is not None:
-            if session.problem.kind == "model" and tools is not None:
-                return _model_page(wording, marca, token, tools, momento, session.download)
-            return _problem_page(wording, marca, token, session.problem, momento)
-        if isinstance(session.ready, AppReady):
-            pending = pendiente()
-            return _start_page(
-                wording, marca, token, session.ready, momento,
-                settings=tools is not None, consent=textos,
-                professional=session.professional, license=licencia[0],
-                pending=pending,
-                pending_expires=(
-                    pending.expires(interrupted_hours)
-                    if pending is not None and interrupted_hours is not None
-                    else None
-                ),
-            )
-        return _problem_page(wording, marca, token, AppProblem("processing"), momento)
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args: object) -> None:
-            return
-
-        def _send(self, status: int, body: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _json(self, status: int, body: dict[str, Any]) -> None:
-            datos = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            self._send(status, datos, "application/json; charset=utf-8")
-
-        def _404(self) -> None:
-            self._send(404, b"", "text/plain")
-
-        def _body(self) -> bytes | None:
-            longitud = int(self.headers.get("Content-Length", "0"))
-            if longitud > _MAX_BYTES:
-                return None
-            return self.rfile.read(longitud)
-
-        def do_GET(self) -> None:
-            with lock:
-                vigilar()
-                if self.path == f"/{token}":
-                    self._send(200, pagina().encode("utf-8"), "text/html; charset=utf-8")
-                    return
-                if not identificado():
-                    self._json(401, {"error": ""})
-                    return
-                if self.path == f"/{token}/estado":
-                    pasos: tuple[bool, ...] = ()
-                    if isinstance(session.ready, AppReady):
-                        eventos = list(session.ready.log)[session.start_index :]
-                        pasos = progress(eventos, drafted=session.drafted)
-                    self._json(200, {"state": session.state, "steps": list(pasos)})
-                    return
-                if self.path.startswith(f"/{token}/vivo"):
-                    self._json(200, _live_status(session, self.path))
-                    return
-                if self.path == f"/{token}/modelo" and tools is not None:
-                    self._json(200, {
-                        "state": session.download,
-                        "bytes": tools.model_bytes(),
-                        "total": tools.model_total_mb * 1024 * 1024,
-                        "detail": session.download_detail,
-                    })
-                    return
-                vista = session.view
-                if (
-                    self.path == f"/{token}/historia"
-                    and session.state in ("review", "live")
-                    and vista is not None
-                    and vista.content_type is not None
-                ):
-                    # Ver la historia original es un acceso a datos de la persona
-                    # atendida: queda en la auditoría, una vez por consulta.
-                    if not session.history_seen:
-                        session.history_seen = True
-                        auditoria.record(
-                            "history_viewed", actor=actor(), owner=session.owner
-                        )
-                    self._send(200, vista.data, vista.content_type)
-                    return
-            self._404()
-
-        def do_POST(self) -> None:
-            ruta = self.path
-            if not ruta.startswith(f"/{token}/"):
-                self._404()
-                return
-            accion = ruta[len(token) + 2 :]
-            with lock:
-                vigilar()
-                permitido = identificado()
-            if accion in ("perfil", "entrar", "desbloquear", "cambiar", "salir"):
-                self._identity(accion)
-                return
-            if not permitido:
-                self._json(401, {"error": ""})
-                return
-            if accion == "actividad":
-                self._json(200, {"ok": True})
-            elif accion in ("audio", "documento"):
-                self._upload(accion)
-            elif accion == "empezar":
-                self._start()
-            elif accion in ("recuperar", "descartar"):
-                self._recover(accion)
-            elif accion == "guardar":
-                self._save()
-            elif accion in ("pcm", "campo", "codigo", "pausa"):
-                self._live(accion)
-            elif accion == "terminar":
-                self._finish()
-            elif accion == "licencia":
-                self._license()
-            elif (
-                accion in ("ajustes", "clave-probar", "clave-guardar", "modelo", "solo-local")
-                and tools
-            ):
-                self._settings(accion, tools)
-            elif accion == "volver":
-                with lock:
-                    if session.state == "settings":
-                        reconstruir()
-                    else:
-                        session.clean()
-                        if isinstance(session.ready, AppReady):
-                            session.state = "start"
-                            session.problem = None
-                self._json(200, {"ok": True})
-            elif accion == "reintentar":
-                with lock:
-                    reconstruir()
-                self._json(200, {"ok": True})
-            else:
-                self._404()
-
-        def _identity(self, accion: str) -> None:
-            """Entrar, crear un perfil, desbloquear, cambiar de profesional y salir: lo
-            único que se atiende sin estar identificado."""
-            if accion == "salir":
-                with lock:
-                    if session.professional is not None:
-                        auditoria.record("session_closed", actor=session.professional)
-                    session.clean()
-                    session.state = "closed"
-                self._json(200, {"ok": True})
-                threading.Thread(target=http_server.shutdown, daemon=True).start()
-                return
-            if accion == "cambiar":
-                with lock:
-                    if session.state in ("live", "working", "review"):
-                        self._json(409, {"error": ""})
-                        return
-                    if session.professional is not None:
-                        auditoria.record("session_closed", actor=session.professional)
-                    session.clean()
-                    session.professional = None
-                    session.state = "who"
-                self._json(200, {"ok": True})
-                return
-            datos = self._body() or b"{}"
-            try:
-                pedido = json.loads(datos)
-            except ValueError:
-                pedido = None
-            if not isinstance(pedido, dict):
-                self._json(400, {"error": ""})
-                return
-            with lock:
-                try:
-                    if accion == "perfil":
-                        self._new_profile(pedido)
-                    elif accion == "entrar" and session.state == "who":
-                        perfil = str(pedido.get("profile", ""))
-                        session.professional = perfiles.verify(perfil, str(pedido.get("pin", "")))
-                        auditoria.record("session_opened", actor=session.professional)
-                        retener(session.professional)
-                        tras_identificarse()
-                        self._json(200, {"ok": True})
-                    elif (
-                        accion == "desbloquear"
-                        and session.state == "locked"
-                        and session.professional is not None
-                    ):
-                        perfiles.verify(session.professional.id, str(pedido.get("pin", "")))
-                        auditoria.record("unlocked", actor=session.professional)
-                        tras_identificarse()
-                        self._json(200, {"ok": True})
-                    else:
-                        self._json(409, {"error": ""})
-                except IdentityError as exc:
-                    restantes = (
-                        perfiles.attempts_left(
-                            str(pedido.get("profile", ""))
-                            if accion == "entrar"
-                            else session.professional.id if session.professional else ""
-                        )
-                        if exc.code == "bad_pin"
-                        else 0
-                    )
-                    self._json(
-                        400, {"error": wording[f"identity_{exc.code}"].format(restantes)}
-                    )
-
-        def _new_profile(self, pedido: dict[str, Any]) -> None:
-            """Con el candado tomado. El primero, en el primer arranque, y entra con él;
-            los demás, desde Ajustes y por alguien ya identificado (plan 83): nadie se da
-            de alta solo en un equipo que ya tiene dueños."""
-            primero = session.state == "first_profile"
-            if not primero and not (identificado() and session.state == "settings"):
-                self._json(409, {"error": ""})
-                return
-            pin = str(pedido.get("pin", ""))
-            if pin != str(pedido.get("pin2", "")):
-                self._json(400, {"error": wording["first_pin_mismatch"]})
-                return
-            nuevo = perfiles.create(
-                name=str(pedido.get("name", "")),
-                registry=str(pedido.get("registry", "")),
-                pin=pin,
-            )
-            auditoria.record(
-                "profile_created",
-                actor=nuevo if primero else actor(),
-                data={"profile": nuevo.id, "name": nuevo.label()},
-            )
-            if primero:
-                session.professional = nuevo
-                auditoria.record("session_opened", actor=nuevo)
-                retener(nuevo)
-                tras_identificarse()
-            self._json(200, {"ok": True})
-
-        def _settings(self, accion: str, herramientas: AppTools) -> None:
-            """Ajustes solo se abre desde el inicio o desde un problema: nunca con una
-            consulta a medias, que se perdería al reconstruir."""
-            if accion == "ajustes":
-                with lock:
-                    if session.state not in ("start", "problem"):
-                        self._json(409, {"ok": False})
-                        return
-                    session.clean()
-                    session.state = "settings"
-                self._json(200, {"ok": True})
-                return
-            if accion == "modelo":
-                with lock:
-                    if session.download == "running":
-                        self._json(200, {"ok": True})
-                        return
-                    session.download = "running"
-                    session.download_detail = ""
-                threading.Thread(target=descargar, args=(herramientas,), daemon=True).start()
-                self._json(200, {"ok": True})
-                return
-            if accion == "solo-local":
-                try:
-                    on = json.loads(self._body() or b"{}").get("on")
-                except (ValueError, AttributeError):
-                    on = None
-                if not isinstance(on, bool):
-                    self._json(400, {"ok": False})
-                    return
-                herramientas.save_local_only(on)
-                self._json(200, {"ok": True})
-                return
-            datos = self._body()
-            try:
-                clave = str(json.loads(datos or b"{}").get("key", "")).strip()
-            except (ValueError, AttributeError):
-                clave = ""
-            if not clave:
-                self._json(400, {"ok": False, "reason": ""})
-                return
-            # Sin el candado: probar la clave sale a la red y puede tardar segundos.
-            sirve, motivo = herramientas.check_cloud_key(clave)
-            if accion == "clave-guardar" and sirve:
-                herramientas.save_cloud_key(clave)
-            self._json(200, {"ok": sirve, "reason": motivo})
-
-        def _live(self, accion: str) -> None:
-            datos = self._body()
-            with lock:
-                vivo = session.live if session.state == "live" else None
-            if vivo is None or datos is None:
-                self._json(409, {"error": "no hay una grabación en curso"})
-                return
-            if accion == "pcm":
-                vivo.feed(datos)
-                self._json(200, {"ok": True})
-                return
-            try:
-                pedido = json.loads(datos or b"{}")
-            except ValueError:
-                pedido = None
-            if not isinstance(pedido, dict):
-                self._json(400, {"error": "cuerpo inválido"})
-                return
-            if accion == "campo":
-                ok = isinstance(pedido.get("id"), str) and isinstance(pedido.get("text"), str)
-                if not ok or not vivo.edit_field(pedido["id"], pedido["text"]):
-                    self._json(400, {"error": "campo desconocido"})
-                    return
-            elif accion == "codigo":
-                if not isinstance(pedido.get("code"), str):
-                    self._json(400, {"error": "código inválido"})
-                    return
-                vivo.set_code(pedido["code"], pedido.get("included") is not False)
-            else:
-                vivo.pause(pedido.get("paused") is True)
-            self._json(200, {"ok": True})
-
-        def _finish(self) -> None:
-            with lock:
-                ready = session.ready
-                vivo = session.live
-                document = session.document
-                if (
-                    session.state != "live"
-                    or vivo is None
-                    or document is None
-                    or not isinstance(ready, AppReady)
-                ):
-                    self._json(409, {"error": "no hay una grabación en curso"})
-                    return
-                session.state = "working"
-                session.start_index = len(ready.log)
-                session.drafted = False
-            audio = vivo.stop()
-            mine, excluded = vivo.mine(), vivo.rejected()
-            with lock:
-                session.live = None
-            threading.Thread(
-                target=procesar,
-                args=(ready, session.owner, audio, document, vivo.consent, mine, excluded),
-                daemon=True,
-            ).start()
-            self._json(200, {"ok": True})
-
-        def _upload(self, accion: str) -> None:
-            datos = self._body()
-            if datos is None:
-                self._json(413, {"error": "archivo demasiado grande"})
-                return
-            with lock:
-                if session.state != "start":
-                    self._json(409, {"error": "hay una sesión en curso"})
-                    return
-                if session.workdir is None:
-                    session.workdir = Path(
-                        tempfile.mkdtemp(prefix=_WORKDIR_PREFIX, dir=raiz)
-                    )
-                sufijo = _safe_suffix(self.headers.get("X-Name", ""))
-                # Sellado al escribirlo (plan 85a): lo subido nunca está en claro en disco.
-                destino = session.workdir / f"{accion}{sufijo}.sealed"
-                ready = session.ready
-                seal_bytes(destino, datos, clave(ready if isinstance(ready, AppReady) else None))
-                if accion == "audio":
-                    session.audio = destino
-                else:
-                    session.document = destino
-            self._json(200, {"ok": True})
-
-        def _license(self) -> None:
-            """Cargar una licencia: se verifica antes de guardarla, y una que no sirve
-            no pisa la que había. Queda en la auditoría, con quien la cargó."""
-            datos = self._body() or b""
-            estado = read_license(datos.decode("utf-8", "replace"), today=today())
-            if not estado.licensed(arm_id) or estado.status == "expired":
-                self._json(400, {"error": wording["license_rejected"].format(estado.status)})
-                return
-            with lock:
-                destino = license_path if license_path is not None else _license_file()
-                destino.parent.mkdir(parents=True, exist_ok=True)
-                destino.write_bytes(datos)
-                with contextlib.suppress(OSError):
-                    destino.chmod(0o600)
-                licencia[0] = estado
-                assert estado.license is not None
-                auditoria.record(
-                    "license_loaded",
-                    actor=actor(),
-                    data={
-                        "license": estado.license.id,
-                        "client": estado.license.client,
-                        "expires": estado.license.expires.isoformat(),
-                    },
-                )
-            self._json(200, {"ok": True})
-
-        def _recover(self, accion: str) -> None:
-            """Recuperar o descartar una grabación interrumpida. Solo la ve quien la grabó:
-            el filtro por profesional va antes que cualquier otra cosa, y con él un id ajeno
-            es simplemente «no existe» (87)."""
-            try:
-                pedido = json.loads(self._body() or b"{}")
-            except ValueError:
-                pedido = None
-            if not isinstance(pedido, dict) or not isinstance(pedido.get("id"), str):
-                self._json(400, {"error": "cuerpo inválido"})
-                return
-            nombre = pedido["id"]
-            with lock:
-                ready = session.ready
-                if (
-                    not isinstance(ready, AppReady)
-                    or ready.seal_key is None
-                    or session.state != "start"
-                    or session.professional is None
-                ):
-                    self._json(409, {"error": "no se puede recuperar ahora"})
-                    return
-                if not licencia[0].allows(arm_id):
-                    self._json(403, {"error": wording["license_readonly"]})
-                    return
-                elegidas = [
-                    i
-                    for i in interrupted(raiz, ready.seal_key)
-                    if i.professional == session.professional.id and i.folder.name == nombre
-                ]
-                if not elegidas:
-                    self._json(404, {"error": "no hay esa grabación"})
-                    return
-                elegida = elegidas[0]
-                if accion == "descartar":
-                    shutil.rmtree(elegida.folder, ignore_errors=True)
-                    auditoria.record(
-                        "recording_discarded",
-                        actor=session.professional,
-                        owner=elegida.owner,
-                        data={"started": elegida.started.isoformat(timespec="seconds")},
-                    )
-                    self._json(200, {"ok": True})
-                    return
-                registro = ready.consultation.consent_by_digest(elegida.consent_digest)
-                if registro is None:
-                    self._json(409, {"error": wording["recover_gone"]})
-                    return
-                session.workdir = elegida.folder
-                session.owner = elegida.owner
-                session.document = elegida.folder / elegida.document
-                session.consent = registro
-                session.start_index = len(ready.log)
-                session.drafted = False
-                session.state = "working"
-                auditoria.record(
-                    "recording_recovered",
-                    actor=session.professional,
-                    owner=elegida.owner,
-                    data={"started": elegida.started.isoformat(timespec="seconds")},
-                )
-                audio = elegida.folder / RECORDING_NAME
-                documento = elegida.folder / elegida.document
-            threading.Thread(
-                target=procesar,
-                args=(ready, elegida.owner, audio, documento, registro),
-                daemon=True,
-            ).start()
-            self._json(200, {"ok": True})
-
-        def _start(self) -> None:
-            datos = self._body() or b"{}"
-            try:
-                pedido = json.loads(datos)
-            except ValueError:
-                pedido = None
-            if not isinstance(pedido, dict):
-                self._json(400, {"error": "cuerpo inválido"})
-                return
-            owner = pedido.get("owner")
-            with lock:
-                ready = session.ready
-                if not isinstance(ready, AppReady) or session.state != "start":
-                    self._json(409, {"error": "no se puede empezar ahora"})
-                    return
-                if not isinstance(owner, str) or not valid_owner(owner):
-                    self._json(400, {"error": wording["owner_invalid"]})
-                    return
-                # Caducada o sin licencia, nada nuevo (plan 100). Una sola puerta: todo lo
-                # que empieza trabajo en la aplicación pasa por aquí.
-                if not licencia[0].allows(arm_id):
-                    self._json(403, {"error": wording["license_readonly"]})
-                    return
-                grabando = pedido.get("recorded") is True
-                if session.document is None or (session.audio is None and not grabando):
-                    self._json(400, {"error": wording["missing_document"]})
-                    return
-                # Al grabar y al subir (plan 82): sin autorización no se procesa nada. En
-                # el mismo orden que la pantalla, que la pide después de los archivos.
-                if pedido.get("consent") is not True:
-                    self._json(400, {"error": wording["missing_consent"]})
-                    return
-                # La nube solo si la casilla está marcada y la hay (plan 85b): una petición a
-                # mano no abre lo que la pantalla no ofrece.
-                nube = pedido.get("cloud") is True and ready.cloud
-                if not nube and not ready.local_model:
-                    self._json(400, {"error": wording["cloud_needs_local"]})
-                    return
-                session.owner = owner
-                registro = ready.consultation.record_consent(
-                    owner=AgentId(owner),
-                    mode="recorded" if grabando else "uploaded",
-                    actor=actor(),
-                    cloud=nube,
-                )
-                session.consent = registro
-                if grabando and session.workdir is not None:
-                    documento = session.document
-                    session.live = LiveSession(
-                        consultation=ready.consultation,
-                        owner=owner,
-                        note_sections=secciones,
-                        history_text=lambda: _read_sealed(ready.reader, documento, clave(ready)),
-                        workdir=session.workdir,
-                        transcriber=ready.live_stt if nube else None,
-                        vad=crear_vad(),
-                        seal_key=clave(ready),
-                        consent=registro,
-                        clock=clock,
-                    )
-                    # Sin clave del equipo no hay marcador: la siguiente ejecución no podría
-                    # leerlo, y una grabación que no se puede recuperar no se guarda (87).
-                    if ready.seal_key is not None:
-                        write_marker(
-                            session.workdir,
-                            owner=owner,
-                            consent_digest=registro.digest,
-                            professional=actor().id,
-                            started=now().astimezone(),
-                            document=documento.name,
-                            key=ready.seal_key,
-                        )
-                    session.live.start()
-                    with plain_copy(documento, clave(ready)) as historia:
-                        session.view = history_view(historia, "")
-                    session.state = "live"
-                    self._json(200, {"ok": True})
-                    return
-                session.start_index = len(ready.log)
-                session.drafted = False
-                session.state = "working"
-                audio, document = session.audio, session.document
-                assert audio is not None and document is not None
-            threading.Thread(
-                target=procesar, args=(ready, owner, audio, document, registro), daemon=True
-            ).start()
-            self._json(200, {"ok": True})
-
-        def _save(self) -> None:
-            datos = self._body() or b"{}"
-            try:
-                pedido = json.loads(datos)
-            except ValueError:
-                pedido = None
-            if not isinstance(pedido, dict):
-                self._json(400, {"error": "cuerpo inválido"})
-                return
-            with lock:
-                ready = session.ready
-                borrador = session.draft
-                if (
-                    session.state != "review"
-                    or borrador is None
-                    or not isinstance(ready, AppReady)
-                ):
-                    self._json(409, {"error": "no hay nada que guardar"})
-                    return
-                envio, error = parse_submission(
-                    pedido,
-                    items=borrador.items,
-                    note=borrador.note,
-                    measured_elapsed=clock() - session.started,
-                )
-                if envio is None:
-                    self._json(400, {"error": error})
-                    return
-                try:
-                    close_from_screen(ready.consultation, borrador, envio, actor=actor())
-                except AbsenceUnresolvedError:
-                    # La pantalla no deja llegar aquí; si llega, el servidor manda.
-                    ajustes = ready.consultation.traceability
-                    texto = ajustes.absences_unresolved if ajustes is not None else ""
-                    self._json(400, {"error": texto})
-                    return
-                session.clean()
-                session.state = "start"
-            self._json(200, {"ok": True, "next": f"/{token}"})
-
-    http_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    url = f"http://127.0.0.1:{http_server.server_port}/{token}"
-    if open_browser is not None:
-        open_browser(url)
-    else:
-        webbrowser.open(url)
-    try:
-        http_server.serve_forever()
-    finally:
-        http_server.server_close()
-        with lock:
-            session.clean()
 
 
-def _page(
-    *,
-    brand: str,
-    title: str,
-    place: str,
-    moment: datetime,
-    pill: str,
-    pill_class: str,
-    body: str,
-    script: str,
-    live: bool = False,
-    head_link: str = "",
-) -> str:
-    e = html.escape
-    if live:
-        estilo = f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_LIVE}"
-        iconos = _ICONS_LIVE
-    else:
-        estilo = (
-            f"{_CSS}\n{_CSS_EXTRA}\n{_CSS_SETTINGS}\n{_CSS_CONSENT}\n{_CSS_IDENTITY}\n"
-            f"{_CSS_LICENSE}"
-        )
-        iconos = _ICONS_ALL
-    return f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<title>{e(title)}</title>
-<style>
-{estilo}
-</style>
-</head>
-<body>
-{iconos}
-<header class="top">
-  <div class="mark"><i>{e(brand[:1])}</i>{e(brand)}</div>
-  <div class="sep"></div>
-  <div class="title"><strong>{e(title)}</strong>
-    <span>{e(place)} · {moment.strftime("%d/%m/%Y")}</span></div>
-  <div class="head-right">{head_link}
-    <span class="{pill_class}" id="head-pill"><span class="dot"></span>
-      <span id="pill-text">{e(pill)}</span></span>
-  </div>
-</header>
-{body}
-<script>
-{script}
-</script>
-</body>
-</html>
-"""
+
+
 
 
 def _duracion(delta: timedelta) -> str:
@@ -2128,8 +980,8 @@ def _start_page(
         f"const TOKEN = {json.dumps(token)};\nconst W = {palabras};\n"
         f"const CONSENT = {autorizaciones};\n{_JS_START}"
     )
-    enlace = _license_chip(w, license) + _user_chip(w, professional)
-    script += _identity_script(w)
+    enlace = license_chip(w, license) + user_chip(w, professional)
+    script += identity_script(w)
     if pending is not None:
         script += _JS_RECOVER
     if settings:
@@ -2137,7 +989,7 @@ def _start_page(
             f'\n    <button type="button" class="head-link" id="to-settings">'
             f'<svg><use href="#i-gear"/></svg>{e(w["settings_label"])}</button>'
         )
-        script += _JS_TO_SETTINGS
+        script += JS_TO_SETTINGS
     return _page(
         brand=brand, title=w["title_start"], place=w["header_place"], moment=moment,
         pill=w["pill_ready"], pill_class="pill", body=body, script=script, head_link=enlace,
@@ -2363,105 +1215,7 @@ async function poll() {
 poll();
 """
 
-def _settings_page(
-    w: AppWording,
-    brand: str,
-    token: str,
-    tools: AppTools,
-    moment: datetime,
-    download: str,
-    *,
-    profiles: Sequence[Professional] = (),
-    professional: Professional | None = None,
-    license: LicenseState | None = None,
-) -> str:
-    """Cada tarjeta se consulta al abrir: es una pantalla que se visita poco, y lo que
-    enseña tiene que ser lo que hay ahora, no lo que había al arrancar."""
-    e = html.escape
-    origen = tools.cloud_key_source()
-    estado_clave = {
-        "env": ("ok", w["key_status_env"]),
-        "file": ("ok", w["key_status_file"]),
-    }.get(origen or "", ("warn", w["key_status_none"]))
-    nota_entorno = f'<p>{e(w["key_env_note"])}</p>' if origen == "env" else ""
 
-    modelo_ok = tools.model_available()
-    if modelo_ok:
-        instalado = w["model_ok"].format(tools.model_name)
-        estado_modelo = f'<span class="status ok">{e(instalado)}</span>'
-        descarga = ""
-    else:
-        estado_modelo = f'<span class="status warn">{e(w["model_missing"])}</span>'
-        descarga = _download_block(w, download)
-
-    try:
-        version = tools.reader_version()
-        lector = (
-            ("ok", w["reader_ok"].format(version)) if version else ("fail", w["reader_missing"])
-        )
-    except Exception:
-        lector = ("fail", w["reader_missing"])
-
-    desde = tools.cache_key_since()
-    cifrado = (
-        w["cipher_text"].format(datetime.fromtimestamp(desde).strftime("%d/%m/%Y"))
-        if desde is not None
-        else w["cipher_env"]
-    )
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card">
-      <h2>{e(w["title_settings"])}</h2>
-      <p class="lead">{e(w["settings_lead"])}</p>
-      <div class="settings">
-        <div class="setting">
-          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["key_title"])}</h3>
-            <span class="status {estado_clave[0]}" id="key-status">{e(estado_clave[1])}</span></div>
-          <p>{e(w["key_text"])}</p>
-          {nota_entorno}
-          <div class="key-row">
-            <input class="input" id="key-input" type="password" autocomplete="off">
-            <button type="button" class="btn" id="key-test">{e(w["key_test"])}</button>
-            <button type="button" class="btn btn-primary" id="key-save">{e(w["key_save"])}</button>
-          </div>
-          <div class="result ok" id="key-ok" hidden><svg><use href="#i-check"/></svg>
-            <span></span></div>
-          <div class="result fail" id="key-fail" hidden><svg><use href="#i-alert"/></svg>
-            <span></span></div>
-        </div>
-        {_where_block(w, tools)}
-        <div class="setting">
-          <div class="setting-head"><svg><use href="#i-download"/></svg>
-            <h3>{e(w["model_title"])}</h3>{estado_modelo}</div>
-          <p>{e(w["model_text"])}</p>
-          {descarga}
-        </div>
-        <div class="setting">
-          <div class="setting-head"><svg><use href="#i-doc"/></svg><h3>{e(w["reader_title"])}</h3>
-            <span class="status {lector[0]}">{e(lector[1])}</span></div>
-          <p>{e(w["reader_text"])}</p>
-        </div>
-        {_profiles_block(w, profiles)}
-        {_license_block(w, license)}
-        <div class="setting">
-          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
-            <span class="status ok">{e(w["cipher_ok"])}</span></div>
-          <p>{e(cifrado)}</p>
-        </div>
-      </div>
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="back">
-      <svg><use href="#i-back"/></svg>{e(w["back_label"])}</button>
-  </footer>
-</section>"""
-    return _page(
-        brand=brand, title=w["title_settings"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body,
-        script=_settings_script(w, token, tools) + _identity_script(w) + _JS_LICENSE,
-        head_link=_license_chip(w, license) + _user_chip(w, professional),
-    )
 
 
 def _where_block(w: AppWording, tools: AppTools) -> str:
@@ -2567,312 +1321,41 @@ def _model_page(
     return _page(
         brand=brand, title=w["title_first_run"], place=w["header_place"], moment=moment,
         pill=w["pill_preparing"], pill_class="pill", body=body,
-        script=_settings_script(w, token, tools) + _JS_TO_SETTINGS,
+        script=_settings_script(w, token, tools) + JS_TO_SETTINGS,
     )
 
 
-def _user_chip(w: AppWording, professional: Professional | None) -> str:
-    """Quién atiende, en la cabecera; pulsarlo cambia de profesional (plan 83)."""
-    if professional is None:
-        return ""
-    e = html.escape
-    return (
-        f'\n    <button type="button" class="head-user" id="head-user" '
-        f'title="{e(w["change_professional"])}"><svg><use href="#i-user"/></svg>'
-        f"{e(professional.name)}</button>"
-    )
 
 
-def _identity_script(w: AppWording) -> str:
-    return f"const IDLE_MS = {int(w.idle_lock_minutes * 60_000)};\n{_JS_IDENTITY_HEAD}"
 
 
-def _initials(name: str) -> str:
-    """Las iniciales del avatar, sin títulos: «Dra. Laura Gómez» es LG, no DL."""
-    palabras = [p for p in name.split() if not p.endswith(".")]
-    return "".join(p[0] for p in palabras[:2]).upper() or name[:1].upper()
 
 
-def _person(p: Professional, w: AppWording, *, button: bool) -> str:
-    e = html.escape
-    etiqueta = "button" if button else "div"
-    extra = (
-        f' type="button" aria-pressed="false" data-id="{e(p.id)}" data-name="{e(p.name)}"'
-        if button
-        else ""
-    )
-    return (
-        f'<{etiqueta} class="person"{extra}><span class="avatar">{e(_initials(p.name))}</span>'
-        f"<span><strong>{e(p.name)}</strong>"
-        f"<small>{e(w['registry_short'])} {e(p.registry)}</small></span></{etiqueta}>"
-    )
 
 
-def _profiles_block(w: AppWording, profiles: Sequence[Professional]) -> str:
-    """En Ajustes: quiénes hay y añadir a otro. Lo añade alguien ya identificado."""
-    e = html.escape
-    personas = "".join(_person(p, w, button=False) for p in profiles)
-    return f"""<div class="setting">
-          <div class="setting-head"><svg><use href="#i-user"/></svg>
-            <h3>{e(w["profiles_title"])}</h3></div>
-          <p>{e(w["profiles_text"])}</p>
-          <div class="who">{personas}</div>
-          <div class="fields-2">
-            <div><label class="label" for="np-name">{e(w["first_name"])}</label>
-              <input class="input" id="np-name" autocomplete="off"></div>
-            <div><label class="label" for="np-registry">{e(w["first_registry"])}</label>
-              <input class="input" id="np-registry" autocomplete="off"></div>
-            <div><label class="label" for="np-pin">{e(w["first_pin"])}</label>
-              <input class="input" id="np-pin" type="password" inputmode="numeric"></div>
-            <div><label class="label" for="np-pin2">{e(w["first_pin2"])}</label>
-              <input class="input" id="np-pin2" type="password" inputmode="numeric"></div>
-          </div>
-          <div class="key-row"><button type="button" class="btn" id="np-add">
-            <svg><use href="#i-plus"/></svg>{e(w["profiles_add"])}</button></div>
-          <div class="result fail" id="np-error" hidden><svg><use href="#i-alert"/></svg>
-            <span></span></div>
-        </div>"""
 
 
-def _who_page(
-    w: AppWording,
-    brand: str,
-    token: str,
-    profiles: Sequence[Professional],
-    moment: datetime,
-) -> str:
-    e = html.escape
-    personas = "".join(_person(p, w, button=True) for p in profiles)
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card">
-      <h2>{e(w["who_title"])}</h2>
-      <p class="lead">{e(w["who_lead"])}</p>
-      <div class="who">{personas}
-        <div class="person add"><span class="avatar">
-          <svg style="width:18px;height:18px"><use href="#i-plus"/></svg></span>
-          <span><strong>{e(w["who_add"])}</strong><small>{e(w["who_add_hint"])}</small></span>
-        </div>
-      </div>
-      <div class="pin-row">
-        <input class="input" id="pin" type="password" inputmode="numeric"
-          aria-label="{e(w["pin_label"])}" autocomplete="off">
-        <span class="pin-error" id="pin-error" hidden></span>
-      </div>
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="exit">
-      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
-    <span class="stat" id="who-name"></span>
-    <button type="button" class="btn btn-primary" id="enter">
-      <svg><use href="#i-check"/></svg>{e(w["enter_button"])}</button>
-  </footer>
-</section>"""
-    script = (
-        f"const TOKEN = {json.dumps(token)};\n"
-        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
-        f"{_JS_WHO}"
-    )
-    return _page(
-        brand=brand, title=w["title_who"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
-    )
 
 
-def _first_profile_page(w: AppWording, brand: str, token: str, moment: datetime) -> str:
-    e = html.escape
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card">
-      <h2>{e(w["first_title"])}</h2>
-      <p class="lead">{e(w["first_lead"])}</p>
-      <div class="fields-2">
-        <div><label class="label" for="np-name">{e(w["first_name"])}</label>
-          <input class="input" id="np-name" autocomplete="off"></div>
-        <div><label class="label" for="np-registry">{e(w["first_registry"])}</label>
-          <input class="input" id="np-registry" autocomplete="off"></div>
-        <div><label class="label" for="np-pin">{e(w["first_pin"])}</label>
-          <input class="input" id="np-pin" type="password" inputmode="numeric"></div>
-        <div><label class="label" for="np-pin2">{e(w["first_pin2"])}</label>
-          <input class="input" id="np-pin2" type="password" inputmode="numeric"></div>
-      </div>
-      <p class="hint">{e(w["first_hint"])}</p>
-      <p class="pin-error" id="np-error" hidden></p>
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="exit">
-      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
-    <span class="stat"></span>
-    <button type="button" class="btn btn-primary" id="np-add">
-      <svg><use href="#i-check"/></svg>{e(w["first_button"])}</button>
-  </footer>
-</section>"""
-    script = (
-        f"const TOKEN = {json.dumps(token)};\n"
-        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
-        f"{_JS_NEW_PROFILE}"
-    )
-    return _page(
-        brand=brand, title=w["title_first_run"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
-    )
 
 
-def _locked_page(
-    w: AppWording, brand: str, token: str, professional: Professional, moment: datetime
-) -> str:
-    e = html.escape
-    entrada = e(w["locked_lead"]).replace(
-        "{}", f"<strong>{e(professional.name)}</strong>"
-    ).replace("{minutes}", str(int(w.idle_lock_minutes)))
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card center">
-      <div class="lock-icon"><svg><use href="#i-lock"/></svg></div>
-      <h2>{e(w["locked_title"])}</h2>
-      <p class="lead">{entrada}</p>
-      <div class="pin-row">
-        <input class="input" id="pin" type="password" inputmode="numeric"
-          aria-label="{e(w["pin_label"])}" autocomplete="off">
-      </div>
-      <p class="pin-error" id="pin-error" hidden></p>
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="other">
-      <svg><use href="#i-user"/></svg>{e(w["other_professional"])}</button>
-    <span class="stat"></span>
-    <button type="button" class="btn btn-primary" id="unlock">
-      <svg><use href="#i-check"/></svg>{e(w["unlock_button"])}</button>
-  </footer>
-</section>"""
-    chip = (
-        f'\n    <span class="head-user"><svg><use href="#i-user"/></svg>'
-        f"{e(professional.name)}</span>"
-    )
-    return _page(
-        brand=brand, title=w["title_locked"], place=w["header_place"], moment=moment,
-        pill=w["pill_locked"], pill_class="pill fallback", body=body,
-        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LOCKED}", head_link=chip,
-    )
 
 
-_JS_IDENTITY_HEAD = """
-(function () {
-  let last = Date.now(), sent = 0;
-  const activity = () => {
-    last = Date.now();
-    if (last - sent > 60000) {
-      sent = last;
-      fetch('/' + TOKEN + '/actividad', { method: 'POST', body: '' });
-    }
-  };
-  ['input', 'click', 'keydown'].forEach(ev => document.addEventListener(ev, activity, true));
-  // El bloqueo lo decide Python; la página solo recarga para enseñarlo.
-  setInterval(() => { if (Date.now() - last > IDLE_MS + 2000) location.reload(); }, 5000);
-  const me = document.getElementById('head-user');
-  if (me) {
-    me.addEventListener('click', async () => {
-      await fetch('/' + TOKEN + '/cambiar', { method: 'POST', body: '' });
-      location.reload();
-    });
-  }
-  const add = document.getElementById('np-add');
-  if (add) {
-    add.addEventListener('click', async () => {
-      const v = id => document.getElementById(id).value;
-      const body = JSON.stringify({
-        name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2'),
-      });
-      const r = await fetch('/' + TOKEN + '/perfil', { method: 'POST', body });
-      if (r.ok) { location.reload(); return; }
-      const box = document.getElementById('np-error');
-      box.querySelector('span').textContent = (await r.json()).error;
-      box.hidden = false;
-    });
-  }
-})();
-"""
 
-_JS_WHO = """
-function post(path, body) {
-  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
-}
-let chosen = null;
-document.querySelectorAll('.person[data-id]').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('.person[data-id]').forEach(
-    x => x.setAttribute('aria-pressed', 'false'));
-  b.setAttribute('aria-pressed', 'true');
-  chosen = b.dataset.id;
-  document.getElementById('who-name').textContent = b.dataset.name;
-  document.getElementById('pin-error').hidden = true;
-  document.getElementById('pin').focus();
-}));
-const first = document.querySelector('.person[data-id]');
-if (first) { first.click(); }
-async function enter() {
-  const pin = document.getElementById('pin').value;
-  if (!chosen || !pin) { return; }
-  const r = await post('/entrar', JSON.stringify({ profile: chosen, pin }));
-  if (r.ok) { location.reload(); return; }
-  const err = document.getElementById('pin-error');
-  err.textContent = (await r.json()).error;
-  err.hidden = false;
-  document.getElementById('pin').value = '';
-}
-document.getElementById('enter').addEventListener('click', enter);
-document.getElementById('pin').addEventListener('keydown', ev => {
-  if (ev.key === 'Enter') { enter(); }
-});
-document.getElementById('exit').addEventListener('click', async () => {
-  await post('/salir');
-  document.body.textContent = W.closed_text;
-});
-"""
 
-_JS_NEW_PROFILE = """
-function post(path, body) {
-  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
-}
-document.getElementById('np-add').addEventListener('click', async () => {
-  const v = id => document.getElementById(id).value;
-  const r = await post('/perfil', JSON.stringify({
-    name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2') }));
-  if (r.ok) { location.reload(); return; }
-  const err = document.getElementById('np-error');
-  err.textContent = (await r.json()).error;
-  err.hidden = false;
-});
-document.getElementById('exit').addEventListener('click', async () => {
-  await post('/salir');
-  document.body.textContent = W.closed_text;
-});
-"""
 
-_JS_LOCKED = """
-function post(path, body) {
-  return fetch('/' + TOKEN + path, { method: 'POST', body: body || '' });
-}
-async function unlock() {
-  const pin = document.getElementById('pin').value;
-  const r = await post('/desbloquear', JSON.stringify({ pin }));
-  if (r.ok) { location.reload(); return; }
-  const err = document.getElementById('pin-error');
-  err.textContent = (await r.json()).error;
-  err.hidden = false;
-  document.getElementById('pin').value = '';
-}
-document.getElementById('unlock').addEventListener('click', unlock);
-document.getElementById('pin').addEventListener('keydown', ev => {
-  if (ev.key === 'Enter') { unlock(); }
-});
-document.getElementById('other').addEventListener('click', async () => {
-  await post('/cambiar');
-  location.reload();
-});
-"""
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @contextlib.contextmanager
@@ -2895,164 +1378,30 @@ def _read_sealed(reader: DocumentReader, document: Path, key: bytes) -> str:
         return reader.read(historia)
 
 
-def _license_file() -> Path:
-    return user_dir("config") / "licencia.json"
 
 
-def _license_chip(w: AppWording, license: LicenseState | None) -> str:
-    """El aviso de caducidad en la cabecera, desde `WARN_DAYS` antes (plan 100)."""
-    if license is None or license.status != "expiring":
-        return ""
-    e = html.escape
-    return (
-        f'\n    <span class="head-warn"><svg style="width:14px;height:14px">'
-        f'<use href="#i-alert"/></svg>{e(w["license_warn"].format(license.days_left))}</span>'
-    )
 
 
-def _license_status(w: AppWording, license: LicenseState) -> tuple[str, str]:
-    if license.status == "valid":
-        return "ok", w["license_status_valid"]
-    if license.status == "expiring":
-        return "warn", w["license_status_expiring"].format(license.days_left)
-    return "fail", w[f"license_status_{license.status}"]
 
 
-def _license_block(w: AppWording, license: LicenseState | None) -> str:
-    """La tarjeta «Licencia» de Ajustes: quién, qué brazos y hasta cuándo, y cargar
-    otra."""
-    if license is None:
-        return ""
-    e = html.escape
-    clase, estado = _license_status(w, license)
-    filas = ""
-    if license.license is not None:
-        lic = license.license
-        filas = (
-            f'<dl class="license-row"><dt>{e(w["license_client"])}</dt><dd>{e(lic.client)}</dd>'
-            f'<dt>{e(w["license_arms"])}</dt><dd>{e(" · ".join(lic.arms))}</dd>'
-            f'<dt>{e(w["license_until"])}</dt><dd>{lic.expires.strftime("%d/%m/%Y")}</dd></dl>'
-        )
-    return f"""<div class="setting">
-          <div class="setting-head"><svg><use href="#i-badge"/></svg>
-            <h3>{e(w["license_title"])}</h3>
-            <span class="status {clase}">{e(estado)}</span></div>
-          {filas}
-          <div class="key-row"><label class="btn">{e(w["license_load"])}
-            <input type="file" id="license-file" accept=".json,application/json" hidden>
-          </label></div>
-          <div class="result fail" id="license-error" hidden><svg><use href="#i-alert"/></svg>
-            <span></span></div>
-        </div>"""
 
 
-def _license_page(
-    w: AppWording,
-    brand: str,
-    token: str,
-    license: LicenseState,
-    moment: datetime,
-    professional: Professional | None,
-) -> str:
-    """Sin una licencia válida no se empieza nada: se carga aquí."""
-    e = html.escape
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card">
-      <div class="alert-head">
-        <span class="alert-icon warn"><svg><use href="#i-badge"/></svg></span>
-        <div><h2>{e(w["license_missing_title"])}</h2>
-        <p class="lead" style="margin:.2rem 0 0">{e(w["license_missing_lead"])}</p></div>
-      </div>
-      {_license_block(w, license)}
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="exit">
-      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
-  </footer>
-</section>"""
-    return _page(
-        brand=brand, title=w["license_title"], place=w["header_place"], moment=moment,
-        pill=w["pill_problem"], pill_class="pill fallback", body=body,
-        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LICENSE}{_JS_EXIT}",
-        head_link=_user_chip(w, professional),
-    )
 
 
-def _readonly_page(
-    w: AppWording,
-    brand: str,
-    token: str,
-    license: LicenseState,
-    moment: datetime,
-    professional: Professional | None,
-    arm_name: str,
-) -> str:
-    """Caducada: nada nuevo, y nada de lo registrado se pierde (debate de la 100)."""
-    e = html.escape
-    caducidad = license.license.expires.strftime("%d/%m/%Y") if license.license else ""
-    items = "".join(
-        f'<li><svg><use href="#i-check"/></svg>{e(w[clave])}</li>'
-        for clave in ("readonly_item_consents", "readonly_item_audit", "readonly_item_texts")
-    )
-    body = f"""<section class="screen">
-  <div class="stage">
-    <div class="panel-card">
-      <div class="alert-head">
-        <span class="alert-icon warn"><svg><use href="#i-badge"/></svg></span>
-        <div><h2>{e(w["readonly_title"].format(arm_name, caducidad))}</h2>
-        <p class="lead" style="margin:.2rem 0 0">{e(w["readonly_lead"])}</p></div>
-      </div>
-      <ul class="readonly-list">{items}</ul>
-      <p class="hint">{e(w["readonly_hint"])}</p>
-    </div>
-  </div>
-  <footer class="bar">
-    <button type="button" class="btn btn-quiet" id="exit">
-      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
-    <button type="button" class="btn btn-primary" id="to-settings">
-      <svg><use href="#i-gear"/></svg>{e(w["go_settings"])}</button>
-  </footer>
-</section>"""
-    return _page(
-        brand=brand, title=arm_name, place=w["header_place"], moment=moment,
-        pill=w["pill_readonly"], pill_class="pill fallback", body=body,
-        script=f"const TOKEN = {json.dumps(token)};\n{_JS_TO_SETTINGS}{_JS_EXIT}",
-        head_link=_user_chip(w, professional),
-    )
 
 
-_JS_EXIT = """
-document.getElementById('exit').addEventListener('click', async () => {
-  await fetch('/' + TOKEN + '/salir', { method: 'POST', body: '' });
-  document.body.textContent = '';
-});
-"""
-
-_JS_LICENSE = """
-// Cargar la licencia (plan 100): el archivo va tal cual; quien lo valida es AIDA.
-const licenseFile = document.getElementById('license-file');
-if (licenseFile) {
-  licenseFile.addEventListener('change', async () => {
-    const file = licenseFile.files[0];
-    if (!file) { return; }
-    const r = await fetch('/' + TOKEN + '/licencia', { method: 'POST', body: await file.text() });
-    if (r.ok) { location.reload(); return; }
-    const box = document.getElementById('license-error');
-    box.querySelector('span').textContent = (await r.json()).error;
-    box.hidden = false;
-  });
-}
-"""
 
 
-_JS_TO_SETTINGS = """
-document.getElementById('to-settings').addEventListener('click', async () => {
-  await fetch('/' + TOKEN + '/ajustes', { method: 'POST', body: '' });
-  location.reload();
-});
-"""
+
+
+
+
+
+
+
+
+
+
 
 _JS_SETTINGS = """
 function post(path, body) {
@@ -3557,3 +1906,979 @@ document.getElementById('stop').addEventListener('click', async () => {
 startAudio();
 poll();
 """
+
+
+_EXTRA_CSS_SALUD = f"{_CSS_EXTRA}\n{_CSS_AJUSTES_SALUD}\n{_CSS_CONSENT}"
+_EXTRA_ICONOS_SALUD = f"{_ICONS_EXTRA}\n{_ICONS_SETTINGS_EXTRA}\n{_ICONS_CONSENT}"
+_EXTRA_ICONOS_VIVO = f"{_EXTRA_ICONOS_SALUD}\n{_ICONS_LIVE_EXTRA}"
+
+
+def _page(
+    *,
+    brand: str,
+    title: str,
+    place: str,
+    moment: datetime,
+    pill: str,
+    pill_class: str,
+    body: str,
+    script: str,
+    live: bool = False,
+    head_link: str = "",
+) -> str:
+    """Las pantallas de la consulta sobre el marco del armazón (101a): el CSS y los iconos
+    de salud entran detrás de los de la plataforma. `live` añade lo que la grabación en
+    vivo necesita, y nada más."""
+    if live:
+        return page_frame(
+            brand=brand, title=title, place=place, moment=moment, pill=pill,
+            pill_class=pill_class, body=body, script=script, head_link=head_link,
+            extra_css=f"{_CSS_EXTRA}\n{_CSS_LIVE}", extra_icons=_EXTRA_ICONOS_VIVO,
+        )
+    return page_frame(
+        brand=brand, title=title, place=place, moment=moment, pill=pill,
+        pill_class=pill_class, body=body, script=script, head_link=head_link,
+        extra_css=_EXTRA_CSS_SALUD, extra_icons=_EXTRA_ICONOS_SALUD,
+    )
+
+
+def _settings_cards(
+    w: AppWording,
+    tools: AppTools,
+    download: str,
+    profiles: Sequence[Professional],
+    license: LicenseState | None,
+) -> str:
+    """Las tarjetas de Ajustes que son de la consulta. Cada una se consulta al abrir: lo que
+    enseña tiene que ser lo que hay ahora. Los perfiles y la licencia son de la plataforma:
+    se piden donde toca, para que el orden de la página sea el de siempre."""
+    e = html.escape
+    origen = tools.cloud_key_source()
+    estado_clave = {
+        "env": ("ok", w["key_status_env"]),
+        "file": ("ok", w["key_status_file"]),
+    }.get(origen or "", ("warn", w["key_status_none"]))
+    nota_entorno = f'<p>{e(w["key_env_note"])}</p>' if origen == "env" else ""
+    modelo_ok = tools.model_available()
+    if modelo_ok:
+        instalado = w["model_ok"].format(tools.model_name)
+        estado_modelo = f'<span class="status ok">{e(instalado)}</span>'
+        descarga = ""
+    else:
+        estado_modelo = f'<span class="status warn">{e(w["model_missing"])}</span>'
+        descarga = _download_block(w, download)
+    try:
+        version = tools.reader_version()
+        lector = (
+            ("ok", w["reader_ok"].format(version)) if version else ("fail", w["reader_missing"])
+        )
+    except Exception:
+        lector = ("fail", w["reader_missing"])
+    desde = tools.cache_key_since()
+    cifrado = (
+        w["cipher_text"].format(datetime.fromtimestamp(desde).strftime("%d/%m/%Y"))
+        if desde is not None
+        else w["cipher_env"]
+    )
+    return f"""        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["key_title"])}</h3>
+            <span class="status {estado_clave[0]}" id="key-status">{e(estado_clave[1])}</span></div>
+          <p>{e(w["key_text"])}</p>
+          {nota_entorno}
+          <div class="key-row">
+            <input class="input" id="key-input" type="password" autocomplete="off">
+            <button type="button" class="btn" id="key-test">{e(w["key_test"])}</button>
+            <button type="button" class="btn btn-primary" id="key-save">{e(w["key_save"])}</button>
+          </div>
+          <div class="result ok" id="key-ok" hidden><svg><use href="#i-check"/></svg>
+            <span></span></div>
+          <div class="result fail" id="key-fail" hidden><svg><use href="#i-alert"/></svg>
+            <span></span></div>
+        </div>
+        {_where_block(w, tools)}
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-download"/></svg>
+            <h3>{e(w["model_title"])}</h3>{estado_modelo}</div>
+          <p>{e(w["model_text"])}</p>
+          {descarga}
+        </div>
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-doc"/></svg><h3>{e(w["reader_title"])}</h3>
+            <span class="status {lector[0]}">{e(lector[1])}</span></div>
+          <p>{e(w["reader_text"])}</p>
+        </div>
+        {profiles_block(w, profiles)}
+        {license_block(w, license)}
+        <div class="setting">
+          <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
+            <span class="status ok">{e(w["cipher_ok"])}</span></div>
+          <p>{e(cifrado)}</p>
+        </div>"""
+
+
+def _settings_page(
+    w: AppWording,
+    brand: str,
+    token: str,
+    tools: AppTools,
+    moment: datetime,
+    download: str,
+    *,
+    profiles: Sequence[Professional] = (),
+    professional: Professional | None = None,
+    license: LicenseState | None = None,
+) -> str:
+    """Ajustes completos, con su marco de la plataforma. Se conserva la firma de antes: las
+    pruebas y la aplicación la llaman así (101a, decisión 3)."""
+    return settings_frame(
+        w, brand, token, moment,
+        cards=_settings_cards(w, tools, download, profiles, license),
+        script=_settings_script(w, token, tools),
+        professional=professional,
+        license=license,
+        extra_css=_EXTRA_CSS_SALUD,
+        extra_icons=_EXTRA_ICONOS_SALUD,
+    )
+
+
+@dataclass
+class _Session:
+    """El estado de la consulta: lo que hace AIDA con una grabación, una subida o una
+    revisión. Conserva professional y last_activity por compatibilidad con la firma
+    preexistente y los tests que inspeccionan la sesión (101a, decisión 3)."""
+
+    ready: AppReady | AppProblem
+    professional: Professional | None = None
+    last_activity: float = 0.0
+    state: str = "start"
+    workdir: Path | None = None
+    audio: Path | None = None
+    document: Path | None = None
+    owner: str = ""
+    start_index: int = 0
+    drafted: bool = False
+    draft: ReviewDraft | None = None
+    view: HistoryView | None = None
+    problem: AppProblem | None = None
+    started: float = 0.0
+    live: LiveSession | None = None
+    mine: Mapping[str, str] = field(default_factory=dict)
+    excluded: frozenset[str] = frozenset()
+    consent: ConsentRecord | None = None
+    """La autorización de la sesión en curso (plan 82): la revisión la enseña."""
+    history_seen: bool = False
+    download: str = "idle"
+    """`idle`, `running`, `done` o `failed`: la descarga del modelo sobrevive a cambiar
+    de pantalla, y `clean` no la toca."""
+    download_detail: str = ""
+
+    def clean(self) -> None:
+        """Lo subido o grabado no se queda en disco: el audio en claro es lo más sensible de
+        una sesión, y la transcripción ya vive en la caché cifrada."""
+        if self.live is not None:
+            self.live.stop()
+        self.live = None
+        self.mine = {}
+        self.excluded = frozenset()
+        self.consent = None
+        self.history_seen = False
+        if self.workdir is not None:
+            shutil.rmtree(self.workdir, ignore_errors=True)
+        self.workdir = None
+        self.audio = None
+        self.document = None
+        self.draft = None
+        self.view = None
+        self.drafted = False
+
+
+_AJUSTES_RUTAS = ("ajustes", "clave-probar", "clave-guardar", "modelo", "solo-local")
+
+
+class HealthArm:
+    """El brazo de salud dentro del armazón (101a): su estado de consulta, sus rutas y sus
+    pantallas. Quién atiende, la licencia y Ajustes son del armazón, que se los presta en
+    `ShellContext`; el brazo no guarda nada de identidad."""
+
+    def __init__(
+        self,
+        build: Callable[[], AppReady | AppProblem],
+        *,
+        arm_id: str,
+        arm_name: str,
+        ui: UISettings,
+        wording: AppWording,
+        tools: AppTools | None,
+        consent_texts: ConsentTexts,
+        auditoria: AuditLog,
+        lock: threading.Lock,
+        clock: Callable[[], float],
+        now: Callable[[], datetime],
+        raiz: Path,
+        secciones: Sequence[SectionSpec],
+        crear_vad: Callable[[], Callable[[Any], Any]],
+        retention_days: int | None,
+        interrupted_hours: int | None,
+    ) -> None:
+        self.id = arm_id
+        self.name = arm_name
+        self._build = build
+        self._ui = ui
+        self._wording = wording
+        self._tools = tools
+        self._textos = consent_texts
+        self._auditoria = auditoria
+        self._lock = lock
+        self._clock = clock
+        self._now = now
+        self._raiz = raiz
+        self._secciones = secciones
+        self._crear_vad = crear_vad
+        self._retention_days = retention_days
+        self._interrupted_hours = interrupted_hours
+        # Sin clave del equipo, una de esta ejecución: tampoco queda nada en claro.
+        self._efimera = Fernet.generate_key()
+        self._session = _Session(ready=build())
+
+    # Estado y ciclo de vida: lo que el armazón necesita saber del brazo.
+
+    def at_rest(self) -> bool:
+        return self._session.state in ("start", "problem", "settings")
+
+    def in_settings(self) -> bool:
+        return self._session.state == "settings"
+
+    def reset(self) -> None:
+        self._session.professional = None
+        self._session.clean()
+
+    def rebuild(self) -> None:
+        """Vuelve a montar todo: una clave guardada o un modelo descargado se notan sin cerrar
+        AIDA (`I-152`)."""
+        self._session.clean()
+        self._session.ready = self._build()
+        self._fijar_reposo()
+
+    def on_identified(self, actor: Professional) -> None:
+        """Tras abrir sesión: borra lo que cumplió su plazo, firmado por quien abre (85a, 87)."""
+        self._session.professional = actor
+        self._retener(actor)
+        self._fijar_reposo()
+
+    def on_unlocked(self) -> None:
+        # Quien desbloquea es el mismo profesional: se recoge en la siguiente petición
+        # (`_sincronizar`), que es la que trae el contexto del armazón.
+        self._fijar_reposo()
+
+    def _sincronizar(self, ctx: ShellContext) -> None:
+        """Toma la identidad del armazón si el brazo no la tiene (tras desbloquear). Sin
+        candado: el armazón ya lo tiene tomado al entregar el contexto."""
+        if self._session.professional is None:
+            self._session.professional = ctx.professional
+
+    def _actor(self) -> Professional:
+        """Quien firma lo que se registra, leído del estado del brazo (101a-fix, I-160). Sin
+        profesional, revienta antes de escribir nada (`I-156`)."""
+
+        def actor() -> Professional:
+            if self._session.professional is None:
+                raise IdentityError("no_actor", "no hay profesional en la sesión")
+            return self._session.professional
+
+        return actor()
+
+    def _fijar_reposo(self) -> None:
+        if isinstance(self._session.ready, AppProblem):
+            self._session.state = "problem"
+            self._session.problem = self._session.ready
+        else:
+            self._session.state = "start"
+            self._session.problem = None
+
+    def _clave(self, ready: AppReady | None) -> bytes:
+        if ready is not None and ready.seal_key is not None:
+            return ready.seal_key
+        return self._efimera
+
+    def _pendiente(self, ctx: ShellContext) -> Interrupted | None:
+        """La grabación interrumpida más antigua de quien atiende, si la hay (87)."""
+        ready = self._session.ready
+        if ctx.professional is None or not isinstance(ready, AppReady) or ready.seal_key is None:
+            return None
+        for interrumpida in interrupted(self._raiz, ready.seal_key):
+            if interrumpida.professional == ctx.professional.id:
+                return interrumpida
+        return None
+
+    def _retener(self, actor: Professional) -> None:
+        """Lo que cumplió su plazo: los textos de auditoría (85a) y las grabaciones
+        interrumpidas (87), de cualquiera. Lo que nadie recuperó no se queda para siempre."""
+        ahora = self._now().astimezone()
+        if self._retention_days is not None:
+            self._auditoria.purge_texts(
+                ahora - timedelta(days=self._retention_days), actor=actor
+            )
+        if self._interrupted_hours is None:
+            return
+        llave = self._clave(
+            self._session.ready if isinstance(self._session.ready, AppReady) else None
+        )
+        legibles = {i.folder: i for i in interrupted(self._raiz, llave)}
+        for carpeta in expired(self._raiz, llave, self._interrupted_hours, ahora):
+            empieza, legible = started_at(carpeta, llave)
+            duenio = legibles.get(carpeta)
+            shutil.rmtree(carpeta, ignore_errors=True)
+            self._auditoria.record(
+                "recording_purged",
+                actor=actor,
+                owner=duenio.owner if duenio is not None else "",
+                data={
+                    "started": empieza.isoformat(timespec="seconds"),
+                    "readable": "true" if legible else "false",
+                },
+            )
+
+    def _descargar(self, herramientas: AppTools) -> None:
+        try:
+            herramientas.download_model()
+        except Exception as exc:  # frontera: una descarga fallida no tumba el http_server
+            with self._lock:
+                self._session.download = "failed"
+                self._session.download_detail = f"{type(exc).__name__}: {exc}"
+            return
+        with self._lock:
+            self._session.download = "done"
+            self._session.download_detail = ""
+
+    def _procesar(
+        self,
+        ready: AppReady,
+        owner: str,
+        audio: Path,
+        document: Path,
+        consent: ConsentRecord | None,
+        profesional: Professional,
+        mine: Mapping[str, str] | None = None,
+        excluded: frozenset[str] = frozenset(),
+    ) -> None:
+        sesion = self._session
+        try:
+            # En claro solo aquí dentro, y en temporales propios que se borran al salir del
+            # `with`, haya ido bien o no (plan 85a).
+            with (
+                _plain_audio(audio, self._clave(ready)) as wav,
+                plain_copy(document, self._clave(ready)) as historia,
+            ):
+                prepared = ready.consultation.prepare(
+                    owner=AgentId(owner),
+                    audio_path=wav,
+                    history_text=lambda: ready.reader.read(historia),
+                    consent=consent,
+                )
+                draft = _keep_mine(
+                    draft_for_screen(ready.consultation, prepared), mine or {}, self._secciones
+                )
+                vista = history_view(historia, prepared.history)
+        except (TranscriptionError, ModelUnavailableError) as exc:
+            with self._lock:
+                sesion.clean()
+                sesion.state = "problem"
+                sesion.problem = AppProblem("transcription", str(exc))
+            return
+        except Exception as exc:  # frontera del adaptador: un fallo no tumba el http_server
+            with self._lock:
+                sesion.clean()
+                sesion.state = "problem"
+                sesion.problem = AppProblem("processing", f"{type(exc).__name__}: {exc}")
+            return
+        with self._lock:
+            # Lo que propuso AIDA, sin los textos (van cifrados con la revisión guardada):
+            # qué códigos y qué campos con contenido.
+            self._auditoria.record(
+                "draft_generated",
+                actor=profesional,
+                owner=owner,
+                data={
+                    "codes": ",".join(sorted(m.diagnostic.code for m in prepared.matches)),
+                    "fields": ",".join(
+                        sorted(spec.section_id for spec, texto in draft.note.fields if texto)
+                    ),
+                },
+            )
+            sesion.drafted = True
+            sesion.mine = dict(mine or {})
+            sesion.excluded = excluded
+            sesion.draft = draft
+            sesion.view = vista
+            sesion.started = self._clock()
+            sesion.state = "review"
+
+    # Páginas: el armazón llama con el candado tomado, como antes de la mudanza.
+
+    def page(self, ctx: ShellContext) -> str:
+        self._sincronizar(ctx)
+        s = self._session
+        w = self._wording
+        token = ctx.token
+        marca = ctx.brand
+        momento = ctx.now
+        if s.state == "review" and s.draft is not None and s.view:
+            borrador = s.draft
+            return _render_page(
+                borrador.prepared.matches,
+                borrador.note,
+                borrador.prepared.transcript,
+                s.view,
+                s.owner,
+                momento,
+                self._ui.wording,
+                token,
+                overrides=s.mine,
+                excluded=s.excluded,
+                consent_line=self._textos.line(s.consent) if s.consent else None,
+                trace=borrador.trace,
+            )
+        if s.state == "live" and s.live is not None:
+            return _live_page(
+                w, self._ui, token, s.owner, momento, self._secciones, s.view
+            )
+        if s.state == "working":
+            return _working_page(w, marca, token, s.owner, momento)
+        if s.state == "settings" and self._tools is not None:
+            return _settings_page(
+                w, marca, token, self._tools, momento, s.download,
+                profiles=ctx.profiles, professional=ctx.professional, license=ctx.license,
+            )
+        # La licencia (plan 100): sin una válida, la pantalla de cargarla; caducada, solo
+        # lectura. Las dos, después de identificarse: cargar una licencia es un registro y
+        # tiene autor.
+        if ctx.license.status in ("missing", "invalid"):
+            return license_page(w, marca, token, ctx.license, momento, ctx.professional)
+        if not ctx.license.allows(self.id) and s.state == "start":
+            return readonly_page(
+                w, marca, token, ctx.license, momento, ctx.professional, self.name,
+                self.readonly_items(ctx),
+            )
+        if s.state == "problem" and s.problem is not None:
+            if s.problem.kind == "model" and self._tools is not None:
+                return _model_page(w, marca, token, self._tools, momento, s.download)
+            return _problem_page(w, marca, token, s.problem, momento)
+        if isinstance(s.ready, AppReady):
+            pendiente = self._pendiente(ctx)
+            return _start_page(
+                w, marca, token, s.ready, momento,
+                settings=self._tools is not None, consent=self._textos,
+                professional=ctx.professional, license=ctx.license,
+                pending=pendiente,
+                pending_expires=(
+                    pendiente.expires(self._interrupted_hours)
+                    if pendiente is not None and self._interrupted_hours is not None
+                    else None
+                ),
+            )
+        return _problem_page(w, marca, token, AppProblem("processing"), momento)
+
+    def settings_cards(self, ctx: ShellContext) -> str:
+        if self._tools is None:
+            return ""
+        return _settings_cards(
+            self._wording, self._tools, self._session.download, ctx.profiles, ctx.license
+        )
+
+    def readonly_items(self, ctx: ShellContext) -> tuple[str, ...]:
+        return tuple(
+            self._wording[clave]
+            for clave in ("readonly_item_consents", "readonly_item_audit", "readonly_item_texts")
+        )
+
+    # Rutas: el armazón ya ha comprobado la identidad; aquí solo lo de la consulta.
+
+    def get(self, path: str, ctx: ShellContext) -> Response | None:
+        self._sincronizar(ctx)
+        s = self._session
+        if path.startswith("estado"):
+            with self._lock:
+                pasos: tuple[bool, ...] = ()
+                if isinstance(s.ready, AppReady):
+                    eventos = list(s.ready.log)[s.start_index :]
+                    pasos = progress(eventos, drafted=s.drafted)
+                return json_response(200, {"state": s.state, "steps": list(pasos)})
+        if path.startswith("vivo"):
+            with self._lock:
+                return json_response(200, _live_status(s, f"/{ctx.token}/{path}"))
+        if path == "modelo" and self._tools is not None:
+            with self._lock:
+                return json_response(200, {
+                    "state": s.download,
+                    "bytes": self._tools.model_bytes(),
+                    "total": self._tools.model_total_mb * 1024 * 1024,
+                    "detail": s.download_detail,
+                })
+        if path == "historia":
+            with self._lock:
+                vista = s.view
+                if (
+                    s.state in ("review", "live")
+                    and vista is not None
+                    and vista.content_type is not None
+                ):
+                    # Ver la historia original es un acceso a datos de la persona atendida:
+                    # queda en la auditoría, una vez por consulta.
+                    if not s.history_seen:
+                        s.history_seen = True
+                        self._auditoria.record(
+                            "history_viewed", actor=self._actor(), owner=s.owner
+                        )
+                    return Response(200, vista.data, vista.content_type)
+        return None
+
+    def post(
+        self,
+        path: str,
+        body: bytes | None,
+        headers: Mapping[str, str],
+        ctx: ShellContext,
+    ) -> Response | None:
+        self._sincronizar(ctx)
+        if path == "actividad":
+            return json_response(200, {"ok": True})
+        if path in ("audio", "documento"):
+            return self._upload(path, body, headers.get("x-name", ""), ctx)
+        if path == "empezar":
+            return self._empezar(body, ctx)
+        if path in ("recuperar", "descartar"):
+            return self._recover(path, body, ctx)
+        if path == "guardar":
+            return self._guardar(body, ctx)
+        if path in ("pcm", "campo", "codigo", "pausa"):
+            return self._live(path, body)
+        if path == "terminar":
+            return self._terminar(ctx)
+        if path in _AJUSTES_RUTAS and self._tools is not None:
+            return self._ajustes(path, body, self._tools)
+        if path == "volver":
+            with self._lock:
+                if self._session.state == "settings":
+                    self.rebuild()
+                else:
+                    self._session.clean()
+                    if isinstance(self._session.ready, AppReady):
+                        self._session.state = "start"
+                        self._session.problem = None
+            return json_response(200, {"ok": True})
+        if path == "reintentar":
+            with self._lock:
+                self.rebuild()
+            return json_response(200, {"ok": True})
+        return None
+
+    def _upload(
+        self, accion: str, datos: bytes | None, nombre: str, ctx: ShellContext
+    ) -> Response:
+        if datos is None:
+            return json_response(413, {"error": "archivo demasiado grande"})
+        sesion = self._session
+        with self._lock:
+            if sesion.state != "start":
+                return json_response(409, {"error": "hay una sesión en curso"})
+            if sesion.workdir is None:
+                sesion.workdir = Path(
+                    tempfile.mkdtemp(prefix=_WORKDIR_PREFIX, dir=self._raiz)
+                )
+            sufijo = _safe_suffix(nombre)
+            # Sellado al escribirlo (plan 85a): lo subido nunca está en claro en disco.
+            destino = sesion.workdir / f"{accion}{sufijo}.sealed"
+            ready = sesion.ready
+            seal_bytes(destino, datos, self._clave(ready if isinstance(ready, AppReady) else None))
+            if accion == "audio":
+                sesion.audio = destino
+            else:
+                sesion.document = destino
+        return json_response(200, {"ok": True})
+
+    def _empezar(self, body: bytes | None, ctx: ShellContext) -> Response:
+        datos = body or b"{}"
+        try:
+            pedido = json.loads(datos)
+        except ValueError:
+            pedido = None
+        if not isinstance(pedido, dict):
+            return json_response(400, {"error": "cuerpo inválido"})
+        owner = pedido.get("owner")
+        sesion = self._session
+        with self._lock:
+            ready = sesion.ready
+            if not isinstance(ready, AppReady) or sesion.state != "start":
+                return json_response(409, {"error": "no se puede empezar ahora"})
+            if not isinstance(owner, str) or not valid_owner(owner):
+                return json_response(400, {"error": self._wording["owner_invalid"]})
+            # Caducada o sin licencia, nada nuevo (plan 100). Una sola puerta: todo lo que
+            # empieza trabajo en la aplicación pasa por aquí.
+            if not ctx.license.allows(self.id):
+                return json_response(403, {"error": self._wording["license_readonly"]})
+            grabando = pedido.get("recorded") is True
+            if sesion.document is None or (sesion.audio is None and not grabando):
+                return json_response(400, {"error": self._wording["missing_document"]})
+            # Al grabar y al subir (plan 82): sin autorización no se procesa nada.
+            if pedido.get("consent") is not True:
+                return json_response(400, {"error": self._wording["missing_consent"]})
+            # La nube solo si la casilla está marcada y la hay (plan 85b).
+            nube = pedido.get("cloud") is True and ready.cloud
+            if not nube and not ready.local_model:
+                return json_response(400, {"error": self._wording["cloud_needs_local"]})
+            sesion.owner = owner
+            registro = ready.consultation.record_consent(
+                owner=AgentId(owner),
+                mode="recorded" if grabando else "uploaded",
+                actor=self._actor(),
+                cloud=nube,
+            )
+            sesion.consent = registro
+            if grabando and sesion.workdir is not None:
+                documento = sesion.document
+                sesion.live = LiveSession(
+                    consultation=ready.consultation,
+                    owner=owner,
+                    note_sections=self._secciones,
+                    history_text=lambda: _read_sealed(ready.reader, documento, self._clave(ready)),
+                    workdir=sesion.workdir,
+                    transcriber=ready.live_stt if nube else None,
+                    vad=self._crear_vad(),
+                    seal_key=self._clave(ready),
+                    consent=registro,
+                    clock=self._clock,
+                )
+                # Sin clave del equipo no hay marcador (87).
+                if ready.seal_key is not None:
+                    write_marker(
+                        sesion.workdir,
+                        owner=owner,
+                        consent_digest=registro.digest,
+                        professional=self._actor().id,
+                        started=self._now().astimezone(),
+                        document=documento.name,
+                        key=ready.seal_key,
+                    )
+                sesion.live.start()
+                with plain_copy(documento, self._clave(ready)) as historia:
+                    sesion.view = history_view(historia, "")
+                sesion.state = "live"
+                return json_response(200, {"ok": True})
+            sesion.start_index = len(ready.log)
+            sesion.drafted = False
+            sesion.state = "working"
+            audio, document = sesion.audio, sesion.document
+            assert audio is not None and document is not None
+        threading.Thread(
+            target=self._procesar,
+            args=(ready, owner, audio, document, registro, self._actor()),
+            daemon=True,
+        ).start()
+        return json_response(200, {"ok": True})
+
+    def _recover(self, accion: str, body: bytes | None, ctx: ShellContext) -> Response:
+        """Recuperar o descartar una grabación interrumpida. Solo la ve quien la grabó: el
+        filtro por profesional va antes que cualquier otra cosa, y con él un id ajeno es
+        simplemente «no existe» (87)."""
+        try:
+            pedido = json.loads(body or b"{}")
+        except ValueError:
+            pedido = None
+        if not isinstance(pedido, dict) or not isinstance(pedido.get("id"), str):
+            return json_response(400, {"error": "cuerpo inválido"})
+        nombre = pedido["id"]
+        sesion = self._session
+        with self._lock:
+            ready = sesion.ready
+            if (
+                not isinstance(ready, AppReady)
+                or ready.seal_key is None
+                or sesion.state != "start"
+                or ctx.professional is None
+            ):
+                return json_response(409, {"error": "no se puede recuperar ahora"})
+            if not ctx.license.allows(self.id):
+                return json_response(403, {"error": self._wording["license_readonly"]})
+            elegidas = [
+                i
+                for i in interrupted(self._raiz, ready.seal_key)
+                if i.professional == ctx.professional.id and i.folder.name == nombre
+            ]
+            if not elegidas:
+                return json_response(404, {"error": "no hay esa grabación"})
+            elegida = elegidas[0]
+            if accion == "descartar":
+                shutil.rmtree(elegida.folder, ignore_errors=True)
+                self._auditoria.record(
+                    "recording_discarded",
+                    actor=ctx.professional,
+                    owner=elegida.owner,
+                    data={"started": elegida.started.isoformat(timespec="seconds")},
+                )
+                return json_response(200, {"ok": True})
+            registro = ready.consultation.consent_by_digest(elegida.consent_digest)
+            if registro is None:
+                return json_response(409, {"error": self._wording["recover_gone"]})
+            sesion.workdir = elegida.folder
+            sesion.owner = elegida.owner
+            sesion.document = elegida.folder / elegida.document
+            sesion.consent = registro
+            sesion.start_index = len(ready.log)
+            sesion.drafted = False
+            sesion.state = "working"
+            self._auditoria.record(
+                "recording_recovered",
+                actor=ctx.professional,
+                owner=elegida.owner,
+                data={"started": elegida.started.isoformat(timespec="seconds")},
+            )
+            audio = elegida.folder / RECORDING_NAME
+            documento = elegida.folder / elegida.document
+        threading.Thread(
+            target=self._procesar,
+            args=(ready, elegida.owner, audio, documento, registro, self._actor()),
+            daemon=True,
+        ).start()
+        return json_response(200, {"ok": True})
+
+    def _guardar(self, body: bytes | None, ctx: ShellContext) -> Response:
+        datos = body or b"{}"
+        try:
+            pedido = json.loads(datos)
+        except ValueError:
+            pedido = None
+        if not isinstance(pedido, dict):
+            return json_response(400, {"error": "cuerpo inválido"})
+        sesion = self._session
+        with self._lock:
+            ready = sesion.ready
+            borrador = sesion.draft
+            if (
+                sesion.state != "review"
+                or borrador is None
+                or not isinstance(ready, AppReady)
+            ):
+                return json_response(409, {"error": "no hay nada que guardar"})
+            envio, error = parse_submission(
+                pedido,
+                items=borrador.items,
+                note=borrador.note,
+                measured_elapsed=self._clock() - sesion.started,
+            )
+            if envio is None:
+                return json_response(400, {"error": error})
+            try:
+                close_from_screen(ready.consultation, borrador, envio, actor=self._actor())
+            except AbsenceUnresolvedError:
+                # La pantalla no deja llegar aquí; si llega, el servidor manda.
+                ajustes = ready.consultation.traceability
+                texto = ajustes.absences_unresolved if ajustes is not None else ""
+                return json_response(400, {"error": texto})
+            sesion.clean()
+            sesion.state = "start"
+        return json_response(200, {"ok": True, "next": f"/{ctx.token}"})
+
+    def _live(self, accion: str, datos: bytes | None) -> Response:
+        with self._lock:
+            vivo = self._session.live if self._session.state == "live" else None
+        if vivo is None or datos is None:
+            return json_response(409, {"error": "no hay una grabación en curso"})
+        if accion == "pcm":
+            vivo.feed(datos)
+            return json_response(200, {"ok": True})
+        try:
+            pedido = json.loads(datos or b"{}")
+        except ValueError:
+            pedido = None
+        if not isinstance(pedido, dict):
+            return json_response(400, {"error": "cuerpo inválido"})
+        if accion == "campo":
+            ok = isinstance(pedido.get("id"), str) and isinstance(pedido.get("text"), str)
+            if not ok or not vivo.edit_field(pedido["id"], pedido["text"]):
+                return json_response(400, {"error": "campo desconocido"})
+        elif accion == "codigo":
+            if not isinstance(pedido.get("code"), str):
+                return json_response(400, {"error": "código inválido"})
+            vivo.set_code(pedido["code"], pedido.get("included") is not False)
+        else:
+            vivo.pause(pedido.get("paused") is True)
+        return json_response(200, {"ok": True})
+
+    def _terminar(self, ctx: ShellContext) -> Response:
+        sesion = self._session
+        with self._lock:
+            ready = sesion.ready
+            vivo = sesion.live
+            document = sesion.document
+            if (
+                sesion.state != "live"
+                or vivo is None
+                or document is None
+                or not isinstance(ready, AppReady)
+            ):
+                return json_response(409, {"error": "no hay una grabación en curso"})
+            sesion.state = "working"
+            sesion.start_index = len(ready.log)
+            sesion.drafted = False
+        audio = vivo.stop()
+        mine, excluded = vivo.mine(), vivo.rejected()
+        with self._lock:
+            sesion.live = None
+        threading.Thread(
+            target=self._procesar,
+            args=(
+                ready, sesion.owner, audio, document, vivo.consent,
+                self._actor(), mine, excluded,
+            ),
+            daemon=True,
+        ).start()
+        return json_response(200, {"ok": True})
+
+    def _ajustes(self, accion: str, body: bytes | None, herramientas: AppTools) -> Response:
+        """Ajustes solo se abre desde el inicio o desde un problema: nunca con una consulta a
+        medias, que se perdería al reconstruir."""
+        sesion = self._session
+        if accion == "ajustes":
+            with self._lock:
+                if sesion.state not in ("start", "problem"):
+                    return json_response(409, {"ok": False})
+                sesion.clean()
+                sesion.state = "settings"
+            return json_response(200, {"ok": True})
+        if accion == "modelo":
+            with self._lock:
+                if sesion.download == "running":
+                    return json_response(200, {"ok": True})
+                sesion.download = "running"
+                sesion.download_detail = ""
+            threading.Thread(target=self._descargar, args=(herramientas,), daemon=True).start()
+            return json_response(200, {"ok": True})
+        if accion == "solo-local":
+            try:
+                on = json.loads(body or b"{}").get("on")
+            except (ValueError, AttributeError):
+                on = None
+            if not isinstance(on, bool):
+                return json_response(400, {"ok": False})
+            herramientas.save_local_only(on)
+            return json_response(200, {"ok": True})
+        try:
+            clave = str(json.loads(body or b"{}").get("key", "")).strip()
+        except (ValueError, AttributeError):
+            clave = ""
+        if not clave:
+            return json_response(400, {"ok": False, "reason": ""})
+        # Sin el candado: probar la clave sale a la red y puede tardar segundos.
+        sirve, motivo = herramientas.check_cloud_key(clave)
+        if accion == "clave-guardar" and sirve:
+            herramientas.save_cloud_key(clave)
+        return json_response(200, {"ok": sirve, "reason": motivo})
+
+
+def load_app_wording(path: Path | None = None) -> AppWording:
+    """Los textos de salud, con los de la plataforma por detrás. Una clave en los dos
+    archivos es un error de carga: dos verdades para la misma pantalla (101a)."""
+    ruta = path if path is not None else _UI_POR_DEFECTO
+    raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
+    seccion = raw.get("app") if isinstance(raw, dict) else None
+    if not isinstance(seccion, dict):
+        raise ValueError(f"falta la sección 'app' en {ruta}")
+    repetidas = [clave for clave in seccion if clave in SHELL_KEYS]
+    if repetidas:
+        raise ValueError(f"claves de plataforma en la sección 'app' de {ruta}: {repetidas}")
+    faltan = [clave for clave in _CLAVES_APP if not isinstance(seccion.get(clave), str)]
+    if faltan:
+        raise ValueError(f"faltan claves en la sección 'app' de {ruta}: {faltan}")
+    pasos = seccion.get("steps")
+    if not isinstance(pasos, list) or len(pasos) != 5 or not all(
+        isinstance(p, str) for p in pasos
+    ):
+        raise ValueError(f"'app.steps' debe ser una lista de cinco cadenas en {ruta}")
+    shell = load_shell_wording()
+    return AppWording(
+        texts={**{clave: seccion[clave] for clave in _CLAVES_APP}, **dict(shell.texts)},
+        steps=tuple(pasos),
+        idle_lock_minutes=shell.idle_lock_minutes,
+    )
+
+
+def serve(
+    build: Callable[[], AppReady | AppProblem],
+    *,
+    settings: UISettings,
+    wording: AppWording,
+    open_browser: Callable[[str], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    now: Callable[[], datetime] = datetime.now,
+    vad_factory: Callable[[], Callable[[Any], Any]] | None = None,
+    note_sections: Sequence[SectionSpec] | None = None,
+    tools: AppTools | None = None,
+    consent_texts: ConsentTexts | None = None,
+    profiles: ProfileStore | None = None,
+    audit: AuditLog | None = None,
+    license: LicenseState,
+    license_path: Path | None = None,
+    arm_id: str = "health",
+    arm_name: str = "",
+    today: Callable[[], date] = date.today,
+    retention_days: int | None = None,
+    interrupted_hours: int | None = None,
+    sessions: Path | None = None,
+) -> None:
+    """Levanta la aplicación de salud y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C).
+    La firma es la de siempre: quien la llama no sabe que hay un armazón debajo (101a)."""
+    raiz = sessions if sessions is not None else sessions_root()
+    raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
+    purge_plain_leftovers()
+    for resto in sorted(Path(tempfile.gettempdir()).glob(f"{_WORKDIR_PREFIX}*")):
+        shutil.rmtree(resto, ignore_errors=True)
+    purge_unmarked(raiz)
+    secciones: Sequence[SectionSpec] = (
+        note_sections
+        if note_sections is not None
+        else tuple(s for s in load_sections().sections if s.in_note)
+    )
+    if vad_factory is None:
+        from aida.voice.listen import vad_from_faster_whisper
+
+        crear_vad: Callable[[], Callable[[Any], Any]] = vad_from_faster_whisper
+    else:
+        crear_vad = vad_factory
+    textos = consent_texts if consent_texts is not None else load_consent_texts()
+    perfiles = (
+        profiles if profiles is not None else ProfileStore(user_dir("config") / "profiles.json")
+    )
+    auditoria = audit if audit is not None else AuditLog()
+    lock = threading.Lock()
+    brazo = HealthArm(
+        build,
+        arm_id=arm_id,
+        arm_name=arm_name,
+        ui=settings,
+        wording=wording,
+        tools=tools,
+        consent_texts=textos,
+        auditoria=auditoria,
+        lock=lock,
+        clock=clock,
+        now=now,
+        raiz=raiz,
+        secciones=secciones,
+        crear_vad=crear_vad,
+        retention_days=retention_days,
+        interrupted_hours=interrupted_hours,
+    )
+    run_shell(
+        [brazo],
+        brand=settings.wording.brand,
+        wording=wording,
+        profiles=perfiles,
+        audit=auditoria,
+        license=license,
+        license_path=license_path,
+        lock=lock,
+        open_browser=open_browser,
+        clock=clock,
+        now=now,
+        today=today,
+    )
