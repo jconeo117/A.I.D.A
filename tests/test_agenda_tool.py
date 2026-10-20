@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 
 from aida.arms.agenda.setup import AgendaSetup, ResourceSpec, ServiceSpec, load_setup
 from aida.arms.agenda.store import SqliteAgendaStore
-from aida.arms.agenda.tool import AgendaTool, huecos_libres, resumen_semana
+from aida.arms.agenda.tool import AgendaTool, free_slots, week_summary
 from aida.engine.actions import ToolStatus
 from aida.resources import data_root
 
@@ -311,7 +311,7 @@ def test_plantillas_consultorio_y_peluqueria(tmp_path: Path) -> None:
     st_cons = SqliteAgendaStore(tmp_path / "cons.sqlite", Fernet.generate_key())
     ahora_cons = datetime(2026, 10, 20, 7, 0, tzinfo=TZ)
 
-    huecos_pv = huecos_libres(st_cons, setup_cons, date(2026, 10, 20), "primera_vez", ahora_cons)
+    huecos_pv = free_slots(st_cons, setup_cons, date(2026, 10, 20), "primera_vez", ahora_cons)
     recursos_pv = {r for r, _ in huecos_pv}
     assert "consultorio_2" not in recursos_pv
     assert "consultorio_1" in recursos_pv
@@ -322,9 +322,9 @@ def test_plantillas_consultorio_y_peluqueria(tmp_path: Path) -> None:
     st_pelu = SqliteAgendaStore(tmp_path / "pelu.sqlite", Fernet.generate_key())
     ahora_pelu = datetime(2026, 10, 24, 7, 0, tzinfo=TZ)
 
-    huecos_sab = huecos_libres(st_pelu, setup_pelu, date(2026, 10, 24), "corte", ahora_pelu)
+    huecos_sab = free_slots(st_pelu, setup_pelu, date(2026, 10, 24), "corte", ahora_pelu)
     assert len(huecos_sab) > 0
 
     lunes = date(2026, 10, 19)
-    res_sem = resumen_semana(st_pelu, setup_pelu, lunes, ahora_pelu)
+    res_sem = week_summary(st_pelu, setup_pelu, lunes, ahora_pelu)
     assert len(res_sem) == 6
