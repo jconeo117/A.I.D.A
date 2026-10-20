@@ -21,9 +21,15 @@ import yaml
 
 from aida.arms.agenda.script import AGENDA_JS
 from aida.arms.agenda.setup import WEEKDAYS, AgendaSetup, load_setup
-from aida.arms.agenda.store import AgendaStore, SqliteAgendaStore
+from aida.arms.agenda.store import AgendaStore, AppointmentState, SqliteAgendaStore
 from aida.arms.agenda.style import AGENDA_CSS
-from aida.arms.agenda.tool import ACTIONS, AgendaTool, free_slots, week_summary
+from aida.arms.agenda.tool import (
+    ACTIONS,
+    AgendaTool,
+    find_clients,
+    free_slots,
+    week_summary,
+)
 from aida.engine.actions import ActionGate, ActionRequest, ToolStatus
 from aida.engine.events import EventLog
 from aida.engine.ontology import AgentId
@@ -35,6 +41,8 @@ from aida.platform.web.shell import Response, ShellContext, json_response
 from aida.resources import data_root, user_dir
 
 _UI = data_root() / "packs" / "agenda" / "ui.yaml"
+_SUBJECTS = ("appointment", "block", "client")
+"""Lo que una acción aplicada devuelve como sujeto. La acción dice de qué tipo es."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +163,9 @@ class AgendaArm:
           <button type="button" id="next">&rsaquo;</button>
         </div>
         <span class="grow"></span>
+        <input class="input search" id="search" type="search"
+          placeholder="{e(w["search_placeholder"])}">
+        <button type="button" class="btn" id="block-btn">{e(w["block_button"])}</button>
         <button type="button" class="btn btn-primary" id="new-btn">
           <svg><use href="#i-plus"/></svg>{e(w["new_button"])}</button>
       </div>
@@ -194,6 +205,14 @@ class AgendaArm:
         )
 
     def get(self, path: str, ctx: ShellContext) -> Response | None:
+        if path.startswith("contacto/"):
+            try:
+                contacto_id = int(path[len("contacto/") :])
+            except ValueError:
+                return None
+            with self._lock:
+                ficha = self._card(contacto_id, ctx)
+            return json_response(200, ficha) if ficha is not None else None
         if not path.startswith("dia/"):
             return None
         try:
@@ -216,6 +235,7 @@ class AgendaArm:
             citas.append(
                 {
                     "id": c.id,
+                    "client_id": c.client,
                     "client": contacto.name,
                     "phone": contacto.phone,
                     "service": c.service,
@@ -250,6 +270,17 @@ class AgendaArm:
                 for r in setup.resources
             ],
             "appointments": citas,
+            "blocks": [
+                {
+                    "id": b.id,
+                    "resource": b.resource,
+                    "start": b.start.isoformat(),
+                    "end": b.end.isoformat(),
+                    "reason": b.reason,
+                    "created_by": nombres.get(b.created_by, b.created_by),
+                }
+                for b in store.blocks_between(inicio, inicio + timedelta(days=1))
+            ],
             "week": [
                 {"day": d.isoformat(), "booked": ocupados, "capacity": capacidad}
                 for d, ocupados, capacidad in week_summary(store, setup, lunes, ahora)
@@ -263,6 +294,55 @@ class AgendaArm:
             },
         }
 
+    def _card(self, contacto_id: int, ctx: ShellContext) -> dict[str, Any] | None:
+        """La ficha: las cifras se cuentan aquí y en ningún otro sitio."""
+        try:
+            contacto = self._store.client(contacto_id)
+        except LookupError:
+            return None
+        ahora = self._now()
+        nombres = _names(ctx.profiles)
+        citas = self._store.appointments_for(contacto_id)
+        return {
+            "id": contacto.id,
+            "name": contacto.name,
+            "phone": contacto.phone,
+            "upcoming": sum(
+                1 for c in citas if c.state == AppointmentState.BOOKED and c.start >= ahora
+            ),
+            "attended": sum(1 for c in citas if c.state == AppointmentState.ATTENDED),
+            "no_show": sum(1 for c in citas if c.state == AppointmentState.NO_SHOW),
+            "appointments": [
+                {
+                    "id": c.id,
+                    "service_label": (
+                        s.label if (s := self._setup.service(c.service)) else c.service
+                    ),
+                    "resource": c.resource,
+                    "start": c.start.isoformat(),
+                    "minutes": c.minutes,
+                    "state": c.state.value,
+                    "created_by": nombres.get(c.created_by, c.created_by),
+                }
+                for c in reversed(citas)
+            ],
+        }
+
+    def _search(self, body: bytes | None) -> Response:
+        """Por `POST` y no en la dirección: lo que se busca es un nombre o un teléfono, y una
+        dirección acaba en registros e historiales."""
+        try:
+            pedido = json.loads(body or b"{}")
+        except ValueError:
+            pedido = None
+        if not isinstance(pedido, dict) or not isinstance(pedido.get("query"), str):
+            return json_response(400, {"error": "cuerpo inválido"})
+        with self._lock:
+            hallados = find_clients(self._store, pedido["query"])
+        return json_response(
+            200, {"clients": [{"id": c.id, "name": c.name, "phone": c.phone} for c in hallados]}
+        )
+
     def post(
         self,
         path: str,
@@ -274,6 +354,8 @@ class AgendaArm:
             return self._activity(body)
         if path == "accion":
             return self._action(body, ctx)
+        if path == "buscar":
+            return self._search(body)
         return None
 
     def _activity(self, body: bytes | None) -> Response:
@@ -314,13 +396,25 @@ class AgendaArm:
                 )
             )
             if resultado.status == ToolStatus.DONE:
-                cita = resultado.data.get("appointment", "")
+                sujeto = next((resultado.data[k] for k in _SUBJECTS if k in resultado.data), "")
                 ctx.audit.record(
                     "agenda_changed",
                     actor=ctx.professional,
-                    owner=cita,
+                    owner=sujeto,
                     data={"action": accion, "start": argumentos.get("start", "")},
                 )
+            conflictos: list[dict[str, str]] = []
+            if resultado.reason == "has_appointments":
+                for texto in resultado.data.get("appointments", "").split(","):
+                    cita = self._store.get(int(texto))
+                    if cita is not None:
+                        conflictos.append(
+                            {
+                                "id": str(cita.id),
+                                "client": self._store.client(cita.client).name,
+                                "start": cita.start.isoformat(),
+                            }
+                        )
         return json_response(
             200,
             {
@@ -328,6 +422,7 @@ class AgendaArm:
                 "reason": resultado.reason,
                 "reason_text": self._wording.reason(resultado.reason),
                 "data": dict(resultado.data),
+                "conflicts": conflictos,
             },
         )
 

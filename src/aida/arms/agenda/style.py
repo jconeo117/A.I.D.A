@@ -79,4 +79,11 @@ AGENDA_CSS = """/* La 101: la agenda */
 .week .bar-mini { height: 4px; border-radius: 4px; background: var(--line); margin-top: .35rem; overflow: hidden; }
 .week .bar-mini i { display: block; height: 100%; background: var(--brand); }
 .grid .cell.blocked { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--warn) 25%, transparent) 6px 7px); }
+.agenda-head .search { width: 16rem; }
+.blocked-label { display: block; padding: 4px 6px; font-size: .74rem; color: var(--warn); font-weight: 600; }
+.side .list { list-style: none; padding: 0; margin: .5rem 0; }
+.side .list li { padding: .35rem 0; border-bottom: 1px solid var(--line); font-size: .85rem; cursor: pointer; }
+.side .stats { display: flex; gap: 1.25rem; margin: .6rem 0; }
+.side .stats b { display: block; font-size: 1.15rem; }
+.side .stats span { font-size: .78rem; color: var(--muted); }
 """

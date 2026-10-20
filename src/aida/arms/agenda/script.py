@@ -54,17 +54,30 @@ async function cargar(dia) {
   MODO = null;
   pintar();
 }
-async function actuar(accion, argumentos) {
+async function actuar(accion, argumentos, despues) {
   const r = await fetch('/' + TOKEN + '/accion', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: accion, arguments: argumentos }),
   });
   const respuesta = await r.json();
-  if (respuesta.status === 'done') { await cargar(DIA); return; }
-  mostrarAviso(respuesta.reason_text || W.reason_failed);
+  if (respuesta.status === 'done') {
+    await cargar(DIA);
+    if (despues) { await despues(); }
+    return;
+  }
+  mostrarAviso(respuesta.reason_text || W.reason_failed, respuesta.conflicts || []);
 }
-function mostrarAviso(texto) {
-  document.getElementById('side').prepend(el('p', 'confirm', texto));
+function mostrarAviso(texto, conflictos) {
+  const aviso = el('div', 'confirm', texto);
+  if (conflictos && conflictos.length) {
+    aviso.append(el('p', '', W.conflicts_title));
+    const lista = el('ul', 'list');
+    for (const c of conflictos) {
+      lista.append(el('li', '', fecha(c.start) + ' ' + hora(c.start) + ' · ' + c.client));
+    }
+    aviso.append(lista);
+  }
+  document.getElementById('side').prepend(aviso);
 }
 
 function pintarSemana() {
@@ -84,6 +97,13 @@ function pintarSemana() {
     boton.addEventListener('click', () => cargar(dia.day));
     semana.append(boton);
   }
+}
+
+function bloqueoEn(recursoId, hhmm) {
+  const desde = new Date(DIA + 'T' + hhmm + ':00' + DATOS.offset).getTime();
+  const hasta = desde + DATOS.slot_minutes * 60000;
+  return DATOS.blocks.find((b) => (b.resource === '' || b.resource === recursoId)
+    && new Date(b.start).getTime() < hasta && desde < new Date(b.end).getTime()) || null;
 }
 
 function pintarRejilla() {
@@ -106,6 +126,7 @@ function pintarRejilla() {
     }
   }
   if (inicio === null) { return; }
+  const vistos = new Set();
   const slot = DATOS.slot_minutes;
   for (let t = inicio; t < fin; t += slot) {
     const hhmm = String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0');
@@ -117,6 +138,7 @@ function pintarRejilla() {
         celda.classList.add('closed');
       } else {
         const cita = DATOS.appointments.find((c) => c.resource === r.id && hora(c.start) === hhmm);
+        const bloqueo = cita ? null : bloqueoEn(r.id, hhmm);
         if (cita) {
           const bloque = el('div', 'appt ' + claseEstado(cita.state));
           bloque.style.height = (cita.minutes / slot * 52 - 6) + 'px';
@@ -125,6 +147,14 @@ function pintarRejilla() {
           bloque.append(el('span', '', cita.service_label + ' · ' + cita.minutes + ' min'));
           bloque.addEventListener('click', () => { SELECCION = cita; MODO = null; pintar(); });
           celda.append(bloque);
+        } else if (bloqueo) {
+          celda.classList.add('blocked');
+          const clave = r.id + ':' + bloqueo.id;
+          if (!vistos.has(clave)) {
+            vistos.add(clave);
+            celda.append(el('span', 'blocked-label', bloqueo.reason || W.blocked_label));
+          }
+          celda.addEventListener('click', () => { SELECCION = null; MODO = { tipo: 'bloqueo', bloqueo: bloqueo }; pintarPanel(); });
         } else {
           celda.classList.add('free');
           celda.addEventListener('click', () => nuevaCita(r.id, hhmm));
@@ -190,9 +220,11 @@ function formularioNueva(lado) {
   selector.addEventListener('change', () => { MODO.servicio = selector.value; pintarPanel(); });
   const nombre = el('input', 'input');
   nombre.placeholder = W.field_name;
+  nombre.value = MODO.nombre || '';
   nombre.addEventListener('input', () => marcarSucio(true));
   const telefono = el('input', 'input');
   telefono.placeholder = W.field_phone;
+  telefono.value = MODO.telefono || '';
   telefono.addEventListener('input', () => marcarSucio(true));
   lado.append(el('label', 'label', W.field_service), selector);
   lado.append(el('label', 'label', W.field_name), nombre);
@@ -250,6 +282,7 @@ function confirmarCancelar(lado) {
 function pintarDetalle(lado) {
   const c = SELECCION;
   lado.append(el('h3', '', c.client));
+  lado.append(botonSimple(W.card_link, () => abrirFicha(c.client_id), 'btn btn-quiet'));
   const datos = el('dl', 'kv');
   for (const [etiqueta, valor] of [
     [W.detail_service, c.service_label],
@@ -276,10 +309,138 @@ function pintarDetalle(lado) {
   lado.append(acciones);
 }
 
+function formularioBloquear(lado) {
+  lado.append(el('h3', '', W.block_title));
+  lado.append(el('p', 'lead', W.block_lead));
+  const quien = el('select', '');
+  const todos = el('option', '', W.all_resources);
+  todos.value = '';
+  quien.append(todos);
+  for (const r of DATOS.resources) {
+    const o = el('option', '', r.label);
+    o.value = r.id;
+    quien.append(o);
+  }
+  const desde = el('input', 'input');
+  desde.type = 'datetime-local';
+  desde.value = DIA + 'T08:00';
+  const hasta = el('input', 'input');
+  hasta.type = 'datetime-local';
+  hasta.value = DIA + 'T09:00';
+  const motivo = el('input', 'input');
+  for (const campo of [desde, hasta, motivo]) { campo.addEventListener('input', () => marcarSucio(true)); }
+  lado.append(el('label', 'label', W.field_who), quien);
+  lado.append(el('label', 'label', W.field_from), desde);
+  lado.append(el('label', 'label', W.field_until), hasta);
+  lado.append(el('label', 'label', W.field_reason), motivo);
+  lado.append(botonSimple(W.block_save, () => actuar('bloquear', {
+    resource: quien.value,
+    start: desde.value + ':00' + DATOS.offset,
+    end: hasta.value + ':00' + DATOS.offset,
+    reason: motivo.value,
+  }), 'btn btn-primary'));
+  lado.append(botonSimple(W.close_button, () => { MODO = null; pintarPanel(); }));
+}
+
+function pintarBloqueo(lado) {
+  const b = MODO.bloqueo;
+  lado.append(el('h3', '', b.reason || W.blocked_label));
+  const datos = el('dl', 'kv');
+  datos.append(el('dt', '', W.field_who), el('dd', '', b.resource ? recursoNombre(b.resource) : W.all_resources));
+  datos.append(el('dt', '', W.field_from), el('dd', '', fecha(b.start) + ' ' + hora(b.start)));
+  datos.append(el('dt', '', W.field_until), el('dd', '', fecha(b.end) + ' ' + hora(b.end)));
+  lado.append(datos);
+  lado.append(el('p', 'event-line', W.blocked_by.replace('{0}', b.created_by)));
+  lado.append(botonSimple(W.unblock_button, () => actuar('desbloquear', { block: String(b.id) }), 'btn btn-danger'));
+  lado.append(botonSimple(W.close_button, () => { MODO = null; pintarPanel(); }));
+}
+
+async function buscar(texto) {
+  const r = await fetch('/' + TOKEN + '/buscar', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: texto }),
+  });
+  const respuesta = await r.json();
+  SELECCION = null;
+  MODO = { tipo: 'buscar', contactos: respuesta.clients || [] };
+  pintarPanel();
+}
+
+function pintarBusqueda(lado) {
+  if (!MODO.contactos.length) { lado.append(el('p', 'lead', W.search_empty)); return; }
+  const lista = el('ul', 'list');
+  for (const c of MODO.contactos) {
+    const fila = el('li', '', c.name + ' · ' + c.phone);
+    fila.addEventListener('click', () => abrirFicha(c.id));
+    lista.append(fila);
+  }
+  lado.append(lista);
+}
+
+async function abrirFicha(id) {
+  const r = await fetch('/' + TOKEN + '/contacto/' + id);
+  const ficha = await r.json();
+  SELECCION = null;
+  MODO = { tipo: 'ficha', ficha: ficha };
+  pintarPanel();
+}
+
+function pintarFicha(lado) {
+  const f = MODO.ficha;
+  lado.append(el('h3', '', f.name));
+  const datos = el('dl', 'kv');
+  datos.append(el('dt', '', W.field_phone), el('dd', '', f.phone));
+  lado.append(datos);
+  const cifras = el('div', 'stats');
+  for (const [n, etiqueta] of [[f.upcoming, W.card_upcoming], [f.attended, W.card_attended], [f.no_show, W.card_no_show]]) {
+    const caja = el('div', '');
+    caja.append(el('b', '', String(n)), el('span', '', etiqueta));
+    cifras.append(caja);
+  }
+  lado.append(cifras);
+  lado.append(el('label', 'label', W.card_appointments));
+  const lista = el('ul', 'list');
+  for (const c of f.appointments) {
+    const fila = el('li', '', fecha(c.start) + ' ' + hora(c.start) + ' · ' + c.service_label
+      + ' · ' + recursoNombre(c.resource) + ' · ' + textoEstado(c.state));
+    fila.addEventListener('click', () => cargar(fecha(c.start)));
+    lista.append(fila);
+  }
+  lado.append(lista);
+  const acciones = el('div', 'side-actions');
+  acciones.append(botonSimple(W.card_edit, () => { MODO = { tipo: 'contacto', ficha: f }; pintarPanel(); }));
+  acciones.append(botonSimple(W.new_button, () => {
+    MODO = { tipo: 'nueva', recurso: '', hora: '08:00', servicio: null, nombre: f.name, telefono: f.phone };
+    pintarPanel();
+  }, 'btn btn-primary'));
+  lado.append(acciones);
+}
+
+function formularioContacto(lado) {
+  const f = MODO.ficha;
+  lado.append(el('h3', '', W.card_edit));
+  const nombre = el('input', 'input');
+  nombre.value = f.name;
+  const telefono = el('input', 'input');
+  telefono.value = f.phone;
+  for (const campo of [nombre, telefono]) { campo.addEventListener('input', () => marcarSucio(true)); }
+  lado.append(el('label', 'label', W.field_name), nombre);
+  lado.append(el('label', 'label', W.field_phone), telefono);
+  lado.append(botonSimple(W.save_button, () => actuar('editar_contacto', {
+    client: String(f.id), name: nombre.value, phone: telefono.value,
+  }, () => abrirFicha(f.id)), 'btn btn-primary'));
+  lado.append(botonSimple(W.close_button, () => { MODO = { tipo: 'ficha', ficha: f }; pintarPanel(); }));
+}
+
 function pintarPanel() {
   const lado = document.getElementById('side');
   lado.replaceChildren();
   if (MODO && MODO.tipo === 'nueva') { return formularioNueva(lado); }
+  if (MODO && MODO.tipo === 'bloquear') { return formularioBloquear(lado); }
+  if (MODO && MODO.tipo === 'bloqueo') { return pintarBloqueo(lado); }
+  if (MODO && MODO.tipo === 'buscar') { return pintarBusqueda(lado); }
+  if (MODO && MODO.tipo === 'ficha') { return pintarFicha(lado); }
+  if (MODO && MODO.tipo === 'contacto') { return formularioContacto(lado); }
   if (!SELECCION) { lado.append(el('h3', '', W.title)); lado.append(el('p', 'lead', W.new_lead)); return; }
   if (MODO && MODO.tipo === 'editar') { return formularioEditar(lado); }
   if (MODO && MODO.tipo === 'mover') { return formularioMover(lado); }
@@ -298,5 +459,7 @@ document.getElementById('prev').addEventListener('click', () => cargar(sumarDias
 document.getElementById('next').addEventListener('click', () => cargar(sumarDias(DIA, 1)));
 document.getElementById('today').addEventListener('click', () => cargar(CONFIG.dia0));
 document.getElementById('new-btn').addEventListener('click', () => nuevaCita('', ''));
+document.getElementById('block-btn').addEventListener('click', () => { SELECCION = null; MODO = { tipo: 'bloquear' }; pintarPanel(); });
+document.getElementById('search').addEventListener('change', (ev) => buscar(ev.target.value));
 cargar(DIA);
 """

@@ -56,6 +56,17 @@ class Client:
     phone: str
 
 
+@dataclass(frozen=True, slots=True)
+class Block:
+    id: int
+    resource: str
+    """Vacío: el bloqueo es de todos los recursos (un festivo, el cierre del local)."""
+    start: datetime
+    end: datetime
+    reason: str
+    created_by: str
+
+
 class AgendaStore(Protocol):
     def client_by_phone(self, phone: str) -> Client | None: ...
     def add_client(self, *, name: str, phone: str) -> Client: ...
@@ -80,6 +91,22 @@ class AgendaStore(Protocol):
         """Las que empiezan en `[start, end)`, ordenadas por `start` y, a igualdad, por `id`
         (determinismo: nunca desempatar por un float)."""
         ...
+    def clients(self) -> tuple[Client, ...]:
+        """Todos, por `id`. Los nombres van sellados: buscar por nombre es descifrarlos, y a la
+        escala de un mostrador eso cabe en memoria (la 106 lo resolverá en su base)."""
+        ...
+    def appointments_for(self, client: int) -> tuple[Appointment, ...]:
+        """Las del contacto, ordenadas por `start` y, a igualdad, por `id`."""
+        ...
+    def add_block(
+        self, *, resource: str, start: datetime, end: datetime, reason: str, by: str
+    ) -> Block: ...
+    def remove_block(self, block: int) -> bool: ...
+    def block(self, block: int) -> Block | None: ...
+    def blocks_between(self, start: datetime, end: datetime) -> tuple[Block, ...]:
+        """Los que se cruzan con `[start, end)`: uno que acaba justo donde empieza el intervalo
+        no se cruza. Ordenados por `start` y, a igualdad, por `id`."""
+        ...
 
 
 _SCHEMA = """
@@ -101,6 +128,14 @@ CREATE TABLE IF NOT EXISTS appointments (
   updated_by TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS appointments_start ON appointments(start);
+CREATE TABLE IF NOT EXISTS blocks (
+  id INTEGER PRIMARY KEY,
+  resource TEXT NOT NULL,
+  start TEXT NOT NULL,
+  ends TEXT NOT NULL,
+  reason BLOB NOT NULL,
+  created_by TEXT NOT NULL
+);
 """
 
 
@@ -267,3 +302,66 @@ class SqliteAgendaStore:
         citas = [self._appointment(f) for f in filas]
         dentro = [c for c in citas if start <= c.start < end]
         return tuple(sorted(dentro, key=lambda c: (c.start, c.id)))
+
+    def _block(self, fila: sqlite3.Row) -> Block:
+        return Block(
+            id=int(fila["id"]),
+            resource=str(fila["resource"]),
+            start=datetime.fromisoformat(str(fila["start"])),
+            end=datetime.fromisoformat(str(fila["ends"])),
+            reason=self._fernet.decrypt(fila["reason"]).decode("utf-8"),
+            created_by=str(fila["created_by"]),
+        )
+
+    def clients(self) -> tuple[Client, ...]:
+        with self._lock:
+            filas = self._db.execute("SELECT * FROM clients ORDER BY id").fetchall()
+        return tuple(self._client(f) for f in filas)
+
+    def appointments_for(self, client: int) -> tuple[Appointment, ...]:
+        with self._lock:
+            filas = self._db.execute(
+                "SELECT * FROM appointments WHERE client = ?", (client,)
+            ).fetchall()
+        citas = (self._appointment(f) for f in filas)
+        return tuple(sorted(citas, key=lambda c: (c.start, c.id)))
+
+    def add_block(
+        self, *, resource: str, start: datetime, end: datetime, reason: str, by: str
+    ) -> Block:
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT INTO blocks (resource, start, ends, reason, created_by)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    resource,
+                    start.isoformat(),
+                    end.isoformat(),
+                    self._fernet.encrypt(reason.encode("utf-8")),
+                    by,
+                ),
+            )
+            self._db.commit()
+            fila = self._db.execute(
+                "SELECT * FROM blocks WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+            return self._block(fila)
+
+    def remove_block(self, block: int) -> bool:
+        with self._lock:
+            cursor = self._db.execute("DELETE FROM blocks WHERE id = ?", (block,))
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def block(self, block: int) -> Block | None:
+        with self._lock:
+            fila = self._db.execute("SELECT * FROM blocks WHERE id = ?", (block,)).fetchone()
+            return self._block(fila) if fila is not None else None
+
+    def blocks_between(self, start: datetime, end: datetime) -> tuple[Block, ...]:
+        # Como en `between`: las fechas ISO con distinta zona no se comparan como texto.
+        with self._lock:
+            filas = self._db.execute("SELECT * FROM blocks").fetchall()
+        bloqueos = [self._block(f) for f in filas]
+        cruzan = [b for b in bloqueos if b.start < end and start < b.end]
+        return tuple(sorted(cruzan, key=lambda b: (b.start, b.id)))

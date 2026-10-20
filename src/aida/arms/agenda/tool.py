@@ -15,12 +15,31 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime, time, timedelta
 
 from aida.arms.agenda.setup import WEEKDAYS, AgendaSetup, ResourceSpec
-from aida.arms.agenda.store import AgendaStore, Appointment, AppointmentState
+from aida.arms.agenda.store import (
+    AgendaStore,
+    Appointment,
+    AppointmentState,
+    Block,
+    Client,
+    normalize_phone,
+)
 from aida.engine.actions import ToolResult, ToolStatus
 from aida.engine.ontology import ActionId
+from aida.textmatch import fold
 
 ACTIONS = frozenset(
-    ActionId(a) for a in ("agendar", "editar", "reprogramar", "cancelar", "atendida", "no_asistio")
+    ActionId(a)
+    for a in (
+        "agendar",
+        "editar",
+        "reprogramar",
+        "cancelar",
+        "atendida",
+        "no_asistio",
+        "bloquear",
+        "desbloquear",
+        "editar_contacto",
+    )
 )
 
 
@@ -54,11 +73,20 @@ def _ranges_cover(recurso: ResourceSpec, inicio: datetime, minutos: int) -> bool
     return False
 
 
-def _overlaps(inicio: datetime, minutos: int, otra: Appointment) -> bool:
-    """Dos citas solapan si cada una empieza antes de que acabe la otra: un hueco que acaba
-    justo donde empieza otro no solapa."""
-    fin = inicio + timedelta(minutes=minutos)
+def _crosses(inicio: datetime, fin: datetime, otra: Appointment) -> bool:
+    """Dos intervalos se cruzan si cada uno empieza antes de que acabe el otro: uno que acaba
+    justo donde empieza otro no se cruza."""
     return inicio < otra.start + timedelta(minutes=otra.minutes) and otra.start < fin
+
+
+def _overlaps(inicio: datetime, minutos: int, otra: Appointment) -> bool:
+    return _crosses(inicio, inicio + timedelta(minutes=minutos), otra)
+
+
+def _applies(bloqueo: Block, recurso: str) -> bool:
+    """Un bloqueo sin recurso es de todos. Una sola puerta: la usan la regla del hueco, la
+    capacidad de la semana y el rechazo por citas pisadas."""
+    return bloqueo.resource in ("", recurso)
 
 
 def slot_rejection(
@@ -71,9 +99,15 @@ def slot_rejection(
 ) -> str | None:
     """La primera regla de horario o de solape que falla para un hueco. Es la única puerta
     de esta comprobación: la usan la herramienta y la pantalla de huecos, y con dos copias
-    podrían decir cosas distintas."""
+    podrían decir cosas distintas.
+
+    Orden: fuera de horario, bloqueado, solape."""
     if not _ranges_cover(recurso, inicio, minutos):
         return "outside_hours"
+    fin = inicio + timedelta(minutes=minutos)
+    for bloqueo in store.blocks_between(inicio, fin):
+        if _applies(bloqueo, recurso.id):
+            return "blocked"
     vecinas = store.between(inicio - timedelta(days=1), inicio + timedelta(days=1))
     for otra in vecinas:
         if otra.id == excepto or otra.resource != recurso.id:
@@ -82,6 +116,17 @@ def slot_rejection(
             continue
         if _overlaps(inicio, minutos, otra):
             return "overlap"
+    return None
+
+
+def _phone_rejection(store: AgendaStore, contacto_id: int, telefono: str) -> str | None:
+    """El teléfono es la llave del contacto (y la de WhatsApp): dos contactos no lo comparten.
+    Sin esta comprobación la base lo impide igual, pero con un `IntegrityError` que la puerta
+    convierte en `FAILED`, y a quien pidió no se le explica nada. Una sola puerta para
+    `editar` y `editar_contacto`."""
+    otro = store.client_by_phone(telefono)
+    if otro is not None and otro.id != contacto_id:
+        return "phone_taken"
     return None
 
 
@@ -111,6 +156,12 @@ class AgendaTool:
             return self._close(arguments, AppointmentState.ATTENDED, con_hora=True)
         if action == "no_asistio":
             return self._close(arguments, AppointmentState.NO_SHOW, con_hora=True)
+        if action == "bloquear":
+            return self._block(arguments)
+        if action == "desbloquear":
+            return self._unblock(arguments)
+        if action == "editar_contacto":
+            return self._edit_client(arguments)
         return _rejection("unknown_action")
 
     def _book(self, args: Mapping[str, str]) -> ToolResult:
@@ -199,6 +250,10 @@ class AgendaTool:
             motivo = slot_rejection(self._store, recurso, cita.start, minutos, excepto=cita.id)
             if motivo is not None:
                 return _rejection(motivo)
+        if telefono is not None:
+            motivo = _phone_rejection(self._store, cita.client, telefono)
+            if motivo is not None:
+                return _rejection(motivo)
         if nombre is not None or telefono is not None:
             actual = self._store.client(cita.client)
             self._store.update_client(
@@ -252,6 +307,62 @@ class AgendaTool:
         self._store.update(cita.id, by=args["by"], state=estado)
         return _done(cita.id)
 
+    def _block(self, args: Mapping[str, str]) -> ToolResult:
+        inicio = _date(args.get("start"))
+        fin = _date(args.get("end"))
+        if inicio is None or fin is None or fin <= inicio:
+            return _rejection("bad_argument")
+        recurso = args.get("resource", "")
+        if recurso and self._setup.resource(recurso) is None:
+            return _rejection("unknown_resource")
+        if fin <= self._now():
+            return _rejection("past")
+        pisadas = [
+            c.id
+            for c in self._store.between(inicio - timedelta(days=1), fin)
+            if c.state == AppointmentState.BOOKED
+            and (not recurso or c.resource == recurso)
+            and _crosses(inicio, fin, c)
+        ]
+        if pisadas:
+            return ToolResult(
+                ToolStatus.REJECTED,
+                "has_appointments",
+                data={"appointments": ",".join(str(i) for i in pisadas)},
+            )
+        bloqueo = self._store.add_block(
+            resource=recurso,
+            start=inicio,
+            end=fin,
+            reason=args.get("reason", "").strip(),
+            by=args["by"],
+        )
+        return ToolResult(ToolStatus.DONE, data={"block": str(bloqueo.id)})
+
+    def _unblock(self, args: Mapping[str, str]) -> ToolResult:
+        try:
+            identificador = int(args.get("block", ""))
+        except ValueError:
+            return _rejection("unknown_block")
+        if not self._store.remove_block(identificador):
+            return _rejection("unknown_block")
+        return ToolResult(ToolStatus.DONE, data={"block": str(identificador)})
+
+    def _edit_client(self, args: Mapping[str, str]) -> ToolResult:
+        try:
+            actual = self._store.client(int(args.get("client", "")))
+        except (ValueError, LookupError):
+            return _rejection("unknown_client")
+        nombre = args.get("name", "").strip()
+        telefono = args.get("phone", "").strip()
+        if not nombre or not telefono:
+            return _rejection("missing_client")
+        motivo = _phone_rejection(self._store, actual.id, telefono)
+        if motivo is not None:
+            return _rejection(motivo)
+        self._store.update_client(actual.id, name=nombre, phone=telefono)
+        return ToolResult(ToolStatus.DONE, data={"client": str(actual.id)})
+
     def _appointment(self, args: Mapping[str, str]) -> Appointment | ToolResult:
         """La cita del argumento, si existe y sigue agendada. Las acciones que la cambian
         empiezan igual."""
@@ -304,14 +415,42 @@ def week_summary(
     filas: list[tuple[date, int, int]] = []
     for desplazamiento in range(6):
         dia = lunes + timedelta(days=desplazamiento)
+        inicio_dia = datetime.combine(dia, time(0, 0), tzinfo=ahora.tzinfo)
+        bloqueos = store.blocks_between(inicio_dia, inicio_dia + timedelta(days=1))
         capacidad = 0
         for recurso in setup.resources:
             for ta, tb in recurso.hours.get(WEEKDAYS[dia.weekday()], ()):
-                capacidad += (tb.hour * 60 + tb.minute - ta.hour * 60 - ta.minute) // slot
-        inicio_dia = datetime.combine(dia, time(0, 0), tzinfo=ahora.tzinfo)
+                cursor = datetime.combine(dia, ta, tzinfo=ahora.tzinfo)
+                fin_tramo = datetime.combine(dia, tb, tzinfo=ahora.tzinfo)
+                while cursor < fin_tramo:
+                    siguiente = cursor + timedelta(minutes=slot)
+                    if not any(
+                        _applies(b, recurso.id) and b.start < siguiente and cursor < b.end
+                        for b in bloqueos
+                    ):
+                        capacidad += 1
+                    cursor = siguiente
         ocupados = 0
         for cita in store.between(inicio_dia, inicio_dia + timedelta(days=1)):
             if cita.state != AppointmentState.CANCELLED:
                 ocupados += -(-cita.minutes // slot)
         filas.append((dia, ocupados, capacidad))
     return tuple(filas)
+
+
+def find_clients(store: AgendaStore, query: str, *, limit: int = 20) -> tuple[Client, ...]:
+    """Por teléfono si la búsqueda no tiene letras, por nombre si las tiene; sin tildes ni
+    mayúsculas, porque en el mostrador se teclea «gomez» tanto como «Gómez». Ordenados por
+    nombre plegado y, a igualdad, por `id`."""
+    texto = query.strip()
+    if not texto:
+        return ()
+    if any(c.isalpha() for c in texto):
+        aguja = fold(texto)
+        hallados = [c for c in store.clients() if aguja in fold(c.name)]
+    else:
+        digitos = normalize_phone(texto)
+        if not digitos:
+            return ()
+        hallados = [c for c in store.clients() if digitos in c.phone]
+    return tuple(sorted(hallados, key=lambda c: (fold(c.name), c.id)))[:limit]
