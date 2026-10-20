@@ -9,7 +9,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from aida.arms.agenda.app import AgendaArm, load_agenda_wording
-from aida.arms.agenda.store import SqliteAgendaStore
+from aida.arms.agenda.store import AppointmentState, SqliteAgendaStore
 from aida.platform.audit import AuditLog
 from aida.platform.identity import Professional
 from aida.platform.license import License, LicenseState
@@ -63,7 +63,7 @@ def arm_contexto(tmp_path: Path) -> tuple[AgendaArm, ShellContext, AuditLog, lis
 
 
 def test_get_dia_devuelve_estructura_literal(
-    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]]
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
 ) -> None:
     arm, ctx, _, _ = arm_contexto
     resp = arm.get("dia/2026-10-20", ctx)
@@ -75,7 +75,7 @@ def test_get_dia_devuelve_estructura_literal(
 
 
 def test_post_accion_invalida_400_y_sin_evento_en_log(
-    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]]
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
 ) -> None:
     arm, ctx, _, _ = arm_contexto
     r1 = arm.post("accion", b"{roto", {}, ctx)
@@ -86,7 +86,7 @@ def test_post_accion_invalida_400_y_sin_evento_en_log(
 
 
 def test_post_accion_done_audita_agenda_changed(
-    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]]
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
 ) -> None:
     arm, ctx, audit, reloj = arm_contexto
     inicio = (reloj[0] + timedelta(hours=1)).isoformat()
@@ -113,7 +113,7 @@ def test_post_accion_done_audita_agenda_changed(
 
 
 def test_post_accion_rejected_sin_auditoria_y_con_reason_text(
-    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]]
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
 ) -> None:
     arm, ctx, audit, _ = arm_contexto
     body = {"action": "agendar", "arguments": {"name": "", "phone": "", "service": "invalido"}}
@@ -127,7 +127,7 @@ def test_post_accion_rejected_sin_auditoria_y_con_reason_text(
 
 
 def test_post_actividad_marca_at_rest(
-    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]]
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
 ) -> None:
     arm, ctx, _, _ = arm_contexto
     assert arm.at_rest() is True
@@ -135,3 +135,231 @@ def test_post_actividad_marca_at_rest(
     assert arm.at_rest() is False
     arm.post("actividad", json.dumps({"dirty": False}).encode(), {}, ctx)
     assert arm.at_rest() is True
+
+
+def test_get_dia_trae_blocks_y_client_id(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    inicio = (reloj[0] + timedelta(hours=1)).isoformat()
+    fin = (reloj[0] + timedelta(hours=2)).isoformat()
+
+    r_cita = arm.post(
+        "accion",
+        json.dumps(
+            {
+                "action": "agendar",
+                "arguments": {
+                    "name": "Ana",
+                    "phone": "3001112233",
+                    "service": arm._setup.services[0].id,
+                    "resource": arm._setup.resources[0].id,
+                    "start": inicio,
+                },
+            }
+        ).encode(),
+        {},
+        ctx,
+    )
+    assert r_cita is not None and r_cita.status == 200
+
+    r_block = arm.post(
+        "accion",
+        json.dumps(
+            {
+                "action": "bloquear",
+                "arguments": {
+                    "resource": arm._setup.resources[1].id,
+                    "start": inicio,
+                    "end": fin,
+                    "reason": "Capacitación",
+                },
+            }
+        ).encode(),
+        {},
+        ctx,
+    )
+    assert r_block is not None and r_block.status == 200
+
+    resp = arm.get("dia/2026-10-20", ctx)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert "blocks" in data
+    assert len(data["blocks"]) == 1
+    assert data["blocks"][0]["reason"] == "Capacitación"
+    assert data["blocks"][0]["resource"] == arm._setup.resources[1].id
+
+    assert len(data["appointments"]) == 1
+    assert "client_id" in data["appointments"][0]
+    assert isinstance(data["appointments"][0]["client_id"], int)
+
+
+def test_bloquear_audita_con_owner_del_bloqueo(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, audit, reloj = arm_contexto
+    inicio = (reloj[0] + timedelta(hours=1)).isoformat()
+    fin = (reloj[0] + timedelta(hours=2)).isoformat()
+
+    resp = arm.post(
+        "accion",
+        json.dumps(
+            {
+                "action": "bloquear",
+                "arguments": {
+                    "resource": arm._setup.resources[0].id,
+                    "start": inicio,
+                    "end": fin,
+                    "reason": "Mantenimiento",
+                },
+            }
+        ).encode(),
+        {},
+        ctx,
+    )
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["status"] == "done"
+    block_id = data["data"]["block"]
+
+    lineas = audit.lines()
+    assert len(lineas) == 1
+    assert lineas[0]["kind"] == "agenda_changed"
+    assert ctx.professional is not None
+    assert lineas[0]["actor"] == ctx.professional.id
+    assert lineas[0]["owner"] == block_id
+    payload = json.loads(lineas[0]["data"])
+    assert payload["action"] == "bloquear"
+    assert payload["start"] == inicio
+
+
+def test_has_appointments_devuelve_conflicts_con_nombre(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    inicio = (reloj[0] + timedelta(hours=1)).isoformat()
+    fin = (reloj[0] + timedelta(hours=2)).isoformat()
+
+    arm.post(
+        "accion",
+        json.dumps(
+            {
+                "action": "agendar",
+                "arguments": {
+                    "name": "Carlos Ruiz",
+                    "phone": "3001112233",
+                    "service": arm._setup.services[0].id,
+                    "resource": arm._setup.resources[0].id,
+                    "start": inicio,
+                },
+            }
+        ).encode(),
+        {},
+        ctx,
+    )
+
+    resp = arm.post(
+        "accion",
+        json.dumps(
+            {
+                "action": "bloquear",
+                "arguments": {
+                    "resource": arm._setup.resources[0].id,
+                    "start": inicio,
+                    "end": fin,
+                    "reason": "Junta",
+                },
+            }
+        ).encode(),
+        {},
+        ctx,
+    )
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["status"] == "rejected"
+    assert data["reason"] == "has_appointments"
+    assert "conflicts" in data
+    assert len(data["conflicts"]) == 1
+    assert data["conflicts"][0]["client"] == "Carlos Ruiz"
+    assert data["conflicts"][0]["start"] == inicio
+
+
+def test_buscar_post_200_y_cuerpo_invalido_400(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    arm._store.add_client(name="Carlos Gómez", phone="3001234567")
+
+    r_ok = arm.post("buscar", json.dumps({"query": "Carlos"}).encode(), {}, ctx)
+    assert r_ok is not None and r_ok.status == 200
+    data = json.loads(r_ok.body)
+    assert len(data["clients"]) == 1
+    assert data["clients"][0]["name"] == "Carlos Gómez"
+
+    r_bad1 = arm.post("buscar", b"no-json", {}, ctx)
+    assert r_bad1 is not None and r_bad1.status == 400
+    r_bad2 = arm.post("buscar", json.dumps({"otra_clave": 123}).encode(), {}, ctx)
+    assert r_bad2 is not None and r_bad2.status == 400
+
+
+def test_get_cliente_ficha_con_cifras(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    ahora = reloj[0]
+    cliente = arm._store.add_client(name="Lucía Morales", phone="3009998877")
+
+    arm._store.add(
+        client=cliente.id,
+        service=arm._setup.services[0].id,
+        resource=arm._setup.resources[0].id,
+        start=ahora + timedelta(hours=2),
+        minutes=30,
+        by="prof-1",
+    )
+    arm._store.add(
+        client=cliente.id,
+        service=arm._setup.services[0].id,
+        resource=arm._setup.resources[0].id,
+        start=ahora - timedelta(days=1),
+        minutes=30,
+        by="prof-1",
+    )
+    c_atendida = arm._store.add(
+        client=cliente.id,
+        service=arm._setup.services[0].id,
+        resource=arm._setup.resources[0].id,
+        start=ahora - timedelta(days=2),
+        minutes=30,
+        by="prof-1",
+    )
+    arm._store.update(c_atendida.id, by="prof-1", state=AppointmentState.ATTENDED)
+
+    c_noshow = arm._store.add(
+        client=cliente.id,
+        service=arm._setup.services[0].id,
+        resource=arm._setup.resources[0].id,
+        start=ahora - timedelta(days=3),
+        minutes=30,
+        by="prof-1",
+    )
+    arm._store.update(c_noshow.id, by="prof-1", state=AppointmentState.NO_SHOW)
+
+    resp = arm.get(f"contacto/{cliente.id}", ctx)
+    assert resp is not None and resp.status == 200
+    ficha = json.loads(resp.body)
+    assert ficha["id"] == cliente.id
+    assert ficha["name"] == "Lucía Morales"
+    assert ficha["phone"] == "3009998877"
+    assert ficha["upcoming"] == 1
+    assert ficha["attended"] == 1
+    assert ficha["no_show"] == 1
+    assert len(ficha["appointments"]) == 4
+
+
+def test_get_cliente_inexistente_none(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    assert arm.get("contacto/99999", ctx) is None
+    assert arm.get("contacto/invalido", ctx) is None
