@@ -1,0 +1,26 @@
+# Plantilla de agenda para una peluquería o estética (101b).
+sector: "peluqueria"
+slot_minutes: 15
+client_label: "Cliente"
+services:
+  - {id: "corte", label: "Corte", minutes: 30}
+  - {id: "barba", label: "Barba", minutes: 15}
+  - {id: "color", label: "Color", minutes: 90}
+  - {id: "manicure", label: "Manicure", minutes: 45}
+resources:
+  - id: "silla_1"
+    label: "Silla 1"
+    place: "Salón"
+    services: ["corte", "barba", "color"]
+    hours: {tue: [["09:00", "19:00"]], wed: [["09:00", "19:00"]], thu: [["09:00", "19:00"]],
+            fri: [["09:00", "19:00"]], sat: [["08:00", "16:00"]]}
+  - id: "silla_2"
+    label: "Silla 2"
+    place: "Salón"
+    services: ["corte", "barba"]
+    hours: {fri: [["12:00", "19:00"]], sat: [["08:00", "16:00"]]}
+  - id: "manicure"
+    label: "Manicure"
+    place: "Cabina"
+    services: ["manicure"]
+    hours: {wed: [["10:00", "18:00"]], sat: [["09:00", "15:00"]]}

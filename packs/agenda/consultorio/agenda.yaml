@@ -1,0 +1,21 @@
+# Plantilla de agenda para un consultorio (101b). Se copia a la configuración del cliente en
+# el primer arranque; los recursos y horarios reales se ajustan allí.
+sector: "consultorio"
+slot_minutes: 30
+client_label: "Paciente"
+services:
+  - {id: "primera_vez", label: "Primera vez", minutes: 30}
+  - {id: "control", label: "Control", minutes: 30}
+  - {id: "procedimiento", label: "Procedimiento", minutes: 60}
+resources:
+  - id: "consultorio_1"
+    label: "Profesional 1"
+    place: "Consultorio 1"
+    services: ["primera_vez", "control", "procedimiento"]
+    hours: {mon: [["08:00", "13:00"]], tue: [["08:00", "13:00"]], wed: [["08:00", "13:00"]],
+            thu: [["08:00", "13:00"]], fri: [["08:00", "13:00"]]}
+  - id: "consultorio_2"
+    label: "Profesional 2"
+    place: "Consultorio 2"
+    services: ["control", "procedimiento"]
+    hours: {mon: [["09:00", "13:00"]], wed: [["09:00", "13:00"]], fri: [["09:00", "13:00"]]}

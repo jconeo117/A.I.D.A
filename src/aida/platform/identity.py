@@ -63,6 +63,18 @@ def _huella(pin: str, sal: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), sal, _ITERACIONES).hex()
 
 
+_ALFABETO_CODIGO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+"""Sin 0, O, 1 ni I: un código que se copia a mano no se confunde."""
+
+
+def _codigo_nuevo() -> str:
+    return "-".join("".join(secrets.choice(_ALFABETO_CODIGO) for _ in range(4)) for _ in range(3))
+
+
+def _normalizar_codigo(codigo: str) -> str:
+    return "".join(ch for ch in codigo.upper() if ch.isalnum())
+
+
 class ProfileStore:
     """Los perfiles de este equipo, en un archivo de la carpeta de configuración.
 
@@ -95,8 +107,7 @@ class ProfileStore:
         depender del orden del archivo."""
         perfiles = self._leer()
         todos = (
-            Professional(id=k, name=v["name"], registry=v["registry"])
-            for k, v in perfiles.items()
+            Professional(id=k, name=v["name"], registry=v["registry"]) for k, v in perfiles.items()
         )
         return tuple(sorted(todos, key=lambda p: (p.name.casefold(), p.id)))
 
@@ -131,6 +142,67 @@ class ProfileStore:
         self._escribir(perfiles)
         return Professional(id=profile_id, name=v["name"], registry=v["registry"])
 
+    def new_recovery_code(self, profile_id: str) -> str:
+        """Un código de recuperación nuevo para este perfil. Sustituye al anterior: solo vale el
+        último. Se devuelve una vez; en el archivo queda solo su huella (101b, decisión 1)."""
+        perfiles = self._leer()
+        if profile_id not in perfiles:
+            raise IdentityError("unknown")
+        codigo = _codigo_nuevo()
+        sal = secrets.token_bytes(16)
+        perfiles[profile_id]["recovery_salt"] = sal.hex()
+        perfiles[profile_id]["recovery"] = _huella(_normalizar_codigo(codigo), sal)
+        self._escribir(perfiles)
+        return codigo
+
+    def recover_pin(self, profile_id: str, codigo: str, pin: str) -> Professional:
+        """Cambia el PIN con el código de recuperación. El código se gasta: hay que pedir uno
+        nuevo para volver a usarlo. Cuenta los fallos igual que el PIN."""
+        perfil = self._leer().get(profile_id)
+        if perfil is None:
+            raise IdentityError("unknown")
+        if self.wait_seconds(profile_id) > 0:
+            raise IdentityError("wait")
+        if "recovery" not in perfil:
+            raise IdentityError("bad_code")
+        calculada = _huella(_normalizar_codigo(codigo), bytes.fromhex(perfil["recovery_salt"]))
+        if not hmac.compare_digest(perfil["recovery"], calculada):
+            self._contar_fallo(profile_id)
+            raise IdentityError("bad_code")
+        if not valid_pin(pin):
+            raise IdentityError("pin_format")
+        perfiles = self._leer()
+        nuevo = perfiles[profile_id]
+        sal = secrets.token_bytes(16)
+        nuevo["salt"], nuevo["pin"] = sal.hex(), _huella(pin, sal)
+        nuevo.pop("recovery", None)
+        nuevo.pop("recovery_salt", None)
+        self._escribir(perfiles)
+        self._fallos.pop(profile_id, None)
+        return Professional(id=profile_id, name=nuevo["name"], registry=nuevo["registry"])
+
+    def reset_pin(self, profile_id: str, pin: str) -> Professional:
+        """Un profesional ya identificado pone un PIN nuevo a otro perfil del equipo. Queda en la
+        auditoría con quien lo hizo (la llama el armazón, no quien pierde el PIN)."""
+        if not valid_pin(pin):
+            raise IdentityError("pin_format")
+        perfiles = self._leer()
+        if profile_id not in perfiles:
+            raise IdentityError("unknown")
+        sal = secrets.token_bytes(16)
+        perfiles[profile_id]["salt"], perfiles[profile_id]["pin"] = sal.hex(), _huella(pin, sal)
+        self._escribir(perfiles)
+        self._fallos.pop(profile_id, None)
+        v = perfiles[profile_id]
+        return Professional(id=profile_id, name=v["name"], registry=v["registry"])
+
+    def _contar_fallo(self, profile_id: str) -> None:
+        fallos = self._fallos.get(profile_id, 0) + 1
+        if fallos >= _FALLOS_MAXIMOS:
+            self._bloqueado_hasta[profile_id] = self._clock() + _ESPERA_SEGUNDOS
+            fallos = 0
+        self._fallos[profile_id] = fallos
+
     def attempts_left(self, profile_id: str) -> int:
         """Cuántos fallos quedan antes de tener que esperar: la pantalla lo dice."""
         return _FALLOS_MAXIMOS - self._fallos.get(profile_id, 0)
@@ -158,6 +230,7 @@ class ProfileStore:
             raise IdentityError("bad_pin" if fallos else "wait")
         self._fallos.pop(profile_id, None)
         return Professional(id=profile_id, name=perfil["name"], registry=perfil["registry"])
+
 
 def workstation() -> str:
     """El usuario del sistema y el nombre del equipo: dónde se hizo algo. Acompaña al

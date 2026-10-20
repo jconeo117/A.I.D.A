@@ -3,6 +3,7 @@ id: "health"
 name: "Consultorio"
 description: "Graba o sube la consulta, revisa la nota y los códigos, y cópialos a la historia."
 version: "1"
-# Dónde se abre. Hoy vive en la CLI porque la aplicación de salud se monta con sus
-# piezas (`run.py`); pasará al propio brazo cuando llegue el segundo (102).
-app: "aida.run:launch_health"
+# Quién construye el brazo: la CLI, que lo monta con sus piezas (101b).
+arm: "aida.run:health_arm"
+# El símbolo que lo representa en el lanzador.
+icon: "stetho"

@@ -49,7 +49,7 @@ app:
   mode_record: "Grabar ahora"
   audio_title: "Audio de la consulta"
   audio_hint: "Arrastre aquí el archivo, o haga clic para elegirlo"
-  document_title: "Historia clínica"
+  document_title: "Historia clínica (si la hay)"
   document_hint: "Arrastre aquí un PDF o una imagen, o haga clic para elegirlo"
   change_file: "Cambiar archivo"
   mic_title: "Micrófono del equipo"

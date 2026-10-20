@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     # `runtime_checkable` comprueba nombres de método, no firmas, así que
     # importar de verdad aquí solo serviría para acoplar el puerto a una
     # implementación que todavía no existe.
+    from aida.engine.actions import ToolResult
     from aida.engine.events import Event
 
 
@@ -142,9 +143,10 @@ class ToolPort(Protocol):
 
     A diferencia de resolver una tirada de reglas, ejecutar una herramienta
     puede fallar por causas ajenas a quien la pide: latencia variable, fallo
-    parcial, credencial expirada, cuota agotada. Cómo se representa ese
-    fallo —excepción tipada, resultado con estado, o ambos— se decide al
-    implementar el puerto en U9; aquí solo se declara la frontera.
+    parcial, credencial expirada, cuota agotada. La representación del fallo
+    está decidida (101b): un `ToolResult` con estado, sin excepciones. La puerta de
+    acciones (`engine/actions.py`) es la frontera; si la herramienta lanza igualmente,
+    la puerta lo convierte en `FAILED`.
     """
 
-    def execute(self, *, action: ActionId, arguments: Mapping[str, object]) -> object: ...
+    def execute(self, *, action: ActionId, arguments: Mapping[str, str]) -> ToolResult: ...

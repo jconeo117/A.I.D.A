@@ -4,6 +4,8 @@ Lo de la plataforma va aquí: la base visual, los ajustes comunes, quién atiend
 licencia. Lo de un brazo (la grabación, el consentimiento, la consulta) se queda en el
 brazo y entra por `extra_css` y `extra_icons`.
 """
+
+# ruff: noqa: E501  (CSS literal de la maqueta: las líneas son las de la maqueta, 101b)
 CSS_BASE = """
 :root {
   --canvas: #eceff3; --surface: #ffffff; --surface-2: #f7f9fb;
@@ -386,3 +388,83 @@ def icon_sheet(*symbols: str) -> str:
     """El SVG de símbolos del armazón con los del brazo añadidos al final. Un solo sitio para
     componer la hoja: el brazo no monta sus iconos a mano."""
     return ICONS_BASE.replace("</defs></svg>", "".join(s + "\n" for s in symbols) + "</defs></svg>")
+
+
+CSS_LAUNCHER = """/* La 101b: el lanzador */
+.arms {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem;
+  margin-top: 1.25rem;
+}
+.arm {
+  display: flex; flex-direction: column; gap: .5rem; padding: 1.1rem 1.2rem; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--surface);
+  cursor: pointer;
+  font: inherit; color: var(--ink); box-shadow: var(--e1);
+}
+.arm:hover {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
+}
+.arm .arm-icon {
+  width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface)); color: var(--brand);
+}
+.arm .arm-icon svg { width: 22px; height: 22px; }
+.arm strong { font-size: 1rem; }
+.arm small { color: var(--muted); font-size: .82rem; line-height: 1.45; }"""
+
+ICONS_LAUNCHER = """  <symbol id="i-stetho" viewBox="0 0 24 24">
+    <path d="M6 3v6a5 5 0 0 0 10 0V3"/><path d="M11 14v2a5 5 0 0 0 10 0v-2"/><circle cx="21" cy="12" r="2"/>
+  </symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24">
+    <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>
+  </symbol>"""
+
+# El botón «Ir a Ajustes» de la pantalla de solo lectura usa este símbolo (101a).
+ICONS_AJUSTES = """  <symbol id="i-gear" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3"/>
+    <path d="M15 19.4a1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5"/>
+    <path d="M8.9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8"/>
+    <path d="M4.6 15a1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1"/>
+    <path d="M4.6 8.9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3"/>
+    <path d="M9 4.6a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5"/>
+    <path d="M15.1 4.6a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8"/>
+    <path d="M19.4 9a1.7 1.7 0 0 0 1.5 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1"/>
+  </symbol>"""
+
+# Diseño de pantalla común: marco, panel, campos y botones secundarios. Vivía en el CSS de
+# salud, y las pantallas de la plataforma lo necesitan (101a, corregido en 101b).
+CSS_LAYOUT = """.stage {
+  flex: 1; display: flex; justify-content: center; align-items: flex-start;
+  padding: 2.5rem 1.75rem; overflow-y: auto;
+}
+.panel-card {
+  width: 100%; max-width: 780px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 16px; box-shadow: var(--e2); padding: 1.75rem 2rem;
+}
+.panel-card h2 { margin: 0; font-size: 1.35rem; font-weight: 650; letter-spacing: -.01em; }
+.panel-card .lead { margin: .25rem 0 1.5rem; color: var(--muted); font-size: .92rem; }
+.label {
+  display: block; font-size: .72rem; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--brand-ink); margin-bottom: .4rem;
+}
+.input {
+  width: 100%; font: inherit; font-size: 1rem; padding: .65rem .8rem;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-s); background: var(--surface); color: var(--ink); outline: none;
+}
+.input:focus { border-color: var(--brand); box-shadow: 0 0 0 4px var(--brand-ring); }
+.hint { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); }
+.alert-head { display: flex; align-items: center; gap: .8rem; }
+.alert-icon {
+  width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--off-soft); color: var(--off); flex: none;
+}
+.alert-icon svg { width: 22px; height: 22px; }
+.alert-icon.warn { background: var(--warn-soft); color: var(--warn); }
+.btn-quiet { border: 0; background: transparent; color: var(--muted); box-shadow: none; }
+.btn-quiet:hover { color: var(--ink); border: 0; }
+.btn-primary:disabled { background: #9fb8b5; box-shadow: none; cursor: not-allowed; }
+.screen[hidden] { display: none; }
+.screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }"""

@@ -10,8 +10,8 @@ está instalado simplemente no aparece.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,25 +26,39 @@ class ArmManifest:
     name: str
     description: str
     version: str
-    app: str
-    """`modulo:funcion` que abre la aplicación del brazo."""
+    arm: str
+    """`modulo:funcion` que construye el brazo: `funcion(args, licencia, manifiesto, candado)`.
+    La plataforma monta un solo armazón con todos los brazos que construye (101b)."""
+    icon: str
+    """El símbolo del lanzador (`stetho`, `calendar`…). Va en el manifiesto y no se adivina."""
+    extra: Mapping[str, str] = field(default_factory=dict)
+    """Las claves restantes del YAML, tal cual: lo que un brazo declara para sí mismo, como
+    `default_sector` de la agenda."""
 
     def entry(self) -> Callable[..., Any]:
-        modulo, _sep, funcion = self.app.partition(":")
+        modulo, _sep, funcion = self.arm.partition(":")
         objetivo: Callable[..., Any] = getattr(importlib.import_module(modulo), funcion)
         return objetivo
 
 
 def load_manifest(path: Path) -> ArmManifest:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    claves = ("id", "name", "description", "version", "app")
+    claves = ("id", "name", "description", "version", "arm", "icon")
     if not isinstance(raw, dict) or not all(
         isinstance(raw.get(c), str) and raw[c].strip() for c in claves
     ):
         raise ValueError(f"{path} necesita {list(claves)} no vacías")
-    if ":" not in raw["app"]:
-        raise ValueError(f"'app' debe ser 'modulo:funcion' en {path}")
-    return ArmManifest(**{c: str(raw[c]).strip() for c in claves})
+    if ":" not in raw["arm"]:
+        raise ValueError(f"'arm' debe ser 'modulo:funcion' en {path}")
+    extra = {
+        str(clave): str(valor)
+        for clave, valor in raw.items()
+        if clave not in claves
+    }
+    return ArmManifest(
+        **{c: str(raw[c]).strip() for c in claves},
+        extra=dict(sorted(extra.items())),
+    )
 
 
 def discover(root: Path | None = None) -> tuple[ArmManifest, ...]:

@@ -1,15 +1,17 @@
 """El armazón de la plataforma: servidor local con token, quién atiende, el bloqueo por
-inactividad, la licencia y Ajustes. Un brazo le entrega sus pantallas y sus rutas (101a).
+inactividad, la licencia, Ajustes y el lanzador. Los brazos se montan en él como `ArmApp` (101a,
+101b).
 
-Por qué vive aquí y no en el brazo: quién está identificado, cuándo se bloquea y qué
-licencia vale son decisiones de la plataforma. Si cada brazo las tomara por su lado, dos
-puertas de PIN acabarían divergiendo, y un registro podría escribirse sin autor en uno
-de ellos.
+Por qué vive aquí y no en el brazo: quién está identificado, cuándo se bloquea, qué licencia
+vale y qué brazo está abierto son decisiones de la plataforma. Si cada brazo las tomara por su
+lado, dos puertas de PIN acabarían divergiendo, y un registro podría escribirse sin autor en una
+de ellas.
 """
 
 from __future__ import annotations
 
 import contextlib
+import html
 import json
 import threading
 import time
@@ -27,6 +29,7 @@ from aida.platform.identity import IdentityError, Professional, ProfileStore
 from aida.platform.license import LicenseState, read_license
 from aida.platform.web.pages import (
     first_profile_page,
+    launcher_page,
     license_file,
     locked_page,
     who_page,
@@ -34,7 +37,7 @@ from aida.platform.web.pages import (
 from aida.platform.web.wording import Textos
 
 _MAX_BYTES = 512 * 1024 * 1024
-_IDENTIDAD = ("perfil", "entrar", "desbloquear", "cambiar", "salir")
+_IDENTIDAD = ("perfil", "entrar", "desbloquear", "cambiar", "salir", "recuperar-pin")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +66,8 @@ class ShellContext:
     wording: Textos
     lock: threading.Lock
     profiles: tuple[Professional, ...]
+    launcher_link: str = ""
+    """El botón «Inicio» de la cabecera, con varios brazos; vacío con uno (101b)."""
 
 
 class ArmApp(Protocol):
@@ -89,13 +94,22 @@ class ArmApp(Protocol):
 
 @dataclass
 class _Sesion:
-    """Quién atiende y desde cuándo. El estado del trabajo (una consulta, una revisión) es
-    del brazo: aquí solo se sabe si hay alguien identificado y en qué pantalla de la
-    plataforma está."""
+    """Quién atiende, desde cuándo y en qué brazo está. El estado del trabajo (una consulta, una
+    cita) es del brazo: aquí solo se sabe si hay alguien identificado y dónde está."""
 
     state: str
     professional: Professional | None = None
     last_activity: float = 0.0
+    current: str | None = None
+    """El `id` del brazo abierto. Con un solo brazo, siempre el suyo; con varios, `None` en el
+    lanzador."""
+
+
+def _con_enlace_lanzador(pagina_html: str, enlace: str) -> str:
+    """El botón «Inicio» en la cabecera de la página de un brazo. Una sola inserción, en la marca
+    que pone toda página del marco: así ninguna pantalla de brazo necesita saber si hay lanzador."""
+    marca = '<div class="head-right">'
+    return pagina_html.replace(marca, marca + enlace, 1) if enlace else pagina_html
 
 
 def run_shell(
@@ -108,20 +122,37 @@ def run_shell(
     license: LicenseState,
     license_path: Path | None,
     lock: threading.Lock,
+    presentacion: Mapping[str, tuple[str, str]] | None = None,
     open_browser: Callable[[str], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = datetime.now,
     today: Callable[[], date] = date.today,
 ) -> None:
-    """Levanta el armazón y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C). Hoy monta un
-    solo brazo: el lanzador entre varios llega con la 101b."""
-    if len(arms) != 1:
-        raise ValueError("el armazón monta un brazo hasta que llegue el lanzador (101b)")
-    arm = arms[0]
+    """Levanta el armazón y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C). Con un solo brazo
+    entra directamente en él; con varios, primero el lanzador (101b). `presentacion` da, por id de
+    brazo, su descripción y su símbolo: lo que dice su manifiesto."""
+    presentacion = presentacion or {}
+    if not arms:
+        raise ValueError("el armazón necesita al menos un brazo")
+    por_id: dict[str, ArmApp] = {}
+    for brazo_nuevo in arms:
+        if brazo_nuevo.id in por_id:
+            raise ValueError(f"dos brazos con el mismo id {brazo_nuevo.id!r}")
+        por_id[brazo_nuevo.id] = brazo_nuevo
+    unico = len(arms) == 1
     token = token_urlsafe(16)
     sesion = _Sesion(state="who" if profiles.professionals() else "first_profile")
     licencia = [license]
     inactividad = wording.idle_lock_minutes * 60
+    enlace = (
+        ""
+        if unico
+        else (
+            f'<button type="button" class="head-link" id="to-launcher" onclick="'
+            f"fetch('/{token}/lanzador', {{method: 'POST'}}).then(() => location.reload())\">"
+            f'<svg><use href="#i-back"/></svg>{html.escape(wording["launcher_link"])}</button>'
+        )
+    )
 
     def contexto() -> ShellContext:
         return ShellContext(
@@ -134,38 +165,59 @@ def run_shell(
             wording=wording,
             lock=lock,
             profiles=tuple(profiles.professionals()),
+            launcher_link=enlace,
         )
+
+    def brazo() -> ArmApp | None:
+        return por_id[sesion.current] if sesion.current is not None else None
+
+    def todos(accion: Callable[[ArmApp], None]) -> None:
+        for b in arms:
+            accion(b)
 
     def identificado() -> bool:
         return sesion.professional is not None and sesion.state not in (
-            "who", "first_profile", "locked",
+            "who",
+            "first_profile",
+            "locked",
         )
 
     def actor() -> Professional:
-        """Con el candado tomado y en un estado identificado: quien firma lo que se
-        registra. Si alguna vez falta, revienta en vez de escribir un registro sin autor
-        (`I-156`)."""
+        """Con el candado tomado y en un estado identificado: quien firma lo que se registra. Si
+        alguna vez falta, revienta en vez de escribir un registro sin autor (`I-156`)."""
         if sesion.professional is None:
             raise IdentityError("no_actor", "no hay profesional en la sesión")
         return sesion.professional
 
+    def en_reposo() -> bool:
+        """El lanzador es reposo; un brazo, cuando él lo dice."""
+        if sesion.state == "launcher":
+            return True
+        actual = brazo()
+        return actual is not None and actual.at_rest()
+
     def tras_identificarse() -> None:
         sesion.last_activity = clock()
-        sesion.state = "arm"
+        if unico:
+            sesion.current = arms[0].id
+            sesion.state = "arm"
+        else:
+            sesion.current = None
+            sesion.state = "launcher"
 
     def vigilar() -> None:
-        """Con el candado tomado, en cada petición. Bloquea si pasó el plazo sin uso, y solo
-        donde no hay nada a medias: lo decide el brazo (`at_rest`), nunca el armazón."""
-        if sesion.professional is None or sesion.state != "arm":
+        """Con el candado tomado, en cada petición. Bloquea si pasó el plazo sin uso, y solo donde
+        no hay nada a medias: lo deciden los brazos, y el lanzador siempre es reposo."""
+        if sesion.professional is None or sesion.state not in ("arm", "launcher"):
             return
         ahora = clock()
-        if arm.at_rest() and ahora - sesion.last_activity > inactividad:
-            arm.reset()
+        if en_reposo() and ahora - sesion.last_activity > inactividad:
+            todos(lambda b: b.reset())
+            sesion.current = None
             sesion.state = "locked"
             audit.record("locked", actor=sesion.professional)
             return
-        if sesion.state != "locked":
-            sesion.last_activity = ahora
+        sesion.last_activity = ahora
 
     def pagina() -> str:
         if sesion.state == "first_profile":
@@ -174,7 +226,23 @@ def run_shell(
             return who_page(wording, brand, token, profiles.professionals(), now())
         if sesion.state == "locked" and sesion.professional is not None:
             return locked_page(wording, brand, token, sesion.professional, now())
-        return arm.page(contexto())
+        if sesion.state == "launcher":
+            tarjetas = tuple(
+                (b.id, b.name, *presentacion.get(b.id, ("", "badge")))
+                for b in sorted(arms, key=lambda b: b.id)
+            )
+            return launcher_page(
+                wording,
+                brand,
+                token,
+                tarjetas,
+                now(),
+                sesion.professional,
+                licencia[0],
+            )
+        actual = brazo()
+        assert actual is not None
+        return _con_enlace_lanzador(actual.page(contexto()), enlace)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:
@@ -215,9 +283,14 @@ def run_shell(
                 if not self.path.startswith(f"/{token}/"):
                     self._enviar(None)
                     return
+                if sesion.state == "launcher":
+                    self._json(409, {"error": ""})
+                    return
                 ruta = self.path[len(token) + 2 :]
                 ctx = contexto()
-            self._enviar(arm.get(ruta, ctx))
+                actual = brazo()
+            assert actual is not None
+            self._enviar(actual.get(ruta, ctx))
 
         def do_POST(self) -> None:
             ruta = self.path
@@ -237,33 +310,91 @@ def run_shell(
             if accion == "licencia":
                 self._license()
                 return
+            if accion == "restablecer":
+                self._restablecer()
+                return
+            if accion == "codigo-recuperacion":
+                self._codigo()
+                return
+            if accion == "brazo":
+                self._abrir_brazo()
+                return
+            if accion == "lanzador":
+                self._volver_al_lanzador()
+                return
             cuerpo = self._body()
             with lock:
+                if sesion.state == "launcher":
+                    self._json(409, {"error": ""})
+                    return
                 ctx = contexto()
+                actual = brazo()
             cabeceras = {clave.lower(): valor for clave, valor in self.headers.items()}
-            self._enviar(arm.post(accion, cuerpo, cabeceras, ctx))
+            assert actual is not None
+            self._enviar(actual.post(accion, cuerpo, cabeceras, ctx))
+
+        def _abrir_brazo(self) -> None:
+            """Desde el lanzador, abre un brazo por su `id` (101b)."""
+            try:
+                pedido = json.loads(self._body() or b"{}")
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict):
+                self._json(400, {"error": ""})
+                return
+            with lock:
+                if sesion.state != "launcher":
+                    self._json(409, {"error": ""})
+                    return
+                elegido = pedido.get("id")
+                if not isinstance(elegido, str) or elegido not in por_id:
+                    self._json(404, {"error": ""})
+                    return
+                sesion.current = elegido
+                sesion.state = "arm"
+            self._json(200, {"ok": True})
+
+        def _volver_al_lanzador(self) -> None:
+            """Vuelve al lanzador si el brazo está en reposo: nunca a mitad de una cita o de una
+            consulta (101b)."""
+            with lock:
+                if unico:
+                    self._json(404, {"error": ""})
+                    return
+                actual = brazo()
+                if actual is None or not actual.at_rest():
+                    self._json(409, {"error": ""})
+                    return
+                actual.reset()
+                sesion.current = None
+                sesion.state = "launcher"
+            self._json(200, {"ok": True})
 
         def _identity(self, accion: str) -> None:
-            """Entrar, crear un perfil, desbloquear, cambiar de profesional y salir: lo único
-            que se atiende sin estar identificado."""
+            """Entrar, crear un perfil, desbloquear, cambiar de profesional y salir: lo único que se
+            atiende sin estar identificado."""
+            if accion == "recuperar-pin":
+                self._recuperar()
+                return
             if accion == "salir":
                 with lock:
                     if sesion.professional is not None:
                         audit.record("session_closed", actor=sesion.professional)
-                    arm.reset()
+                    todos(lambda b: b.reset())
                     sesion.state = "closed"
                 self._json(200, {"ok": True})
                 threading.Thread(target=http_server.shutdown, daemon=True).start()
                 return
             if accion == "cambiar":
                 with lock:
-                    if not arm.at_rest():
+                    if not all(b.at_rest() for b in arms):
                         self._json(409, {"error": ""})
                         return
                     if sesion.professional is not None:
                         audit.record("session_closed", actor=sesion.professional)
-                    arm.reset()
+                    todos(lambda b: b.reset())
                     sesion.professional = None
+                    sesion.current = None
                     sesion.state = "who"
                 self._json(200, {"ok": True})
                 return
@@ -283,7 +414,7 @@ def run_shell(
                         perfil = str(pedido.get("profile", ""))
                         sesion.professional = profiles.verify(perfil, str(pedido.get("pin", "")))
                         audit.record("session_opened", actor=sesion.professional)
-                        arm.on_identified(sesion.professional)
+                        todos(lambda b: b.on_identified(actor()))
                         tras_identificarse()
                         self._json(200, {"ok": True})
                     elif (
@@ -293,7 +424,7 @@ def run_shell(
                     ):
                         profiles.verify(sesion.professional.id, str(pedido.get("pin", "")))
                         audit.record("unlocked", actor=sesion.professional)
-                        arm.on_unlocked()
+                        todos(lambda b: b.on_unlocked())
                         tras_identificarse()
                         self._json(200, {"ok": True})
                     else:
@@ -303,21 +434,86 @@ def run_shell(
                         profiles.attempts_left(
                             str(pedido.get("profile", ""))
                             if accion == "entrar"
-                            else sesion.professional.id if sesion.professional else ""
+                            else sesion.professional.id
+                            if sesion.professional
+                            else ""
                         )
                         if exc.code == "bad_pin"
                         else 0
                     )
-                    self._json(
-                        400, {"error": wording[f"identity_{exc.code}"].format(restantes)}
+                    self._json(400, {"error": wording[f"identity_{exc.code}"].format(restantes)})
+
+        def _recuperar(self) -> None:
+            """Cambiar el PIN con el código de recuperación del perfil (101b, decisión 1). No abre
+            sesión: quien lo cambia entra después con el PIN nuevo."""
+            try:
+                pedido = json.loads(self._body() or b"{}")
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict):
+                self._json(400, {"error": ""})
+                return
+            pin = str(pedido.get("pin", ""))
+            if pin != str(pedido.get("pin2", "")):
+                self._json(400, {"error": wording["first_pin_mismatch"]})
+                return
+            with lock:
+                try:
+                    perfil = profiles.recover_pin(
+                        str(pedido.get("profile", "")), str(pedido.get("code", "")), pin
                     )
+                except IdentityError as exc:
+                    self._json(400, {"error": wording[f"identity_{exc.code}"]})
+                    return
+                audit.record("pin_recovered", actor=perfil, data={"profile": perfil.id})
+            self._json(200, {"ok": True})
+
+        def _restablecer(self) -> None:
+            """Un profesional identificado pone un PIN nuevo a otro perfil del equipo. Queda en la
+            auditoría con quien lo hizo (101b, decisión 2)."""
+            try:
+                pedido = json.loads(self._body() or b"{}")
+            except ValueError:
+                pedido = None
+            if not isinstance(pedido, dict):
+                self._json(400, {"error": ""})
+                return
+            pin = str(pedido.get("pin", ""))
+            if pin != str(pedido.get("pin2", "")):
+                self._json(400, {"error": wording["first_pin_mismatch"]})
+                return
+            with lock:
+                if sesion.professional is None:
+                    self._json(401, {"error": ""})
+                    return
+                try:
+                    otro = profiles.reset_pin(str(pedido.get("profile", "")), pin)
+                except IdentityError as exc:
+                    self._json(400, {"error": wording[f"identity_{exc.code}"]})
+                    return
+                audit.record("pin_reset", actor=actor(), owner=otro.id, data={"profile": otro.id})
+            self._json(200, {"ok": True})
+
+        def _codigo(self) -> None:
+            """Genera un código de recuperación nuevo para quien atiende. Se devuelve una vez."""
+            with lock:
+                if sesion.professional is None:
+                    self._json(401, {"error": ""})
+                    return
+                codigo = profiles.new_recovery_code(sesion.professional.id)
+                audit.record(
+                    "recovery_code_created",
+                    actor=sesion.professional,
+                    data={"profile": sesion.professional.id},
+                )
+            self._json(200, {"codigo": codigo})
 
         def _new_profile(self, pedido: dict[str, Any]) -> None:
-            """Con el candado tomado. El primero, en el primer arranque, y entra con él; los
-            demás, desde Ajustes y por alguien ya identificado (plan 83): nadie se da de alta
-            solo en un equipo que ya tiene dueños."""
+            """Con el candado tomado. El primero, en el primer arranque, y entra con él; los demás,
+            desde Ajustes y por alguien ya identificado (plan 83): nadie se da de alta solo en un
+            equipo que ya tiene dueños."""
             primero = sesion.state == "first_profile"
-            if not primero and not (identificado() and arm.in_settings()):
+            if not primero and not (identificado() and any(b.in_settings() for b in arms)):
                 self._json(409, {"error": ""})
                 return
             pin = str(pedido.get("pin", ""))
@@ -334,19 +530,22 @@ def run_shell(
                 actor=nuevo if primero else actor(),
                 data={"profile": nuevo.id, "name": nuevo.label()},
             )
+            codigo = profiles.new_recovery_code(nuevo.id)
+            audit.record("recovery_code_created", actor=nuevo, data={"profile": nuevo.id})
             if primero:
                 sesion.professional = nuevo
                 audit.record("session_opened", actor=nuevo)
-                arm.on_identified(nuevo)
+                todos(lambda b: b.on_identified(nuevo))
                 tras_identificarse()
-            self._json(200, {"ok": True})
+            self._json(200, {"ok": True, "codigo": codigo})
 
         def _license(self) -> None:
-            """Cargar una licencia: se verifica antes de guardarla, y una que no sirve no pisa
-            la que había. Queda en la auditoría, con quien la cargó."""
+            """Cargar una licencia: se verifica antes de guardarla, y una que no sirve no pisa la
+            que había. Vale si da derecho a algún brazo de este equipo. Queda en la auditoría, con
+            quien la cargó."""
             datos = self._body() or b""
             estado = read_license(datos.decode("utf-8", "replace"), today=today())
-            if not estado.licensed(arm.id) or estado.status == "expired":
+            if not any(estado.licensed(b.id) for b in arms) or estado.status == "expired":
                 self._json(400, {"error": wording["license_rejected"].format(estado.status)})
                 return
             with lock:
@@ -379,4 +578,4 @@ def run_shell(
     finally:
         http_server.server_close()
         with lock:
-            arm.reset()
+            todos(lambda b: b.reset())

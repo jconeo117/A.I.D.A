@@ -80,6 +80,13 @@ class EventKind(StrEnum):
 
     ACTION_STARTED = "action_started"
     ACTION_COMPLETED = "action_completed"
+    ACTION_REQUESTED = "action_requested"
+    """Una petición entró en la puerta de acciones (101b), con su autor y sus argumentos,
+    antes de ejecutarse: lo que se pidió queda aunque la herramienta falle."""
+    ACTION_REJECTED = "action_rejected"
+    """Una regla del negocio dijo que no. No es un fallo: se explica a quien pidió."""
+    ACTION_FAILED = "action_failed"
+    """Algo ajeno a la regla (una excepción de la herramienta). Se reintenta o se avisa."""
     ACTION_ABORTED = "action_aborted"
     """La acción dejó de ser válida a mitad. Sin esto, depurar algo atascado
     es adivinar."""

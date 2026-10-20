@@ -42,6 +42,11 @@ KINDS = (
     "recording_recovered",
     "recording_discarded",
     "recording_purged",
+    "agenda_changed",
+    "agenda_message",
+    "pin_recovered",
+    "pin_reset",
+    "recovery_code_created",
 )
 
 

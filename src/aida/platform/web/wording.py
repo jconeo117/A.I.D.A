@@ -31,7 +31,10 @@ SHELL_KEYS = (
     "license_rejected", "readonly_title", "readonly_lead", "readonly_hint", "pill_readonly",
     "license_readonly", "go_settings", "exit_label", "closed_text", "settings_label",
     "title_settings", "settings_lead", "back_label", "title_first_run", "header_place",
-    "pill_ready", "pill_problem",
+    "pill_ready", "pill_problem", "brand", "launcher_title", "launcher_lead", "launcher_link",
+    "identity_bad_code", "recovery_alert", "forgot_link", "pin_title", "pin_lead",
+    "recover_code_label", "recover_button", "recover_done", "reset_title", "reset_button",
+    "reset_done", "code_button",
 )
 """Las claves que el armazón pinta. Ninguna de ellas puede estar en `app` de salud."""
 

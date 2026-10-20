@@ -19,8 +19,12 @@ from aida.platform.license import LicenseState
 from aida.platform.web.assets import (
     CSS_BASE,
     CSS_IDENTITY,
+    CSS_LAUNCHER,
+    CSS_LAYOUT,
     CSS_LICENSE,
     CSS_SETTINGS,
+    ICONS_AJUSTES,
+    ICONS_LAUNCHER,
     ICONS_SHELL,
     icon_sheet,
 )
@@ -41,7 +45,14 @@ def user_chip(w: Textos, professional: Professional | None) -> str:
 
 
 def identity_script(w: Textos) -> str:
-    return f"const IDLE_MS = {int(w.idle_lock_minutes * 60_000)};\n{_JS_IDENTITY_HEAD}"
+    textos = json.dumps(
+        {"recovery_alert": w["recovery_alert"], "reset_done": w["reset_done"]},
+        ensure_ascii=False,
+    )
+    return (
+        f"const IDLE_MS = {int(w.idle_lock_minutes * 60_000)};\n"
+        f"const TEXTOS = {textos};\n{_JS_IDENTITY_HEAD}"
+    )
 
 
 def _initials(name: str) -> str:
@@ -66,9 +77,11 @@ def _person(p: Professional, w: Textos, *, button: bool) -> str:
 
 
 def profiles_block(w: Textos, profiles: Sequence[Professional]) -> str:
-    """En Ajustes: quiénes hay y añadir a otro. Lo añade alguien ya identificado."""
+    """En Ajustes: quiénes hay, añadir a otro, restablecer el PIN de cualquiera (101b, decisión 2)
+    y el código de recuperación propio. Lo hace alguien ya identificado."""
     e = html.escape
     personas = "".join(_person(p, w, button=False) for p in profiles)
+    opciones = "".join(f'<option value="{e(p.id)}">{e(p.name)}</option>' for p in profiles)
     return f"""<div class="setting">
           <div class="setting-head"><svg><use href="#i-user"/></svg>
             <h3>{e(w["profiles_title"])}</h3></div>
@@ -86,9 +99,28 @@ def profiles_block(w: Textos, profiles: Sequence[Professional]) -> str:
           </div>
           <div class="key-row"><button type="button" class="btn" id="np-add">
             <svg><use href="#i-plus"/></svg>{e(w["profiles_add"])}</button></div>
+          <div class="fields-2">
+            <div><label class="label" for="rs-profile">{e(w["reset_title"])}</label>
+              <select class="input" id="rs-profile">{opciones}</select></div>
+            <div><label class="label" for="rs-pin">{e(w["first_pin"])}</label>
+              <input class="input" id="rs-pin" type="password" inputmode="numeric"></div>
+            <div><label class="label" for="rs-pin2">{e(w["first_pin2"])}</label>
+              <input class="input" id="rs-pin2" type="password" inputmode="numeric"></div>
+          </div>
+          <div class="key-row">
+            <button type="button" class="btn" id="rs-go">{e(w["reset_button"])}</button>
+            <button type="button" class="btn" id="gc-go">{e(w["code_button"])}</button></div>
           <div class="result fail" id="np-error" hidden><svg><use href="#i-alert"/></svg>
             <span></span></div>
         </div>"""
+
+
+def _textos_quien_atiende(w: Textos) -> dict[str, str]:
+    return {"closed_text": w["closed_text"], "recover_done": w["recover_done"]}
+
+
+def _textos_primer_perfil(w: Textos) -> dict[str, str]:
+    return {"closed_text": w["closed_text"], "recovery_alert": w["recovery_alert"]}
 
 
 def who_page(
@@ -116,6 +148,19 @@ def who_page(
           aria-label="{e(w["pin_label"])}" autocomplete="off">
         <span class="pin-error" id="pin-error" hidden></span>
       </div>
+      <p class="hint">
+        <button type="button" class="btn btn-quiet" id="forgot">{e(w["forgot_link"])}</button></p>
+      <div class="fields-2" id="recover-box" hidden>
+        <div><label class="label" for="rc-code">{e(w["recover_code_label"])}</label>
+          <input class="input" id="rc-code" autocomplete="off"></div>
+        <div><label class="label" for="rc-pin">{e(w["first_pin"])}</label>
+          <input class="input" id="rc-pin" type="password" inputmode="numeric"></div>
+        <div><label class="label" for="rc-pin2">{e(w["first_pin2"])}</label>
+          <input class="input" id="rc-pin2" type="password" inputmode="numeric"></div>
+        <div>
+          <button type="button" class="btn btn-primary" id="rc-go">{e(w["recover_button"])}</button>
+          <span class="pin-error" id="rc-error" hidden></span></div>
+      </div>
     </div>
   </div>
   <footer class="bar">
@@ -128,12 +173,18 @@ def who_page(
 </section>"""
     script = (
         f"const TOKEN = {json.dumps(token)};\n"
-        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
+        f"const W = {json.dumps(_textos_quien_atiende(w), ensure_ascii=False)};\n"
         f"{_JS_WHO}"
     )
     return page_frame(
-        brand=brand, title=w["title_who"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
+        brand=brand,
+        title=w["title_who"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_ready"],
+        pill_class="pill",
+        body=body,
+        script=script,
     )
 
 
@@ -168,12 +219,18 @@ def first_profile_page(w: Textos, brand: str, token: str, moment: datetime) -> s
 </section>"""
     script = (
         f"const TOKEN = {json.dumps(token)};\n"
-        f"const W = {json.dumps({'closed_text': w['closed_text']}, ensure_ascii=False)};\n"
+        f"const W = {json.dumps(_textos_primer_perfil(w), ensure_ascii=False)};\n"
         f"{_JS_NEW_PROFILE}"
     )
     return page_frame(
-        brand=brand, title=w["title_first_run"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body, script=script,
+        brand=brand,
+        title=w["title_first_run"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_ready"],
+        pill_class="pill",
+        body=body,
+        script=script,
     )
 
 
@@ -181,9 +238,11 @@ def locked_page(
     w: Textos, brand: str, token: str, professional: Professional, moment: datetime
 ) -> str:
     e = html.escape
-    entrada = e(w["locked_lead"]).replace(
-        "{}", f"<strong>{e(professional.name)}</strong>"
-    ).replace("{minutes}", str(int(w.idle_lock_minutes)))
+    entrada = (
+        e(w["locked_lead"])
+        .replace("{}", f"<strong>{e(professional.name)}</strong>")
+        .replace("{minutes}", str(int(w.idle_lock_minutes)))
+    )
     body = f"""<section class="screen">
   <div class="stage">
     <div class="panel-card center">
@@ -210,9 +269,15 @@ def locked_page(
         f"{e(professional.name)}</span>"
     )
     return page_frame(
-        brand=brand, title=w["title_locked"], place=w["header_place"], moment=moment,
-        pill=w["pill_locked"], pill_class="pill fallback", body=body,
-        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LOCKED}", head_link=chip,
+        brand=brand,
+        title=w["title_locked"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_locked"],
+        pill_class="pill fallback",
+        body=body,
+        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LOCKED}",
+        head_link=chip,
     )
 
 
@@ -244,10 +309,36 @@ _JS_IDENTITY_HEAD = """
         name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2'),
       });
       const r = await fetch('/' + TOKEN + '/perfil', { method: 'POST', body });
-      if (r.ok) { location.reload(); return; }
+      if (r.ok) {
+        const d = await r.json();
+        alert(TEXTOS.recovery_alert.replace('{codigo}', d.codigo));
+        location.reload();
+        return;
+      }
       const box = document.getElementById('np-error');
       box.querySelector('span').textContent = (await r.json()).error;
       box.hidden = false;
+    });
+  }
+  const rs = document.getElementById('rs-go');
+  if (rs) {
+    rs.addEventListener('click', async () => {
+      const v = id => document.getElementById(id).value;
+      const r = await fetch('/' + TOKEN + '/restablecer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: v('rs-profile'), pin: v('rs-pin'), pin2: v('rs-pin2') }),
+      });
+      if (r.ok) { alert(TEXTOS.reset_done); location.reload(); return; }
+      const box = document.getElementById('np-error');
+      box.querySelector('span').textContent = (await r.json()).error;
+      box.hidden = false;
+    });
+  }
+  const gc = document.getElementById('gc-go');
+  if (gc) {
+    gc.addEventListener('click', async () => {
+      const r = await fetch('/' + TOKEN + '/codigo-recuperacion', { method: 'POST', body: '' });
+      if (r.ok) { alert(TEXTOS.recovery_alert.replace('{codigo}', (await r.json()).codigo)); }
     });
   }
 })();
@@ -288,6 +379,18 @@ document.getElementById('exit').addEventListener('click', async () => {
   await post('/salir');
   document.body.textContent = W.closed_text;
 });
+document.getElementById('forgot').addEventListener('click', () => {
+  document.getElementById('recover-box').hidden = false;
+});
+document.getElementById('rc-go').addEventListener('click', async () => {
+  const v = id => document.getElementById(id).value;
+  const r = await post('/recuperar-pin', JSON.stringify({
+    profile: chosen || '', code: v('rc-code'), pin: v('rc-pin'), pin2: v('rc-pin2') }));
+  if (r.ok) { alert(W.recover_done); location.reload(); return; }
+  const err = document.getElementById('rc-error');
+  err.textContent = (await r.json()).error;
+  err.hidden = false;
+});
 """
 
 
@@ -299,7 +402,12 @@ document.getElementById('np-add').addEventListener('click', async () => {
   const v = id => document.getElementById(id).value;
   const r = await post('/perfil', JSON.stringify({
     name: v('np-name'), registry: v('np-registry'), pin: v('np-pin'), pin2: v('np-pin2') }));
-  if (r.ok) { location.reload(); return; }
+  if (r.ok) {
+    const d = await r.json();
+    alert(W.recovery_alert.replace('{codigo}', d.codigo));
+    location.reload();
+    return;
+  }
   const err = document.getElementById('np-error');
   err.textContent = (await r.json()).error;
   err.hidden = false;
@@ -370,8 +478,8 @@ def license_block(w: Textos, license: LicenseState | None) -> str:
         lic = license.license
         filas = (
             f'<dl class="license-row"><dt>{e(w["license_client"])}</dt><dd>{e(lic.client)}</dd>'
-            f'<dt>{e(w["license_arms"])}</dt><dd>{e(" · ".join(lic.arms))}</dd>'
-            f'<dt>{e(w["license_until"])}</dt><dd>{lic.expires.strftime("%d/%m/%Y")}</dd></dl>'
+            f"<dt>{e(w['license_arms'])}</dt><dd>{e(' · '.join(lic.arms))}</dd>"
+            f"<dt>{e(w['license_until'])}</dt><dd>{lic.expires.strftime('%d/%m/%Y')}</dd></dl>"
         )
     return f"""<div class="setting">
           <div class="setting-head"><svg><use href="#i-badge"/></svg>
@@ -413,8 +521,13 @@ def license_page(
   </footer>
 </section>"""
     return page_frame(
-        brand=brand, title=w["license_title"], place=w["header_place"], moment=moment,
-        pill=w["pill_problem"], pill_class="pill fallback", body=body,
+        brand=brand,
+        title=w["license_title"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_problem"],
+        pill_class="pill fallback",
+        body=body,
         script=f"const TOKEN = {json.dumps(token)};\n{JS_LICENSE}{JS_EXIT}",
         head_link=user_chip(w, professional),
     )
@@ -433,9 +546,7 @@ def readonly_page(
     """Caducada: nada nuevo, y nada de lo registrado se pierde (debate de la 100)."""
     e = html.escape
     caducidad = license.license.expires.strftime("%d/%m/%Y") if license.license else ""
-    filas = "".join(
-        f'<li><svg><use href="#i-check"/></svg>{e(texto)}</li>' for texto in textos
-    )
+    filas = "".join(f'<li><svg><use href="#i-check"/></svg>{e(texto)}</li>' for texto in textos)
     body = f"""<section class="screen">
   <div class="stage">
     <div class="panel-card">
@@ -456,8 +567,13 @@ def readonly_page(
   </footer>
 </section>"""
     return page_frame(
-        brand=brand, title=arm_name, place=w["header_place"], moment=moment,
-        pill=w["pill_readonly"], pill_class="pill fallback", body=body,
+        brand=brand,
+        title=arm_name,
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_readonly"],
+        pill_class="pill fallback",
+        body=body,
         script=f"const TOKEN = {json.dumps(token)};\n{JS_TO_SETTINGS}{JS_EXIT}",
         head_link=user_chip(w, professional),
     )
@@ -516,10 +632,18 @@ def page_frame(
     e = html.escape
     estilo = "\n".join(
         parte
-        for parte in (CSS_BASE, extra_css, CSS_SETTINGS, CSS_IDENTITY, CSS_LICENSE)
+        for parte in (
+            CSS_BASE,
+            CSS_LAYOUT,
+            extra_css,
+            CSS_SETTINGS,
+            CSS_IDENTITY,
+            CSS_LICENSE,
+            CSS_LAUNCHER,
+        )
         if parte
     )
-    iconos = icon_sheet(ICONS_SHELL, extra_icons)
+    iconos = icon_sheet(ICONS_SHELL, ICONS_LAUNCHER, ICONS_AJUSTES, extra_icons)
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -583,9 +707,78 @@ def settings_frame(
   </footer>
 </section>"""
     return page_frame(
-        brand=brand, title=w["title_settings"], place=w["header_place"], moment=moment,
-        pill=w["pill_ready"], pill_class="pill", body=body,
+        brand=brand,
+        title=w["title_settings"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_ready"],
+        pill_class="pill",
+        body=body,
         script=script + identity_script(w) + JS_LICENSE,
         head_link=license_chip(w, license) + user_chip(w, professional),
-        extra_css=extra_css, extra_icons=extra_icons,
+        extra_css=extra_css,
+        extra_icons=extra_icons,
+    )
+
+
+_JS_LANZADOR = """
+for (const boton of document.querySelectorAll('.arm[data-arm]')) {
+  boton.addEventListener('click', async () => {
+    const r = await fetch('/' + TOKEN + '/brazo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: boton.dataset.arm }),
+    });
+    if (r.ok) { location.reload(); }
+  });
+}
+"""
+
+
+def _icono_del_brazo(icono: str) -> str:
+    """Solo los símbolos que la plataforma conoce; cualquier otro, la placa de siempre."""
+    return icono if icono in ("stetho", "calendar") else "badge"
+
+
+def launcher_page(
+    w: Textos,
+    brand: str,
+    token: str,
+    tarjetas: Sequence[tuple[str, str, str, str]],
+    moment: datetime,
+    professional: Professional | None,
+    license: LicenseState,
+) -> str:
+    """El lanzador: una tarjeta por brazo activo, con su nombre, su descripción y su símbolo
+    (101b). Cada tarjeta es un brazo que el personal puede abrir; no hay nada más que hacer
+    aquí."""
+    e = html.escape
+    cartas = "".join(
+        f'<button type="button" class="arm" data-arm="{e(id_)}">'
+        f'<span class="arm-icon"><svg><use href="#i-{_icono_del_brazo(icono)}"/></svg></span>'
+        f"<strong>{e(nombre)}</strong><small>{e(descripcion)}</small></button>"
+        for id_, nombre, descripcion, icono in tarjetas
+    )
+    body = f"""<section class="screen" id="launcher">
+  <div class="stage">
+    <div class="panel-card">
+      <h2>{e(w["launcher_title"])}</h2>
+      <p class="lead">{e(w["launcher_lead"])}</p>
+      <div class="arms">{cartas}</div>
+    </div>
+  </div>
+  <footer class="bar">
+    <button type="button" class="btn btn-quiet" id="exit">
+      <svg><use href="#i-exit"/></svg>{e(w["exit_label"])}</button>
+  </footer>
+</section>"""
+    return page_frame(
+        brand=brand,
+        title=w["launcher_title"],
+        place=w["header_place"],
+        moment=moment,
+        pill=w["pill_ready"],
+        pill_class="pill",
+        body=body,
+        script=f"const TOKEN = {json.dumps(token)};\n{_JS_LANZADOR}{JS_EXIT}",
+        head_link=user_chip(w, professional) + license_chip(w, license),
     )

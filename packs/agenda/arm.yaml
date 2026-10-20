@@ -1,0 +1,7 @@
+id: "agenda"
+name: "Agenda"
+description: "Citas del día, huecos libres, reprogramar y cancelar."
+version: "1"
+arm: "aida.arms.agenda.app:build_arm"
+icon: "calendar"
+default_sector: "consultorio"

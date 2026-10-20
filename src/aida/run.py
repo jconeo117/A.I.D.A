@@ -15,6 +15,7 @@ import functools
 import hashlib
 import os
 import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -328,13 +329,16 @@ def _require_license(arm_id: str) -> bool:
     return False
 
 
-def _open_platform(args: argparse.Namespace) -> int:
-    """`--app`: la plataforma decide qué brazo abrir. Hoy, el primero que la licencia
-    trae (vigente o caducado: caducado se abre en solo lectura); si no trae ninguno, el
-    primero instalado, para que se pueda cargar una licencia. Con más de un brazo
-    licenciado, aquí irá el lanzador (102)."""
+def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int:
+    """`--app`: la plataforma abre todos los brazos que la licencia da. Si ninguno, el primero
+    instalado, para que se pueda cargar una licencia. Un armazón y un solo candado para todos
+    (101b): el lanzador aparece solo cuando hay más de uno."""
+    import threading
+
     from aida.platform.arms import discover
     from aida.platform.license import load_license
+    from aida.platform.web.shell import run_shell
+    from aida.platform.web.wording import load_shell_wording
 
     estado = load_license(_license_path())
     brazos = discover()
@@ -342,36 +346,50 @@ def _open_platform(args: argparse.Namespace) -> int:
         print("aida: error: no hay ningún brazo instalado", file=sys.stderr)
         return 1
     licenciados = [b for b in brazos if estado.licensed(b.id)]
-    elegido = licenciados[0] if licenciados else brazos[0]
-    abrir = elegido.entry()
-    resultado: int = abrir(args, estado, elegido)
-    return resultado
+    elegidos = licenciados or brazos[:1]
+    candado = threading.Lock()
+    armas = [manifiesto.entry()(args, estado, manifiesto, candado) for manifiesto in elegidos]
+    textos = load_shell_wording()
+    run_shell(
+        armas,
+        brand=textos["brand"],
+        wording=textos,
+        profiles=_profiles(),
+        audit=_audit(),
+        license=estado,
+        license_path=_license_path(),
+        lock=candado,
+        presentacion={b.id: (b.description, b.icon) for b in elegidos},
+        open_browser=open_browser,
+    )
+    return 0
 
 
-def launch_health(args: argparse.Namespace, license: LicenseState, arm: ArmManifest) -> int:
-    """El punto de entrada del brazo de salud (`packs/health/arm.yaml`). Vive aquí porque
-    la aplicación de salud se monta con piezas de esta CLI; pasará al brazo cuando llegue
-    el segundo (102)."""
-    from aida.arms.health.app import load_app_wording, serve
+def health_arm(
+    args: argparse.Namespace,
+    license: LicenseState,
+    arm: ArmManifest,
+    lock: threading.Lock,
+) -> object:
+    """La entrada del brazo de salud (`packs/health/arm.yaml`): su preparación, sin servidor. El
+    servidor lo abre la plataforma con todos los brazos (101b)."""
+    from aida.arms.health.app import build_health_arm, load_app_wording
     from aida.arms.health.retention import load_retention
     from aida.arms.health.review_ui import load_ui_settings
 
     retencion = load_retention()
-    serve(
+    return build_health_arm(
         lambda: _app_build(args),
         settings=load_ui_settings(),
         wording=load_app_wording(),
-        tools=_app_tools(),
-        profiles=_profiles(),
-        audit=_audit(),
-        license=license,
-        license_path=_license_path(),
+        auditoria=_audit(),
+        lock=lock,
         arm_id=arm.id,
         arm_name=arm.name,
+        tools=_app_tools(),
         retention_days=retencion.audit_texts_days,
         interrupted_hours=retencion.interrupted_hours,
     )
-    return 0
 
 
 def _require_actor(args: argparse.Namespace) -> Professional | None:
