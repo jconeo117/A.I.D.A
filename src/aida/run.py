@@ -181,6 +181,12 @@ def _construir_parser() -> argparse.ArgumentParser:
         help="descifra y muestra los textos de una línea de la auditoría y termina",
     )
     parser.add_argument(
+        "--channel-setup",
+        action="store_true",
+        help="crea (si faltan) la clave del canal y el token del relé, imprime la clave "
+        "pública y la huella del token para el archivo de inquilinos del relé, y termina",
+    )
+    parser.add_argument(
         "--consents",
         action="store_true",
         help="lista las autorizaciones registradas, comprueba que la cadena está íntegra "
@@ -329,6 +335,20 @@ def _require_license(arm_id: str) -> bool:
     return False
 
 
+def _channel_setup() -> int:
+    """Lo que quien instala copia al archivo de inquilinos del relé. El token no se imprime:
+    queda en este equipo, y el relé solo guarda su huella."""
+    import hashlib
+
+    from aida.keys import channel_public_key, relay_token
+
+    token = relay_token(create=True)
+    assert token is not None
+    print(f"public_key: {channel_public_key()}")
+    print(f"token_sha256: {hashlib.sha256(token.encode('utf-8')).hexdigest()}")
+    return 0
+
+
 def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int:
     """`--app`: la plataforma abre todos los brazos que la licencia da. Si ninguno, el primero
     instalado, para que se pueda cargar una licencia. Un armazón y un solo candado para todos
@@ -336,6 +356,7 @@ def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int
     import threading
 
     from aida.platform.arms import discover
+    from aida.platform.channel import open_channel
     from aida.platform.license import load_license
     from aida.platform.web.shell import run_shell
     from aida.platform.web.wording import load_shell_wording
@@ -350,18 +371,25 @@ def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int
     candado = threading.Lock()
     armas = [manifiesto.entry()(args, estado, manifiesto, candado) for manifiesto in elegidos]
     textos = load_shell_wording()
-    run_shell(
-        armas,
-        brand=textos["brand"],
-        wording=textos,
-        profiles=_profiles(),
-        audit=_audit(),
-        license=estado,
-        license_path=_license_path(),
-        lock=candado,
-        presentacion={b.id: (b.description, b.icon) for b in elegidos},
-        open_browser=open_browser,
-    )
+    canal = open_channel(estado)
+    if canal is not None:
+        canal.poller.start()
+    try:
+        run_shell(
+            armas,
+            brand=textos["brand"],
+            wording=textos,
+            profiles=_profiles(),
+            audit=_audit(),
+            license=estado,
+            license_path=_license_path(),
+            lock=candado,
+            presentacion={b.id: (b.description, b.icon) for b in elegidos},
+            open_browser=open_browser,
+        )
+    finally:
+        if canal is not None:
+            canal.poller.stop()
     return 0
 
 
@@ -1158,6 +1186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{'ok   ' if correcto else 'FALTA'} {texto}")
         return 0 if all(correcto for _texto, correcto in lineas) else 1
 
+    if args.channel_setup:
+        return _channel_setup()
     if args.app:
         return _open_platform(args)
 

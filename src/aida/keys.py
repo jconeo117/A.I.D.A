@@ -99,6 +99,69 @@ def save_local_only(value: bool) -> None:
         ruta.unlink(missing_ok=True)
 
 
+_WHATSAPP_ENV = "AIDA_WHATSAPP_TOKEN"
+_WHATSAPP_FILE = "whatsapp.key"
+_RELAY_ENV = "AIDA_RELAY_TOKEN"
+_RELAY_FILE = "relay.key"
+_CHANNEL_FILE = "channel-x25519.key"
+
+
+def _env_or_file(env: str, file: str) -> str | None:
+    valor = os.environ.get(env)
+    if valor:
+        return valor
+    ruta = user_dir("config") / file
+    if ruta.is_file():
+        return ruta.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def whatsapp_token() -> str | None:
+    """El token de la Graph API de Meta: solo lo usa el equipo, para enviar. El relé no lo
+    tiene nunca (102a, decisión 2)."""
+    return _env_or_file(_WHATSAPP_ENV, _WHATSAPP_FILE)
+
+
+def relay_token(*, create: bool = False) -> str | None:
+    """Con el que el equipo recoge del relé. Con `create`, si no hay ninguno, lo genera y lo
+    guarda: el relé solo conoce su huella."""
+    actual = _env_or_file(_RELAY_ENV, _RELAY_FILE)
+    if actual is not None or not create:
+        return actual
+    import secrets
+
+    nuevo = secrets.token_urlsafe(32)
+    _write_private(user_dir("config") / _RELAY_FILE, nuevo)
+    return nuevo
+
+
+def channel_private_key(*, create: bool = True) -> bytes | None:
+    """La clave X25519 que abre lo sellado por el relé. Se crea sola la primera vez; quien
+    instala copia la pública al relé con `--channel-setup`."""
+    import base64
+
+    from aida.relay.seal import new_keypair
+
+    ruta = user_dir("config") / _CHANNEL_FILE
+    if ruta.is_file():
+        return base64.b64decode(ruta.read_text(encoding="utf-8").strip())
+    if not create:
+        return None
+    privada, _publica = new_keypair()
+    _write_private(ruta, base64.b64encode(privada).decode("ascii"))
+    return privada
+
+
+def channel_public_key() -> str:
+    import base64
+
+    from aida.relay.seal import public_of
+
+    privada = channel_private_key()
+    assert privada is not None
+    return base64.b64encode(public_of(privada)).decode("ascii")
+
+
 def check_cloud_key(value: str, *, base_url: str, timeout: float = 10.0) -> tuple[bool, str]:
     """Prueba la clave con la petición más barata que hay (listar modelos), antes de
     gastarla en una consulta: `I-154` estuvo tres unidades sin verse porque nada la

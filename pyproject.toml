@@ -37,6 +37,7 @@ diarization = [
 
 [project.scripts]
 aida = "aida.run:main"
+aida-relay = "aida.relay.server:main"
 
 [dependency-groups]
 dev = [
