@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from aida.engine.actions import ToolResult, ToolStatus
+from aida.engine.ontology import ActionId
 from aida.engine.ports import (
     CognitionProvider,
     IntentClassifier,
@@ -97,8 +99,8 @@ def test_una_clase_sin_think_no_satisface_cognition_provider() -> None:
 # 4. `ToolPort`: un único método, `execute`.
 # ---------------------------------------------------------------------------
 class _HerramientaConforme:
-    def execute(self, *, action: object, arguments: Mapping[str, object]) -> object:
-        return None
+    def execute(self, *, action: ActionId, arguments: Mapping[str, str]) -> ToolResult:
+        return ToolResult(ToolStatus.DONE)
 
 
 def test_una_clase_con_execute_satisface_tool_port() -> None:

@@ -263,14 +263,16 @@ def test_discover_orden_por_id_y_manifiestos(tmp_path: Path) -> None:
     arm_b = packs / "brazo_b"
     arm_b.mkdir(parents=True)
     (arm_b / "arm.yaml").write_text(
-        'id: "z_salud"\nname: "Aida Z"\ndescription: "Desc"\nversion: "1.0"\napp: "math:sqrt"\n',
+        'id: "z_salud"\nname: "Aida Z"\ndescription: "Desc"\n'
+        'version: "1.0"\narm: "math:sqrt"\nicon: "stetho"\n',
         encoding="utf-8",
     )
 
     arm_a = packs / "brazo_a"
     arm_a.mkdir(parents=True)
     (arm_a / "arm.yaml").write_text(
-        'id: "a_salud"\nname: "Zeta Arm"\ndescription: "Desc"\nversion: "1.0"\napp: "math:sin"\n',
+        'id: "a_salud"\nname: "Zeta Arm"\ndescription: "Desc"\n'
+        'version: "1.0"\narm: "math:sin"\nicon: "calendar"\n',
         encoding="utf-8",
     )
 
@@ -280,26 +282,32 @@ def test_discover_orden_por_id_y_manifiestos(tmp_path: Path) -> None:
 
 
 def test_load_manifest_validaciones(tmp_path: Path) -> None:
-    # Sin app
-    p1 = tmp_path / "sin_app.yaml"
-    p1.write_text('id: "x"\nname: "X"\ndescription: "D"\nversion: "1.0"\n', encoding="utf-8")
+    # Sin arm
+    p1 = tmp_path / "sin_arm.yaml"
+    p1.write_text(
+        'id: "x"\nname: "X"\ndescription: "D"\nversion: "1.0"\nicon: "stetho"\n',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="necesita"):
         load_manifest(p1)
 
-    # Sin ':' en app
+    # Sin ':' en arm
     p2 = tmp_path / "sin_dos_puntos.yaml"
     p2.write_text(
-        'id: "x"\nname: "X"\ndescription: "D"\nversion: "1.0"\napp: "modulo_solo"\n',
+        'id: "x"\nname: "X"\ndescription: "D"\n'
+        'version: "1.0"\narm: "modulo_solo"\nicon: "stetho"\n',
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="'app' debe ser 'modulo:funcion'"):
+    with pytest.raises(ValueError, match="'arm' debe ser 'modulo:funcion'"):
         load_manifest(p2)
 
 
 def test_arm_manifest_entry() -> None:
     import math
 
-    manif = ArmManifest(id="h", name="H", description="D", version="1", app="math:cos")
+    manif = ArmManifest(
+        id="h", name="H", description="D", version="1", arm="math:cos", icon="stetho"
+    )
     assert manif.entry() is math.cos
 
 
@@ -688,28 +696,36 @@ def test_open_platform_sin_brazos(
 
 
 def test_open_platform_con_licencia(monkeypatch: pytest.MonkeyPatch) -> None:
-    llamadas: list[Any] = []
+    llamadas_entry: list[Any] = []
+    llamadas_shell: list[Any] = []
     fake_arm = ArmManifest(
         id="health",
         name="Salud",
         description="Desc",
         version="1",
-        app="aida.run:launch_health",
+        arm="aida.run:health_arm",
+        icon="stetho",
     )
 
-    def _simulado(args: Any, estado: Any, arm: Any) -> int:
-        llamadas.append((args, estado, arm))
-        return 77
+    def _simulado_arm(args: Any, estado: Any, arm: Any, lock: Any) -> Any:
+        llamadas_entry.append((args, estado, arm, lock))
+        return "arm_instancia"
 
-    monkeypatch.setattr(run, "launch_health", _simulado)
+    def _simulado_shell(armas: Any, **kwargs: Any) -> None:
+        llamadas_shell.append((armas, kwargs))
+
+    monkeypatch.setattr(run, "health_arm", _simulado_arm)
     monkeypatch.setattr("aida.platform.arms.discover", lambda: (fake_arm,))
+    monkeypatch.setattr("aida.platform.web.shell.run_shell", _simulado_shell)
 
     parser = run._construir_parser()
     args = parser.parse_args(["--app"])
     code = run._open_platform(args)
-    assert code == 77
-    assert len(llamadas) == 1
-    assert llamadas[0][2].id == "health"
+    assert code == 0
+    assert len(llamadas_entry) == 1
+    assert llamadas_entry[0][2].id == "health"
+    assert len(llamadas_shell) == 1
+    assert llamadas_shell[0][0] == ["arm_instancia"]
 
 
 # ---------------------------------------------------------------------------

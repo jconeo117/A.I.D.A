@@ -4333,36 +4333,37 @@ def test_cli_app_llama_a_serve_con_app_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Caso 20 (§B.5): --app llama a serve con un build que es _app_build
-    y construye AppReady en un entorno válido."""
+    """Caso 20 (§B.5): --app llama a run_shell con el brazo de salud construido
+    y genera AppReady en un entorno válido."""
     pytest.importorskip("pytesseract", reason="requiere el extra 'capture'")
     from aida.arms.health.app import AppReady, AppTools
     from aida.arms.health.capture import LocalTesseractOCR, LocalWhisperSTT
 
-    llamadas_serve: list[dict[str, Any]] = []
+    llamadas_shell: list[dict[str, Any]] = []
 
-    def spy_serve(
-        build: Any,
+    def spy_run_shell(
+        arms: Any,
         *,
-        settings: Any,
+        brand: str,
         wording: Any,
-        tools: Any = None,
-        profiles: Any = None,
-        audit: Any = None,
+        profiles: Any,
+        audit: Any,
+        license: Any,
         **kwargs: Any,
     ) -> None:
-        llamadas_serve.append(
+        llamadas_shell.append(
             {
-                "build": build,
-                "settings": settings,
+                "arms": arms,
+                "brand": brand,
                 "wording": wording,
-                "tools": tools,
                 "profiles": profiles,
                 "audit": audit,
+                "license": license,
+                "kwargs": kwargs,
             }
         )
 
-    monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
+    monkeypatch.setattr("aida.platform.web.shell.run_shell", spy_run_shell)
 
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("AIDA_CONSULT_CACHE_KEY", key)
@@ -4397,14 +4398,15 @@ def test_cli_app_llama_a_serve_con_app_build(
 
     codigo = main(["--app"])
     assert codigo == 0
-    assert len(llamadas_serve) == 1
-    assert isinstance(llamadas_serve[0]["tools"], AppTools)
+    assert len(llamadas_shell) == 1
+    arm = llamadas_shell[0]["arms"][0]
+    assert isinstance(arm._tools, AppTools)
     from aida.platform.audit import AuditLog
     from aida.platform.identity import ProfileStore
 
-    assert isinstance(llamadas_serve[0]["profiles"], ProfileStore)
-    assert isinstance(llamadas_serve[0]["audit"], AuditLog)
-    ready = llamadas_serve[0]["build"]()
+    assert isinstance(llamadas_shell[0]["profiles"], ProfileStore)
+    assert isinstance(llamadas_shell[0]["audit"], AuditLog)
+    ready = arm._build()
     assert isinstance(ready, AppReady)
 
 
@@ -4734,29 +4736,29 @@ def test_transcription_comportamiento_segun_modelo_y_proveedor(
 def test_main_sin_argumentos_empaquetado_abre_app_o_muestra_uso(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Caso 33 (§B.5, M14): main([]) con sys.frozen = True llama a serve;
-    sin frozen imprime el uso y devuelve 0 sin llamar a serve.
+    """Caso 33 (§B.5, M14): main([]) con sys.frozen = True llama a run_shell;
+    sin frozen imprime el uso y devuelve 0 sin llamar a run_shell.
     """
-    serve_llamado = False
+    shell_llamado = False
 
-    def spy_serve(*args: Any, **kwargs: Any) -> None:
-        nonlocal serve_llamado
-        serve_llamado = True
+    def spy_shell(*args: Any, **kwargs: Any) -> None:
+        nonlocal shell_llamado
+        shell_llamado = True
 
-    monkeypatch.setattr("aida.arms.health.app.serve", spy_serve)
+    monkeypatch.setattr("aida.platform.web.shell.run_shell", spy_shell)
 
-    # 1. Con sys.frozen = True -> llama a serve (M14)
+    # 1. Con sys.frozen = True -> llama a run_shell (M14)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     res_frozen = main([])
     assert res_frozen == 0
-    assert serve_llamado is True
+    assert shell_llamado is True
 
-    # 2. Sin sys.frozen -> imprime uso y devuelve 0 sin llamar a serve
+    # 2. Sin sys.frozen -> imprime uso y devuelve 0 sin llamar a run_shell
     monkeypatch.delattr(sys, "frozen", raising=False)
-    serve_llamado = False
+    shell_llamado = False
     res_normal = main([])
     assert res_normal == 0
-    assert serve_llamado is False
+    assert shell_llamado is False
     captured = capsys.readouterr()
     assert "usage:" in captured.out.lower() or "aida" in captured.out.lower()
 
@@ -4789,8 +4791,10 @@ def test_run_caches_y_launch_health_leen_retencion(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """B.2 §9: run: las cachés se construyen con los plazos del pack
-    (24 h y 1 h en segundos), y launch_health pasa retention_days = audit_texts_days.
+    (24 h y 1 h en segundos), y health_arm pasa retention_days = audit_texts_days.
     """
+    import threading
+
     from aida import run
     from aida.arms.health.retention import Retention
 
@@ -4817,14 +4821,18 @@ def test_run_caches_y_launch_health_leen_retencion(
     assert c is not None
     assert c._cache._ttl == 3 * 3600
 
-    llamadas_serve: list[dict[str, Any]] = []
-    monkeypatch.setattr("aida.arms.health.app.serve", lambda *a, **kw: llamadas_serve.append(kw))
+    llamadas_build: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "aida.arms.health.app.build_health_arm",
+        lambda *a, **kw: llamadas_build.append(kw),
+    )
     arm_mock = MagicMock()
     arm_mock.id = "health"
     arm_mock.name = "Salud"
     lic_mock = MagicMock()
+    lock_mock = threading.Lock()
 
-    run.launch_health(args, lic_mock, arm_mock)
-    assert len(llamadas_serve) == 1
-    assert llamadas_serve[0]["retention_days"] == 999
-    assert llamadas_serve[0]["interrupted_hours"] == 72
+    run.health_arm(args, lic_mock, arm_mock, lock_mock)
+    assert len(llamadas_build) == 1
+    assert llamadas_build[0]["retention_days"] == 999
+    assert llamadas_build[0]["interrupted_hours"] == 72

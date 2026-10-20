@@ -418,7 +418,7 @@ def test_servidor_app_problem_capture_y_reintentar(tmp_path: Path) -> None:
 
 def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
     """Caso 13 (§B.4, M4): /empezar rechaza identificadores inválidos, grabación sin
-    consentimiento y falta de archivos, y pasa a working con todo válido."""
+    consentimiento y falta de audio, y pasa a working sin historia clínica (opcional)."""
     ready = _crear_app_ready(tmp_path)
     wording = load_app_wording()
     url, _token, _port, hilo, _ = _lanzar_servidor_app(lambda: ready, wording=wording)
@@ -428,12 +428,12 @@ def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
         assert r1.status_code == 400
         assert r1.json()["error"] == wording["owner_invalid"]
 
-        # 2. Falta de audio o documento (antes de pedir autorización)
+        # 2. Falta de audio (antes de pedir autorización)
         r2 = httpx.post(f"{url}/empezar", json={"owner": "HC-01"}, timeout=5.0)
         assert r2.status_code == 400
-        assert r2.json()["error"] == wording["missing_document"]
+        assert r2.json()["error"] == wording["missing_audio"]
 
-        # Subir audio y documento
+        # Subir audio
         wav = _crear_wav_minimo()
         r_audio = httpx.post(
             f"{url}/audio",
@@ -442,15 +442,8 @@ def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
             timeout=5.0,
         )
         assert r_audio.status_code == 200
-        r_doc = httpx.post(
-            f"{url}/documento",
-            content=b"Historia clinica",
-            headers={"X-Name": "historia.txt"},
-            timeout=5.0,
-        )
-        assert r_doc.status_code == 200
 
-        # 3. Falta de autorización (tras subir archivos)
+        # 3. Falta de autorización (tras subir archivo)
         r3 = httpx.post(
             f"{url}/empezar",
             json={"owner": "HC-01", "consent": False},
@@ -459,7 +452,7 @@ def test_servidor_empezar_validaciones(tmp_path: Path) -> None:
         assert r3.status_code == 400
         assert r3.json()["error"] == wording["missing_consent"]
 
-        # Ahora sí, empezar con éxito
+        # 4. Ahora sí, empezar con éxito sin historia clínica (la historia es opcional) -> da 200
         r4 = httpx.post(f"{url}/empezar", json={"owner": "HC-01", "consent": True}, timeout=5.0)
         assert r4.status_code == 200
         assert r4.json() == {"ok": True}
@@ -673,9 +666,8 @@ def test_servidor_escapa_todo_html(tmp_path: Path) -> None:
 
 
 def test_servidor_empezar_modo_vivo_validaciones(tmp_path: Path) -> None:
-    """Caso 14 (§B.4): /empezar con recorded y consent -> estado live;
-
-    sin consent -> 400; sin documento -> 400.
+    """Caso 14 (§B.4): /empezar con recorded y consent -> estado live (la historia es opcional);
+    sin consent -> 400.
     """
     ready = _crear_app_ready(tmp_path)
     url, _tok, _port, hilo, _ = _lanzar_servidor_app(lambda: ready)
@@ -687,34 +679,12 @@ def test_servidor_empezar_modo_vivo_validaciones(tmp_path: Path) -> None:
         )
         assert r1.status_code == 400
 
-        # 2. Sin documento pero con consent -> 400
+        # 2. Sin documento pero con consent -> 200, pasa a estado live (historia opcional)
         r2 = httpx.post(
             f"{url}/empezar",
             json={"owner": "HC-01", "recorded": True, "consent": True},
         )
-        assert r2.status_code == 400
-
-        # Subir documento
-        httpx.post(
-            f"{url}/documento",
-            content=b"%PDF-1.4 dummy",
-            headers={"X-Name": "doc.pdf"},
-            timeout=5.0,
-        )
-
-        # 3. Con documento pero sin consent -> 400
-        r3 = httpx.post(
-            f"{url}/empezar",
-            json={"owner": "HC-01", "recorded": True, "consent": False},
-        )
-        assert r3.status_code == 400
-
-        # 4. Con documento y con consent -> 200, pasa a estado live
-        r4 = httpx.post(
-            f"{url}/empezar",
-            json={"owner": "HC-01", "recorded": True, "consent": True},
-        )
-        assert r4.status_code == 200
+        assert r2.status_code == 200
         estado = httpx.get(f"{url}/estado").json()
         assert estado.get("state") == "live"
     finally:
