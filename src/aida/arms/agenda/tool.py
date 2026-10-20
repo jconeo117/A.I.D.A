@@ -312,3 +312,7 @@ def resumen_semana(
                 ocupados += -(-cita.minutes // slot)
         filas.append((dia, ocupados, capacidad))
     return tuple(filas)
+
+
+free_slots = huecos_libres
+week_summary = resumen_semana
