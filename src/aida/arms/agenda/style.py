@@ -79,22 +79,4 @@ AGENDA_CSS = """/* La 101: la agenda */
 .week .bar-mini { height: 4px; border-radius: 4px; background: var(--line); margin-top: .35rem; overflow: hidden; }
 .week .bar-mini i { display: block; height: 100%; background: var(--brand); }
 .grid .cell.blocked { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--warn) 25%, transparent) 6px 7px); }
-/* 101b: conversaciones del agente (no está en la maqueta: se diseña con las mismas piezas) */
-.chat { display: grid; grid-template-columns: 260px 1fr; gap: 1rem; margin-top: 1rem; }
-.chat[hidden] { display: none; }
-.chat-hilos { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: .5rem; display: flex; flex-direction: column; gap: .3rem; max-height: 640px; overflow-y: auto; }
-.hilo { text-align: left; border: 0; background: transparent; padding: .55rem .6rem; border-radius: 10px; cursor: pointer; font: inherit; color: var(--ink); }
-.hilo:hover { background: var(--surface-2); }
-.hilo small { display: block; color: var(--muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat-conv { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); display: flex; flex-direction: column; min-height: 460px; }
-.chat-contacto { display: flex; gap: .5rem; padding: .75rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
-.chat-contacto .input { max-width: 200px; }
-.chat-estado { margin-left: auto; font-size: .82rem; color: var(--muted); }
-.chat-burbujas { flex: 1; padding: .9rem; display: flex; flex-direction: column; gap: .5rem; overflow-y: auto; max-height: 520px; }
-.burbuja { max-width: 72%; padding: .5rem .75rem; border-radius: 14px; font-size: .9rem; line-height: 1.4; white-space: pre-wrap; }
-.burbuja.in { align-self: flex-start; background: var(--surface-2); }
-.burbuja.out { align-self: flex-end; background: color-mix(in srgb, var(--brand) 14%, var(--surface)); }
-.burbuja small { display: block; color: var(--muted); font-size: .72rem; margin-top: .2rem; }
-.chat-entrada { display: flex; gap: .5rem; padding: .75rem; border-top: 1px solid var(--line); }
-.chat-entrada .input { flex: 1; }
 """

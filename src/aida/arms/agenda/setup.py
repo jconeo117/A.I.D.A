@@ -18,7 +18,7 @@ import yaml
 
 from aida.resources import data_root, user_dir
 
-DIAS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 """Los días en el mismo orden que `datetime.weekday()`."""
 
 
@@ -54,7 +54,7 @@ class AgendaSetup:
         return next((r for r in self.resources if r.id == id_), None)
 
 
-def _hora(texto: object, ruta: Path) -> time:
+def _time(texto: object, ruta: Path) -> time:
     if not isinstance(texto, str):
         raise ValueError(f"una hora debe ser texto «HH:MM» en {ruta}")
     try:
@@ -64,7 +64,7 @@ def _hora(texto: object, ruta: Path) -> time:
         raise ValueError(f"hora inválida {texto!r} en {ruta}") from exc
 
 
-def _parsear(raw: Any, ruta: Path) -> AgendaSetup:
+def _parse(raw: Any, ruta: Path) -> AgendaSetup:
     if not isinstance(raw, dict):
         raise ValueError(f"{ruta} debe ser un mapeo YAML")
     slot = raw.get("slot_minutes")
@@ -87,11 +87,11 @@ def _parsear(raw: Any, ruta: Path) -> AgendaSetup:
             )
         horario: dict[str, tuple[tuple[time, time], ...]] = {}
         for dia, tramos in (r.get("hours") or {}).items():
-            if dia not in DIAS:
+            if dia not in WEEKDAYS:
                 raise ValueError(f"día desconocido {dia!r} en el recurso {r['id']!r}")
             parseados: list[tuple[time, time]] = []
             for par in tramos:
-                inicio, fin = _hora(par[0], ruta), _hora(par[1], ruta)
+                inicio, fin = _time(par[0], ruta), _time(par[1], ruta)
                 minutos = (fin.hour * 60 + fin.minute) - (inicio.hour * 60 + inicio.minute)
                 if minutos <= 0:
                     raise ValueError(
@@ -122,7 +122,7 @@ def _parsear(raw: Any, ruta: Path) -> AgendaSetup:
     )
 
 
-def _copiar_plantilla(destino: Path) -> None:
+def _copy_template(destino: Path) -> None:
     """La plantilla del sector que dice `packs/agenda/arm.yaml`: la primera vez, nadie escribe
     el archivo a mano."""
     manifiesto = yaml.safe_load(
@@ -139,6 +139,6 @@ def load_setup(path: Path | None = None) -> AgendaSetup:
     agendar, cuando ya hay alguien esperando."""
     ruta = path if path is not None else user_dir("config") / "agenda.yaml"
     if not ruta.exists():
-        _copiar_plantilla(ruta)
+        _copy_template(ruta)
     raw = yaml.safe_load(ruta.read_text(encoding="utf-8"))
-    return _parsear(raw, ruta)
+    return _parse(raw, ruta)

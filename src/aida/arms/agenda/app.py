@@ -19,15 +19,14 @@ from typing import Any
 
 import yaml
 
-from aida.arms.agenda.agente import Agente, load_agente_pack
-from aida.arms.agenda.estilo import AGENDA_CSS
 from aida.arms.agenda.script import AGENDA_JS
-from aida.arms.agenda.setup import DIAS, AgendaSetup, load_setup
+from aida.arms.agenda.setup import WEEKDAYS, AgendaSetup, load_setup
 from aida.arms.agenda.store import AgendaStore, SqliteAgendaStore
-from aida.arms.agenda.tool import AgendaTool, huecos_libres, resumen_semana
-from aida.engine.actions import ActionGate, ActionRequest, ToolResult, ToolStatus
+from aida.arms.agenda.style import AGENDA_CSS
+from aida.arms.agenda.tool import ACTIONS, AgendaTool, free_slots, week_summary
+from aida.engine.actions import ActionGate, ActionRequest, ToolStatus
 from aida.engine.events import EventLog
-from aida.engine.ontology import ActionId, AgentId
+from aida.engine.ontology import AgentId
 from aida.keys import cache_key
 from aida.platform.identity import Professional
 from aida.platform.license import LicenseState
@@ -35,9 +34,6 @@ from aida.platform.web.pages import JS_EXIT, page_frame, user_chip
 from aida.platform.web.shell import Response, ShellContext, json_response
 from aida.resources import data_root, user_dir
 
-ACCIONES = frozenset(
-    ActionId(a) for a in ("agendar", "editar", "reprogramar", "cancelar", "atendida", "no_asistio")
-)
 _UI = data_root() / "packs" / "agenda" / "ui.yaml"
 
 
@@ -60,7 +56,7 @@ def load_agenda_wording(path: Path | None = None) -> AgendaWording:
     return AgendaWording(texts=dict(seccion))
 
 
-def _nombres(profesionales: tuple[Professional, ...]) -> dict[str, str]:
+def _names(profesionales: tuple[Professional, ...]) -> dict[str, str]:
     return {p.id: p.name for p in profesionales}
 
 
@@ -86,9 +82,9 @@ class AgendaArm:
         self._wording = wording
         self._lock = lock
         self._sin_guardar = False
-        self._montar()
+        self._mount()
 
-    def _montar(self) -> None:
+    def _mount(self) -> None:
         """La herramienta y la puerta se montan con la configuración del momento. Al volver al
         lanzador se recargan: un horario cambiado en el archivo se nota sin reiniciar."""
         self._setup: AgendaSetup = load_setup(self._setup_path)
@@ -96,21 +92,14 @@ class AgendaArm:
         self._log = EventLog()
         self._reloj = 0
         self._puerta = ActionGate(
-            actions=ACCIONES,
+            actions=ACTIONS,
             tool=self._herramienta,
             log=self._log,
             owner=AgentId(self.id),
-            tick=self._siguiente,
-        )
-        self._agente = Agente(
-            store=self._store,
-            setup=lambda: self._setup,
-            pack=load_agente_pack(),
-            ahora=self._now,
-            motivos=self._wording.texts,
+            tick=self._next,
         )
 
-    def _siguiente(self) -> int:
+    def _next(self) -> int:
         self._reloj += 1
         return self._reloj
 
@@ -124,7 +113,7 @@ class AgendaArm:
 
     def reset(self) -> None:
         self._sin_guardar = False
-        self._montar()
+        self._mount()
 
     def rebuild(self) -> None:
         self.reset()
@@ -166,10 +155,6 @@ class AgendaArm:
           <button type="button" id="next">&rsaquo;</button>
         </div>
         <span class="grow"></span>
-        <div class="day-nav">
-          <button type="button" id="tab-agenda" aria-pressed="true">Agenda</button>
-          <button type="button" id="tab-chat" aria-pressed="false">Conversaciones</button>
-        </div>
         <button type="button" class="btn btn-primary" id="new-btn">
           <svg><use href="#i-plus"/></svg>{e(w["new_button"])}</button>
       </div>
@@ -178,22 +163,6 @@ class AgendaArm:
         <div class="grid" id="grid"></div>
         <aside class="side"><div class="panel-card" id="side"></div></aside>
       </div>
-      <section class="chat" id="chat" hidden>
-        <div class="chat-hilos" id="hilos"></div>
-        <div class="chat-conv">
-          <div class="chat-contacto">
-            <input class="input" id="c-phone" placeholder="Teléfono">
-            <input class="input" id="c-name" placeholder="Nombre">
-            <button type="button" class="btn" id="c-recordar">Enviar recordatorios</button>
-            <span class="chat-estado" id="c-estado"></span>
-          </div>
-          <div class="chat-burbujas" id="burbujas"></div>
-          <div class="chat-entrada">
-            <input class="input" id="c-text" placeholder="Escribe un texto">
-            <button type="button" class="btn btn-primary" id="c-send">Enviar</button>
-          </div>
-        </div>
-      </section>
     </div>
   </div>
   <footer class="bar">
@@ -225,10 +194,6 @@ class AgendaArm:
         )
 
     def get(self, path: str, ctx: ShellContext) -> Response | None:
-        if path == "conversaciones":
-            return self._hilos(ctx)
-        if path.startswith("conversacion/"):
-            return self._hilo(path[len("conversacion/") :])
         if not path.startswith("dia/"):
             return None
         try:
@@ -236,11 +201,11 @@ class AgendaArm:
         except ValueError:
             return None
         with self._lock:
-            return json_response(200, self._dia(dia, ctx))
+            return json_response(200, self._day(dia, ctx))
 
-    def _dia(self, dia: date, ctx: ShellContext) -> dict[str, Any]:
+    def _day(self, dia: date, ctx: ShellContext) -> dict[str, Any]:
         ahora = self._now()
-        nombres = _nombres(ctx.profiles)
+        nombres = _names(ctx.profiles)
         setup = self._setup
         store = self._store
         inicio = datetime.combine(dia, datetime.min.time(), tzinfo=ahora.tzinfo)
@@ -279,7 +244,7 @@ class AgendaArm:
                     "services": list(r.services),
                     "hours": [
                         [ta.strftime("%H:%M"), tb.strftime("%H:%M")]
-                        for ta, tb in r.hours.get(DIAS[dia.weekday()], ())
+                        for ta, tb in r.hours.get(WEEKDAYS[dia.weekday()], ())
                     ],
                 }
                 for r in setup.resources
@@ -287,12 +252,12 @@ class AgendaArm:
             "appointments": citas,
             "week": [
                 {"day": d.isoformat(), "booked": ocupados, "capacity": capacidad}
-                for d, ocupados, capacidad in resumen_semana(store, setup, lunes, ahora)
+                for d, ocupados, capacidad in week_summary(store, setup, lunes, ahora)
             ],
             "free": {
                 s.id: [
                     {"resource": r, "start": h.isoformat()}
-                    for r, h in huecos_libres(store, setup, dia, s.id, ahora)
+                    for r, h in free_slots(store, setup, dia, s.id, ahora)
                 ]
                 for s in setup.services
             },
@@ -306,105 +271,12 @@ class AgendaArm:
         ctx: ShellContext,
     ) -> Response | None:
         if path == "actividad":
-            return self._actividad(body)
+            return self._activity(body)
         if path == "accion":
-            return self._accion(body, ctx)
-        if path == "contestar":
-            return self._contestar(body, ctx)
-        if path == "recordatorios":
-            return self._recordatorios(ctx)
+            return self._action(body, ctx)
         return None
 
-    def _hilos(self, ctx: ShellContext) -> Response:
-        """Las conversaciones, la más reciente primero, con el nombre del contacto si lo hay."""
-        if ctx.professional is None:
-            return json_response(401, {"error": ""})
-        with self._lock:
-            hilos = []
-            for m in self._store.conversations():
-                contacto = self._store.client_by_phone(m.phone)
-                hilos.append(
-                    {
-                        "phone": m.phone,
-                        "name": contacto.name if contacto is not None else "",
-                        "last": m.text,
-                        "at": m.at.isoformat(),
-                    }
-                )
-        return json_response(200, {"hilos": hilos})
-
-    def _hilo(self, telefono: str) -> Response:
-        if not telefono:
-            return json_response(404, {"error": ""})
-        with self._lock:
-            contacto = self._store.client_by_phone(telefono)
-            entradas = [
-                {"direction": m.direction, "text": m.text, "at": m.at.isoformat(), "kind": m.kind}
-                for m in self._store.messages(telefono)
-            ]
-        return json_response(
-            200,
-            {"name": contacto.name if contacto is not None else "", "entradas": entradas},
-        )
-
-    def _contestar(self, body: bytes | None, ctx: ShellContext) -> Response:
-        """Un mensaje que llega de una persona (o que el personal escribe en su nombre). Lo
-        contesta el agente. Cada cita que cambia pasa por la puerta y queda auditada."""
-        if ctx.professional is None:
-            return json_response(401, {"error": ""})
-        try:
-            pedido = json.loads(body or b"{}")
-        except ValueError:
-            pedido = None
-        if not isinstance(pedido, dict) or not all(
-            isinstance(pedido.get(k), str) for k in ("phone", "name", "text")
-        ):
-            return json_response(400, {"error": "cuerpo inválido"})
-        quien = ctx.professional
-
-        def ejecutar(accion: str, args: Mapping[str, str]) -> ToolResult:
-            resultado = self._puerta.submit(
-                ActionRequest(
-                    action=ActionId(accion),
-                    arguments={**args, "by": quien.id},
-                    requested_by=quien.id,
-                )
-            )
-            if resultado.status == ToolStatus.DONE:
-                ctx.audit.record(
-                    "agenda_changed",
-                    actor=quien,
-                    owner=resultado.data.get("appointment", ""),
-                    data={"action": accion, "start": args.get("start", "")},
-                )
-            return resultado
-
-        with self._lock:
-            respuesta = self._agente.recibir(
-                telefono=pedido["phone"],
-                nombre=pedido["name"],
-                texto=pedido["text"],
-                ejecutar=ejecutar,
-            )
-        return json_response(200, {"texto": respuesta.texto, "accion": respuesta.accion})
-
-    def _recordatorios(self, ctx: ShellContext) -> Response:
-        """Manda ahora los recordatorios y los mensajes posteriores que tocan. Cada aviso queda en
-        la auditoría con quien lo disparó."""
-        if ctx.professional is None:
-            return json_response(401, {"error": ""})
-        quien = ctx.professional
-        with self._lock:
-
-            def registrar(cita: int, tipo: str) -> None:
-                ctx.audit.record(
-                    "agenda_message", actor=quien, owner=str(cita), data={"kind": tipo}
-                )
-
-            enviados = self._agente.recordatorios(registrar=registrar)
-        return json_response(200, {"enviados": enviados})
-
-    def _actividad(self, body: bytes | None) -> Response:
+    def _activity(self, body: bytes | None) -> Response:
         try:
             pedido = json.loads(body or b"{}")
         except ValueError:
@@ -414,7 +286,7 @@ class AgendaArm:
         self._sin_guardar = pedido["dirty"]
         return json_response(200, {"ok": True})
 
-    def _accion(self, body: bytes | None, ctx: ShellContext) -> Response:
+    def _action(self, body: bytes | None, ctx: ShellContext) -> Response:
         """Una petición de cambio: se pasa por la puerta. Solo las citas aplicadas se auditan:
         un rechazo no cambió nada, y lo dice su respuesta."""
         if ctx.professional is None:

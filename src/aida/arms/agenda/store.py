@@ -26,7 +26,7 @@ from typing import Protocol
 
 from cryptography.fernet import Fernet
 
-_PERSONA_INDICE = b"aida-agenda-idx"
+_PERSON_INDEX = b"aida-agenda-idx"
 
 
 class AppointmentState(StrEnum):
@@ -56,24 +56,7 @@ class Client:
     phone: str
 
 
-@dataclass(frozen=True, slots=True)
-class Message:
-    id: int
-    phone: str
-    direction: str
-    text: str
-    at: datetime
-    kind: str
-
-
 class AgendaStore(Protocol):
-    def appointments_for_client(self, client: int) -> tuple[Appointment, ...]: ...
-    def add_message(
-        self, *, phone: str, direction: str, text: str, at: datetime, kind: str
-    ) -> Message: ...
-    def messages(self, phone: str) -> tuple[Message, ...]: ...
-    def conversations(self) -> tuple[Message, ...]: ...
-    def mark_reminder(self, appointment: int, kind: str, at: datetime) -> bool: ...
     def client_by_phone(self, phone: str) -> Client | None: ...
     def add_client(self, *, name: str, phone: str) -> Client: ...
     def update_client(self, client: int, *, name: str, phone: str) -> None: ...
@@ -99,7 +82,7 @@ class AgendaStore(Protocol):
         ...
 
 
-_ESQUEMA = """
+_SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
   id INTEGER PRIMARY KEY,
   name BLOB NOT NULL,
@@ -118,26 +101,10 @@ CREATE TABLE IF NOT EXISTS appointments (
   updated_by TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS appointments_start ON appointments(start);
-CREATE TABLE IF NOT EXISTS messages (
-  id INTEGER PRIMARY KEY,
-  phone_index TEXT NOT NULL,
-  phone BLOB NOT NULL,         -- Fernet(teléfono normalizado)
-  direction TEXT NOT NULL,     -- 'in' (la persona escribe) o 'out' (el agente responde)
-  text BLOB NOT NULL,          -- Fernet(texto)
-  at TEXT NOT NULL,
-  kind TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS messages_phone ON messages(phone_index, id);
-CREATE TABLE IF NOT EXISTS reminders (
-  appointment INTEGER NOT NULL,
-  kind TEXT NOT NULL,
-  at TEXT NOT NULL,
-  PRIMARY KEY (appointment, kind)
-);
 """
 
 
-def normalizar_telefono(telefono: str) -> str:
+def normalize_phone(telefono: str) -> str:
     """Solo dígitos: «300 555 0142» y «3005550142» son el mismo contacto."""
     return re.sub(r"\D", "", telefono)
 
@@ -145,32 +112,32 @@ def normalizar_telefono(telefono: str) -> str:
 class SqliteAgendaStore:
     def __init__(self, path: Path, key: bytes) -> None:
         self._fernet = Fernet(key)
-        clave_indice = hashlib.blake2b(key, person=_PERSONA_INDICE, digest_size=32).digest()
+        clave_indice = hashlib.blake2b(key, person=_PERSON_INDEX, digest_size=32).digest()
         self._clave_indice = clave_indice
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
         nuevo = not path.exists()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._db.executescript(_ESQUEMA)
+        self._db.executescript(_SCHEMA)
         self._db.commit()
         if nuevo:
             with contextlib.suppress(OSError):
                 os.chmod(path, 0o600)
 
-    def _indice(self, telefono: str) -> str:
+    def _index(self, telefono: str) -> str:
         return hmac.new(
-            self._clave_indice, normalizar_telefono(telefono).encode("utf-8"), hashlib.sha256
+            self._clave_indice, normalize_phone(telefono).encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
-    def _contacto(self, fila: sqlite3.Row) -> Client:
+    def _client(self, fila: sqlite3.Row) -> Client:
         return Client(
             id=int(fila["id"]),
             name=self._fernet.decrypt(fila["name"]).decode("utf-8"),
             phone=self._fernet.decrypt(fila["phone"]).decode("utf-8"),
         )
 
-    def _cita(self, fila: sqlite3.Row) -> Appointment:
+    def _appointment(self, fila: sqlite3.Row) -> Appointment:
         return Appointment(
             id=int(fila["id"]),
             client=int(fila["client"]),
@@ -186,9 +153,9 @@ class SqliteAgendaStore:
     def client_by_phone(self, phone: str) -> Client | None:
         with self._lock:
             fila = self._db.execute(
-                "SELECT * FROM clients WHERE phone_index = ?", (self._indice(phone),)
+                "SELECT * FROM clients WHERE phone_index = ?", (self._index(phone),)
             ).fetchone()
-            return self._contacto(fila) if fila is not None else None
+            return self._client(fila) if fila is not None else None
 
     def add_client(self, *, name: str, phone: str) -> Client:
         with self._lock:
@@ -196,12 +163,12 @@ class SqliteAgendaStore:
                 "INSERT INTO clients (name, phone, phone_index) VALUES (?, ?, ?)",
                 (
                     self._fernet.encrypt(name.encode("utf-8")),
-                    self._fernet.encrypt(normalizar_telefono(phone).encode("utf-8")),
-                    self._indice(phone),
+                    self._fernet.encrypt(normalize_phone(phone).encode("utf-8")),
+                    self._index(phone),
                 ),
             )
             self._db.commit()
-            return self._contacto_por_id(int(cursor.lastrowid or 0))
+            return self._client_by_id(int(cursor.lastrowid or 0))
 
     def update_client(self, client: int, *, name: str, phone: str) -> None:
         with self._lock:
@@ -209,8 +176,8 @@ class SqliteAgendaStore:
                 "UPDATE clients SET name = ?, phone = ?, phone_index = ? WHERE id = ?",
                 (
                     self._fernet.encrypt(name.encode("utf-8")),
-                    self._fernet.encrypt(normalizar_telefono(phone).encode("utf-8")),
-                    self._indice(phone),
+                    self._fernet.encrypt(normalize_phone(phone).encode("utf-8")),
+                    self._index(phone),
                     client,
                 ),
             )
@@ -218,13 +185,13 @@ class SqliteAgendaStore:
 
     def client(self, client: int) -> Client:
         with self._lock:
-            return self._contacto_por_id(client)
+            return self._client_by_id(client)
 
-    def _contacto_por_id(self, client: int) -> Client:
+    def _client_by_id(self, client: int) -> Client:
         fila = self._db.execute("SELECT * FROM clients WHERE id = ?", (client,)).fetchone()
         if fila is None:
             raise LookupError(f"no hay contacto {client}")
-        return self._contacto(fila)
+        return self._client(fila)
 
     def add(
         self, *, client: int, service: str, resource: str, start: datetime, minutes: int, by: str
@@ -248,7 +215,7 @@ class SqliteAgendaStore:
             fila = self._db.execute(
                 "SELECT * FROM appointments WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
-            return self._cita(fila)
+            return self._appointment(fila)
 
     def update(
         self,
@@ -284,90 +251,19 @@ class SqliteAgendaStore:
             fila = self._db.execute(
                 "SELECT * FROM appointments WHERE id = ?", (appointment,)
             ).fetchone()
-            return self._cita(fila)
+            return self._appointment(fila)
 
     def get(self, appointment: int) -> Appointment | None:
         with self._lock:
             fila = self._db.execute(
                 "SELECT * FROM appointments WHERE id = ?", (appointment,)
             ).fetchone()
-            return self._cita(fila) if fila is not None else None
-
-    def appointments_for_client(self, client: int) -> tuple[Appointment, ...]:
-        with self._lock:
-            filas = self._db.execute(
-                "SELECT * FROM appointments WHERE client = ?", (client,)
-            ).fetchall()
-        return tuple(sorted((self._cita(f) for f in filas), key=lambda c: (c.start, c.id)))
-
-    def _registro_texto(self, fila: sqlite3.Row) -> Message:
-        return Message(
-            id=int(fila["id"]),
-            phone=self._fernet.decrypt(fila["phone"]).decode("utf-8"),
-            direction=str(fila["direction"]),
-            text=self._fernet.decrypt(fila["text"]).decode("utf-8"),
-            at=datetime.fromisoformat(str(fila["at"])),
-            kind=str(fila["kind"]),
-        )
-
-    def add_message(
-        self, *, phone: str, direction: str, text: str, at: datetime, kind: str
-    ) -> Message:
-        with self._lock:
-            cursor = self._db.execute(
-                "INSERT INTO messages (phone_index, phone, direction, text, at, kind)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    self._indice(phone),
-                    self._fernet.encrypt(normalizar_telefono(phone).encode("utf-8")),
-                    direction,
-                    self._fernet.encrypt(text.encode("utf-8")),
-                    at.isoformat(),
-                    kind,
-                ),
-            )
-            self._db.commit()
-            fila = self._db.execute(
-                "SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)
-            ).fetchone()
-            return self._registro_texto(fila)
-
-    def messages(self, phone: str) -> tuple[Message, ...]:
-        with self._lock:
-            filas = self._db.execute(
-                "SELECT * FROM messages WHERE phone_index = ? ORDER BY id",
-                (self._indice(phone),),
-            ).fetchall()
-        return tuple(self._registro_texto(f) for f in filas)
-
-    def conversations(self) -> tuple[Message, ...]:
-        """El último mensaje de cada conversación, la más reciente primero."""
-        with self._lock:
-            filas = self._db.execute(
-                "SELECT * FROM messages WHERE id IN"
-                " (SELECT MAX(id) FROM messages GROUP BY phone_index)"
-            ).fetchall()
-        return tuple(
-            sorted((self._registro_texto(f) for f in filas), key=lambda m: m.id, reverse=True)
-        )
-
-    def mark_reminder(self, appointment: int, kind: str, at: datetime) -> bool:
-        """Anota que ya se envió. `False` si ya estaba: un recordatorio no se manda dos veces."""
-        with self._lock:
-            try:
-                self._db.execute(
-                    "INSERT INTO reminders (appointment, kind, at) VALUES (?, ?, ?)",
-                    (appointment, kind, at.isoformat()),
-                )
-            except sqlite3.IntegrityError:
-                return False
-            self._db.commit()
-            return True
+            return self._appointment(fila) if fila is not None else None
 
     def between(self, start: datetime, end: datetime) -> tuple[Appointment, ...]:
         # Se filtra en Python: las fechas ISO con distinta zona no se comparan como texto.
         with self._lock:
             filas = self._db.execute("SELECT * FROM appointments").fetchall()
-        citas = [self._cita(f) for f in filas]
+        citas = [self._appointment(f) for f in filas]
         dentro = [c for c in citas if start <= c.start < end]
         return tuple(sorted(dentro, key=lambda c: (c.start, c.id)))

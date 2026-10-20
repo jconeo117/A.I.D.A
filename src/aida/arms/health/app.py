@@ -1101,6 +1101,7 @@ function missing() {
   if (!value) { return W.missing_owner; }
   if (!ownerOk.test(value)) { return W.owner_invalid; }
   if (mode === 'upload' && !audioFile) { return W.missing_audio; }
+  if (!docFile) { return W.missing_document; }
   if (!document.getElementById('consent').checked) {
     return W.missing_consent;
   }
@@ -1169,10 +1170,8 @@ async function send(audio, name) {
     const sent = await post('/audio', audio, { 'X-Name': name });
     if (!sent.ok) { fail((await sent.json()).error); return; }
   }
-  if (docFile) {
-    const doc = await post('/documento', docFile, { 'X-Name': docFile.name });
-    if (!doc.ok) { fail((await doc.json()).error); return; }
-  }
+  const doc = await post('/documento', docFile, { 'X-Name': docFile.name });
+  if (!doc.ok) { fail((await doc.json()).error); return; }
   const body = JSON.stringify({
     owner: owner.value.trim(),
     recorded: mode === 'record',
@@ -1377,17 +1376,6 @@ def _plain_audio(audio: Path, key: bytes) -> Iterator[Path]:
 def _read_sealed(reader: DocumentReader, document: Path, key: bytes) -> str:
     with plain_copy(document, key) as historia:
         return reader.read(historia)
-
-
-@contextlib.contextmanager
-def _historia_opcional(document: Path | None, key: bytes) -> Iterator[Path | None]:
-    """La historia en claro, si la hay. Sin ella (primera consulta) no hay nada que descifrar
-    ni que cotejar: la consulta sigue, solo sin historia (101b)."""
-    if document is None:
-        yield None
-        return
-    with plain_copy(document, key) as historia:
-        yield historia
 
 
 
@@ -2267,7 +2255,7 @@ class HealthArm:
         ready: AppReady,
         owner: str,
         audio: Path,
-        document: Path | None,
+        document: Path,
         consent: ConsentRecord | None,
         profesional: Professional,
         mine: Mapping[str, str] | None = None,
@@ -2279,14 +2267,12 @@ class HealthArm:
             # `with`, haya ido bien o no (plan 85a).
             with (
                 _plain_audio(audio, self._clave(ready)) as wav,
-                _historia_opcional(document, self._clave(ready)) as historia,
+                plain_copy(document, self._clave(ready)) as historia,
             ):
                 prepared = ready.consultation.prepare(
                     owner=AgentId(owner),
                     audio_path=wav,
-                    history_text=lambda: (
-                        ready.reader.read(historia) if historia is not None else ""
-                    ),
+                    history_text=lambda: ready.reader.read(historia),
                     consent=consent,
                 )
                 draft = _keep_mine(
@@ -2531,9 +2517,8 @@ class HealthArm:
             if not ctx.license.allows(self.id):
                 return json_response(403, {"error": self._wording["license_readonly"]})
             grabando = pedido.get("recorded") is True
-            # La historia es opcional: la primera consulta de un paciente puede no tenerla.
-            if sesion.audio is None and not grabando:
-                return json_response(400, {"error": self._wording["missing_audio"]})
+            if sesion.document is None or (sesion.audio is None and not grabando):
+                return json_response(400, {"error": self._wording["missing_document"]})
             # Al grabar y al subir (plan 82): sin autorización no se procesa nada.
             if pedido.get("consent") is not True:
                 return json_response(400, {"error": self._wording["missing_consent"]})
@@ -2549,21 +2534,13 @@ class HealthArm:
                 cloud=nube,
             )
             sesion.consent = registro
-            if grabando:
+            if grabando and sesion.workdir is not None:
                 documento = sesion.document
-                if sesion.workdir is None:
-                    sesion.workdir = Path(
-                        tempfile.mkdtemp(prefix=_WORKDIR_PREFIX, dir=self._raiz)
-                    )
                 sesion.live = LiveSession(
                     consultation=ready.consultation,
                     owner=owner,
                     note_sections=self._secciones,
-                    history_text=lambda: (
-                        _read_sealed(ready.reader, documento, self._clave(ready))
-                        if documento is not None
-                        else ""
-                    ),
+                    history_text=lambda: _read_sealed(ready.reader, documento, self._clave(ready)),
                     workdir=sesion.workdir,
                     transcriber=ready.live_stt if nube else None,
                     vad=self._crear_vad(),
@@ -2579,11 +2556,11 @@ class HealthArm:
                         consent_digest=registro.digest,
                         professional=self._actor().id,
                         started=self._now().astimezone(),
-                        document=documento.name if documento is not None else "",
+                        document=documento.name,
                         key=ready.seal_key,
                     )
                 sesion.live.start()
-                with _historia_opcional(documento, self._clave(ready)) as historia:
+                with plain_copy(documento, self._clave(ready)) as historia:
                     sesion.view = history_view(historia, "")
                 sesion.state = "live"
                 return json_response(200, {"ok": True})
@@ -2591,7 +2568,7 @@ class HealthArm:
             sesion.drafted = False
             sesion.state = "working"
             audio, document = sesion.audio, sesion.document
-            assert audio is not None
+            assert audio is not None and document is not None
         threading.Thread(
             target=self._procesar,
             args=(ready, owner, audio, document, registro, self._actor()),
@@ -2644,7 +2621,7 @@ class HealthArm:
                 return json_response(409, {"error": self._wording["recover_gone"]})
             sesion.workdir = elegida.folder
             sesion.owner = elegida.owner
-            sesion.document = elegida.folder / elegida.document if elegida.document else None
+            sesion.document = elegida.folder / elegida.document
             sesion.consent = registro
             sesion.start_index = len(ready.log)
             sesion.drafted = False
@@ -2656,7 +2633,7 @@ class HealthArm:
                 data={"started": elegida.started.isoformat(timespec="seconds")},
             )
             audio = elegida.folder / RECORDING_NAME
-            documento = elegida.folder / elegida.document if elegida.document else None
+            documento = elegida.folder / elegida.document
         threading.Thread(
             target=self._procesar,
             args=(ready, elegida.owner, audio, documento, registro, self._actor()),
@@ -2736,6 +2713,7 @@ class HealthArm:
             if (
                 sesion.state != "live"
                 or vivo is None
+                or document is None
                 or not isinstance(ready, AppReady)
             ):
                 return json_response(409, {"error": "no hay una grabación en curso"})

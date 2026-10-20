@@ -14,22 +14,25 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time, timedelta
 
-from aida.arms.agenda.setup import DIAS, AgendaSetup, ResourceSpec
+from aida.arms.agenda.setup import WEEKDAYS, AgendaSetup, ResourceSpec
 from aida.arms.agenda.store import AgendaStore, Appointment, AppointmentState
 from aida.engine.actions import ToolResult, ToolStatus
+from aida.engine.ontology import ActionId
 
-ACCIONES = frozenset({"agendar", "editar", "reprogramar", "cancelar", "atendida", "no_asistio"})
+ACTIONS = frozenset(
+    ActionId(a) for a in ("agendar", "editar", "reprogramar", "cancelar", "atendida", "no_asistio")
+)
 
 
-def _hecho(cita: int) -> ToolResult:
+def _done(cita: int) -> ToolResult:
     return ToolResult(ToolStatus.DONE, data={"appointment": str(cita)})
 
 
-def _rechazo(razon: str) -> ToolResult:
+def _rejection(razon: str) -> ToolResult:
     return ToolResult(ToolStatus.REJECTED, razon)
 
 
-def _fecha(texto: str | None) -> datetime | None:
+def _date(texto: str | None) -> datetime | None:
     """Una fecha con zona. Sin zona no se sabe qué hora es, y no se agenda."""
     if not texto:
         return None
@@ -40,10 +43,10 @@ def _fecha(texto: str | None) -> datetime | None:
     return valor if valor.tzinfo is not None else None
 
 
-def _tramos_cubren(recurso: ResourceSpec, inicio: datetime, minutos: int) -> bool:
+def _ranges_cover(recurso: ResourceSpec, inicio: datetime, minutos: int) -> bool:
     """La cita entera cae dentro de **un** tramo del recurso para ese día (A.3)."""
     fin = inicio + timedelta(minutes=minutos)
-    for ta, tb in recurso.hours.get(DIAS[inicio.weekday()], ()):
+    for ta, tb in recurso.hours.get(WEEKDAYS[inicio.weekday()], ()):
         desde = datetime.combine(inicio.date(), ta, tzinfo=inicio.tzinfo)
         hasta = datetime.combine(inicio.date(), tb, tzinfo=inicio.tzinfo)
         if desde <= inicio and fin <= hasta:
@@ -51,14 +54,14 @@ def _tramos_cubren(recurso: ResourceSpec, inicio: datetime, minutos: int) -> boo
     return False
 
 
-def _solapa(inicio: datetime, minutos: int, otra: Appointment) -> bool:
+def _overlaps(inicio: datetime, minutos: int, otra: Appointment) -> bool:
     """Dos citas solapan si cada una empieza antes de que acabe la otra: un hueco que acaba
     justo donde empieza otro no solapa."""
     fin = inicio + timedelta(minutes=minutos)
     return inicio < otra.start + timedelta(minutes=otra.minutes) and otra.start < fin
 
 
-def motivo_hueco(
+def slot_rejection(
     store: AgendaStore,
     recurso: ResourceSpec,
     inicio: datetime,
@@ -69,7 +72,7 @@ def motivo_hueco(
     """La primera regla de horario o de solape que falla para un hueco. Es la única puerta
     de esta comprobación: la usan la herramienta y la pantalla de huecos, y con dos copias
     podrían decir cosas distintas."""
-    if not _tramos_cubren(recurso, inicio, minutos):
+    if not _ranges_cover(recurso, inicio, minutos):
         return "outside_hours"
     vecinas = store.between(inicio - timedelta(days=1), inicio + timedelta(days=1))
     for otra in vecinas:
@@ -77,7 +80,7 @@ def motivo_hueco(
             continue
         if otra.state == AppointmentState.CANCELLED:
             continue
-        if _solapa(inicio, minutos, otra):
+        if _overlaps(inicio, minutos, otra):
             return "overlap"
     return None
 
@@ -97,53 +100,53 @@ class AgendaTool:
 
     def execute(self, *, action: str, arguments: Mapping[str, str]) -> ToolResult:
         if action == "agendar":
-            return self._agendar(arguments)
+            return self._book(arguments)
         if action == "editar":
-            return self._editar(arguments)
+            return self._edit(arguments)
         if action == "reprogramar":
-            return self._reprogramar(arguments)
+            return self._reschedule(arguments)
         if action == "cancelar":
-            return self._cerrar(arguments, AppointmentState.CANCELLED, con_hora=False)
+            return self._close(arguments, AppointmentState.CANCELLED, con_hora=False)
         if action == "atendida":
-            return self._cerrar(arguments, AppointmentState.ATTENDED, con_hora=True)
+            return self._close(arguments, AppointmentState.ATTENDED, con_hora=True)
         if action == "no_asistio":
-            return self._cerrar(arguments, AppointmentState.NO_SHOW, con_hora=True)
-        return _rechazo("unknown_action")
+            return self._close(arguments, AppointmentState.NO_SHOW, con_hora=True)
+        return _rejection("unknown_action")
 
-    def _agendar(self, args: Mapping[str, str]) -> ToolResult:
+    def _book(self, args: Mapping[str, str]) -> ToolResult:
         nombre = args.get("name", "").strip()
         telefono = args.get("phone", "").strip()
         if not nombre or not telefono:
-            return _rechazo("missing_client")
+            return _rejection("missing_client")
         servicio = self._setup.service(args.get("service", ""))
         if servicio is None:
-            return _rechazo("unknown_service")
-        inicio = _fecha(args.get("start"))
+            return _rejection("unknown_service")
+        inicio = _date(args.get("start"))
         if inicio is None:
-            return _rechazo("bad_argument")
+            return _rejection("bad_argument")
         pedido = args.get("resource", "")
         if pedido and self._setup.resource(pedido) is None:
-            return _rechazo("unknown_resource")
+            return _rejection("unknown_resource")
         candidatos = [
             r
             for r in self._setup.resources
             if (not pedido or r.id == pedido) and servicio.id in r.services
         ]
         if not candidatos:
-            return _rechazo("service_not_offered")
+            return _rejection("service_not_offered")
         if inicio < self._now():
-            return _rechazo("past")
+            return _rejection("past")
         primer_motivo: str | None = None
         for recurso in candidatos:
-            motivo = motivo_hueco(self._store, recurso, inicio, servicio.minutes, excepto=None)
+            motivo = slot_rejection(self._store, recurso, inicio, servicio.minutes, excepto=None)
             if motivo is None:
-                return self._crear(
+                return self._create(
                     args["by"], nombre, telefono, servicio.id, recurso.id, inicio, servicio.minutes
                 )
             primer_motivo = primer_motivo or motivo
-        return _rechazo(primer_motivo or "outside_hours")
+        return _rejection(primer_motivo or "outside_hours")
 
-    def _crear(
+    def _create(
         self,
         por: str,
         nombre: str,
@@ -166,10 +169,10 @@ class AgendaTool:
             minutes=minutos,
             by=por,
         )
-        return _hecho(cita.id)
+        return _done(cita.id)
 
-    def _editar(self, args: Mapping[str, str]) -> ToolResult:
-        cita = self._cita(args)
+    def _edit(self, args: Mapping[str, str]) -> ToolResult:
+        cita = self._appointment(args)
         if isinstance(cita, ToolResult):
             return cita
         nombre = args.get("name")
@@ -177,25 +180,25 @@ class AgendaTool:
         if (nombre is not None and not nombre.strip()) or (
             telefono is not None and not telefono.strip()
         ):
-            return _rechazo("missing_client")
+            return _rejection("missing_client")
         servicio, minutos = cita.service, cita.minutes
         if args.get("service") and args["service"] != cita.service:
             nuevo = self._setup.service(args["service"])
             if nuevo is None:
-                return _rechazo("unknown_service")
+                return _rejection("unknown_service")
             servicio, minutos = nuevo.id, nuevo.minutes
         recurso_id = cita.resource
         if args.get("resource") and args["resource"] != cita.resource:
             if self._setup.resource(args["resource"]) is None:
-                return _rechazo("unknown_resource")
+                return _rejection("unknown_resource")
             recurso_id = args["resource"]
         recurso = self._setup.resource(recurso_id)
         if recurso is None or servicio not in recurso.services:
-            return _rechazo("service_not_offered")
+            return _rejection("service_not_offered")
         if recurso_id != cita.resource or minutos != cita.minutes:
-            motivo = motivo_hueco(self._store, recurso, cita.start, minutos, excepto=cita.id)
+            motivo = slot_rejection(self._store, recurso, cita.start, minutos, excepto=cita.id)
             if motivo is not None:
-                return _rechazo(motivo)
+                return _rejection(motivo)
         if nombre is not None or telefono is not None:
             actual = self._store.client(cita.client)
             self._store.update_client(
@@ -210,61 +213,61 @@ class AgendaTool:
             resource=recurso_id,
             minutes=minutos,
         )
-        return _hecho(cita.id)
+        return _done(cita.id)
 
-    def _reprogramar(self, args: Mapping[str, str]) -> ToolResult:
-        cita = self._cita(args)
+    def _reschedule(self, args: Mapping[str, str]) -> ToolResult:
+        cita = self._appointment(args)
         if isinstance(cita, ToolResult):
             return cita
-        inicio = _fecha(args.get("start"))
+        inicio = _date(args.get("start"))
         if inicio is None:
-            return _rechazo("bad_argument")
+            return _rejection("bad_argument")
         if inicio < self._now():
-            return _rechazo("past")
+            return _rejection("past")
         pedido = args.get("resource", "")
         if pedido and self._setup.resource(pedido) is None:
-            return _rechazo("unknown_resource")
+            return _rejection("unknown_resource")
         recurso = self._setup.resource(pedido or cita.resource)
         if recurso is None or cita.service not in recurso.services:
-            return _rechazo("service_not_offered")
-        motivo = motivo_hueco(self._store, recurso, inicio, cita.minutes, excepto=cita.id)
+            return _rejection("service_not_offered")
+        motivo = slot_rejection(self._store, recurso, inicio, cita.minutes, excepto=cita.id)
         if motivo is not None:
-            return _rechazo(motivo)
+            return _rejection(motivo)
         self._store.update(
             cita.id,
             by=args["by"],
             start=inicio,
             resource=recurso.id if pedido else None,
         )
-        return _hecho(cita.id)
+        return _done(cita.id)
 
-    def _cerrar(
+    def _close(
         self, args: Mapping[str, str], estado: AppointmentState, *, con_hora: bool
     ) -> ToolResult:
-        cita = self._cita(args)
+        cita = self._appointment(args)
         if isinstance(cita, ToolResult):
             return cita
         if con_hora and cita.start > self._now():
-            return _rechazo("not_yet")
+            return _rejection("not_yet")
         self._store.update(cita.id, by=args["by"], state=estado)
-        return _hecho(cita.id)
+        return _done(cita.id)
 
-    def _cita(self, args: Mapping[str, str]) -> Appointment | ToolResult:
+    def _appointment(self, args: Mapping[str, str]) -> Appointment | ToolResult:
         """La cita del argumento, si existe y sigue agendada. Las acciones que la cambian
         empiezan igual."""
         try:
             identificador = int(args.get("appointment", ""))
         except ValueError:
-            return _rechazo("unknown_appointment")
+            return _rejection("unknown_appointment")
         cita = self._store.get(identificador)
         if cita is None:
-            return _rechazo("unknown_appointment")
+            return _rejection("unknown_appointment")
         if cita.state != AppointmentState.BOOKED:
-            return _rechazo("not_booked")
+            return _rejection("not_booked")
         return cita
 
 
-def huecos_libres(
+def free_slots(
     store: AgendaStore,
     setup: AgendaSetup,
     dia: date,
@@ -280,19 +283,19 @@ def huecos_libres(
     for recurso in setup.resources:
         if servicio not in recurso.services:
             continue
-        for ta, tb in recurso.hours.get(DIAS[dia.weekday()], ()):
+        for ta, tb in recurso.hours.get(WEEKDAYS[dia.weekday()], ()):
             cursor = datetime.combine(dia, ta, tzinfo=ahora.tzinfo)
             fin_tramo = datetime.combine(dia, tb, tzinfo=ahora.tzinfo)
             while cursor + timedelta(minutes=duracion.minutes) <= fin_tramo:
                 if cursor >= ahora and (
-                    motivo_hueco(store, recurso, cursor, duracion.minutes, excepto=None) is None
+                    slot_rejection(store, recurso, cursor, duracion.minutes, excepto=None) is None
                 ):
                     huecos.append((recurso.id, cursor))
                 cursor += timedelta(minutes=setup.slot_minutes)
     return tuple(sorted(huecos, key=lambda h: (h[1], h[0])))
 
 
-def resumen_semana(
+def week_summary(
     store: AgendaStore, setup: AgendaSetup, lunes: date, ahora: datetime
 ) -> tuple[tuple[date, int, int], ...]:
     """`(día, ocupados, capacidad)` de lunes a sábado, en huecos de `slot_minutes`. `ahora`
@@ -303,7 +306,7 @@ def resumen_semana(
         dia = lunes + timedelta(days=desplazamiento)
         capacidad = 0
         for recurso in setup.resources:
-            for ta, tb in recurso.hours.get(DIAS[dia.weekday()], ()):
+            for ta, tb in recurso.hours.get(WEEKDAYS[dia.weekday()], ()):
                 capacidad += (tb.hour * 60 + tb.minute - ta.hour * 60 - ta.minute) // slot
         inicio_dia = datetime.combine(dia, time(0, 0), tzinfo=ahora.tzinfo)
         ocupados = 0
@@ -312,7 +315,3 @@ def resumen_semana(
                 ocupados += -(-cita.minutes // slot)
         filas.append((dia, ocupados, capacidad))
     return tuple(filas)
-
-
-free_slots = huecos_libres
-week_summary = resumen_semana
