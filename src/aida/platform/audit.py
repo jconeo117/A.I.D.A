@@ -43,6 +43,7 @@ KINDS = (
     "recording_discarded",
     "recording_purged",
     "agenda_changed",
+    "message_sent",
     "pin_recovered",
     "pin_reset",
     "recovery_code_created",

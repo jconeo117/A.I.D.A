@@ -18,6 +18,9 @@ class ChannelConfig:
     graph_url: str
     """Con la versión de la API, sin barra final: `https://graph.facebook.com/v21.0`."""
     poll_seconds: int
+    country_code: str = ""
+    """El prefijo del país sin `+` (`"57"`). Meta entrega los números con él; el mostrador los
+    teclea sin él (102b, decisión 1)."""
 
 
 def load_channel_config(path: Path | None = None) -> ChannelConfig | None:
@@ -35,9 +38,13 @@ def load_channel_config(path: Path | None = None) -> ChannelConfig | None:
     segundos = raw.get("poll_seconds", 20)
     if not isinstance(segundos, int) or isinstance(segundos, bool) or segundos <= 0:
         raise ValueError(f"'poll_seconds' debe ser un entero positivo en {ruta}")
+    pais = str(raw.get("country_code", "")).strip()
+    if pais and not pais.isdigit():
+        raise ValueError(f"'country_code' deben ser solo dígitos en {ruta}")
     return ChannelConfig(
         relay_url=raw["relay_url"].strip().rstrip("/"),
         phone_number_id=raw["phone_number_id"].strip(),
         graph_url=raw["graph_url"].strip().rstrip("/"),
         poll_seconds=segundos,
+        country_code=pais,
     )

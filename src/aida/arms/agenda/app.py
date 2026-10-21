@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from aida.arms.agenda.script import AGENDA_JS
+from aida.arms.agenda.script import AGENDA_JS, CONVERSATIONS_JS
 from aida.arms.agenda.setup import WEEKDAYS, AgendaSetup, load_setup
 from aida.arms.agenda.store import AgendaStore, AppointmentState, SqliteAgendaStore
 from aida.arms.agenda.style import AGENDA_CSS
@@ -32,8 +32,12 @@ from aida.arms.agenda.tool import (
 )
 from aida.engine.actions import ActionGate, ActionRequest, ToolStatus
 from aida.engine.events import EventLog
-from aida.engine.ontology import AgentId
-from aida.keys import cache_key
+from aida.engine.ontology import ActionId, AgentId
+from aida.keys import cache_key, channel_public_key, save_whatsapp_token
+from aida.platform.channel import LICENSE_ID, missing_parts
+from aida.platform.channel.config import load_channel_config
+from aida.platform.channel.send import CHANNEL_ACTIONS, check_whatsapp_token, window_open
+from aida.platform.channel.store import national
 from aida.platform.identity import Professional
 from aida.platform.license import LicenseState
 from aida.platform.web.pages import JS_EXIT, page_frame, user_chip
@@ -152,9 +156,34 @@ class AgendaArm:
     def page(self, ctx: ShellContext) -> str:
         e = html.escape
         w = self._wording
+        canal = ctx.license.allows(LICENSE_ID)
+        pestanas = (
+            f"""<div class="tabs" role="tablist">
+        <button type="button" class="tab" role="tab" id="tab-agenda"
+          aria-selected="true">{e(w["tab_agenda"])}</button>
+        <button type="button" class="tab" role="tab" id="tab-convo"
+          aria-selected="false">{e(w["tab_convo"])}
+          <span class="count" id="unread-total" hidden></span></button>
+      </div>"""
+            if canal
+            else ""
+        )
+        conversaciones = (
+            """<div id="pane-convo" hidden>
+        <div class="convo-wrap">
+          <div class="threads" id="threads"></div>
+          <div class="convo" id="convo"></div>
+          <aside class="side"><div class="panel-card" id="channel-panel"></div></aside>
+        </div>
+      </div>"""
+            if canal
+            else ""
+        )
         cuerpo = f"""<section class="screen" id="s-agenda">
   <div class="stage">
     <div class="agenda-wrap">
+      {pestanas}
+      <div id="pane-agenda">
       <div class="agenda-head">
         <h2 id="day-title"></h2>
         <div class="day-nav">
@@ -174,6 +203,8 @@ class AgendaArm:
         <div class="grid" id="grid"></div>
         <aside class="side"><div class="panel-card" id="side"></div></aside>
       </div>
+      </div>
+      {conversaciones}
     </div>
   </div>
   <footer class="bar">
@@ -186,10 +217,12 @@ class AgendaArm:
             "dia0": ctx.now.date().isoformat(),
             "w": dict(w.texts),
             "contacto": self._setup.client_label,
+            "canal": canal,
         }
         script = (
             f"const CONFIG = {json.dumps(datos, ensure_ascii=False)};\n"
-            f"const TOKEN = {json.dumps(ctx.token)};\n{AGENDA_JS}{JS_EXIT}"
+            f"const TOKEN = {json.dumps(ctx.token)};\n{AGENDA_JS}"
+            f"{CONVERSATIONS_JS if canal else ''}{JS_EXIT}"
         )
         return page_frame(
             brand=ctx.brand,
@@ -205,6 +238,16 @@ class AgendaArm:
         )
 
     def get(self, path: str, ctx: ShellContext) -> Response | None:
+        if path == "conversaciones":
+            with self._lock:
+                return json_response(200, self._conversations(ctx))
+        if path.startswith("conversacion/"):
+            numero = path[len("conversacion/") :]
+            if not numero.isdigit():
+                return None
+            with self._lock:
+                datos = self._conversation(numero, ctx)
+            return json_response(200, datos) if datos is not None else None
         if path.startswith("contacto/"):
             try:
                 contacto_id = int(path[len("contacto/") :])
@@ -307,6 +350,7 @@ class AgendaArm:
             "id": contacto.id,
             "name": contacto.name,
             "phone": contacto.phone,
+            "conversation_phone": self._conversation_phone(contacto.phone, ctx),
             "upcoming": sum(
                 1 for c in citas if c.state == AppointmentState.BOOKED and c.start >= ahora
             ),
@@ -327,6 +371,133 @@ class AgendaArm:
                 for c in reversed(citas)
             ],
         }
+
+    def _conversation_phone(self, telefono: str, ctx: ShellContext) -> str:
+        """El número de la conversación de un contacto de la ficha, o vacío si nunca escribió.
+        El almacén del canal añade el prefijo (`to_whatsapp`): se le pasa lo que tecleó el
+        mostrador."""
+        if ctx.channel is None:
+            return ""
+        entradas = ctx.channel.store.messages(telefono)
+        return entradas[0].phone if entradas else ""
+
+    def _channel_state(self, ctx: ShellContext) -> dict[str, Any]:
+        licenciado = ctx.license.allows(LICENSE_ID)
+        return {
+            "missing": list(missing_parts(ctx.license)),
+            "running": ctx.channel is not None,
+            "poll_error": ctx.channel.poller.last_error if ctx.channel is not None else "",
+            "public_key": channel_public_key() if licenciado else "",
+        }
+
+    def _conversations(self, ctx: ShellContext) -> dict[str, Any]:
+        zona = self._now().tzinfo
+        lista = ctx.channel.store.conversations() if ctx.channel is not None else ()
+        return {
+            **self._channel_state(ctx),
+            "conversations": [
+                {
+                    "phone": c.phone,
+                    "name": c.name,
+                    "last_text": c.last.text,
+                    "last_kind": c.last.kind,
+                    "last_direction": c.last.direction.value,
+                    "last_at": c.last.at.astimezone(zona).isoformat(),
+                    "unread": c.unread,
+                }
+                for c in lista
+            ],
+        }
+
+    def _conversation(self, numero: str, ctx: ShellContext) -> dict[str, Any] | None:
+        """De la conversación a la ficha: el número tal cual y, si no aparece, sin prefijo
+        (102b, decisión 1)."""
+        if ctx.channel is None:
+            return None
+        entradas = ctx.channel.store.messages(numero)
+        if not entradas:
+            return None
+        telefono = entradas[0].phone
+        pais = ctx.channel.config.country_code
+        contacto = self._store.client_by_phone(telefono) or self._store.client_by_phone(
+            national(telefono, pais)
+        )
+        ahora = self._now()
+        nombres = _names(ctx.profiles)
+        return {
+            "phone": telefono,
+            "name": next((m.name for m in reversed(entradas) if m.name), ""),
+            "client_id": contacto.id if contacto is not None else None,
+            "window_open": window_open(ctx.channel.store.last_inbound(telefono), ahora),
+            "messages": [
+                {
+                    "id": m.id,
+                    "direction": m.direction.value,
+                    "kind": m.kind,
+                    "text": m.text,
+                    "at": m.at.astimezone(ahora.tzinfo).isoformat(),
+                    "by": nombres.get(m.by, m.by),
+                }
+                for m in entradas
+            ],
+        }
+
+    def _save_token(self, body: bytes | None, ctx: ShellContext) -> Response:
+        """Probar antes de guardar, como la clave de la nube en salud. Fuera del candado: sale a
+        la red y puede tardar segundos."""
+        if ctx.professional is None:
+            return json_response(401, {"error": ""})
+        if not ctx.license.allows(LICENSE_ID):
+            return json_response(409, {"ok": False, "reason": "license"})
+        try:
+            token = str(json.loads(body or b"{}").get("token", "")).strip()
+        except (ValueError, AttributeError):
+            token = ""
+        if not token:
+            return json_response(400, {"ok": False, "reason": ""})
+        config = load_channel_config()
+        if config is None:
+            return json_response(200, {"ok": False, "reason": "config"})
+        sirve, motivo = check_whatsapp_token(token, config)
+        if sirve:
+            save_whatsapp_token(token)
+        return json_response(200, {"ok": sirve, "reason": motivo})
+
+    def _channel_action(
+        self, accion: str, argumentos: dict[str, str], ctx: ShellContext
+    ) -> Response:
+        """Lo del canal pasa por **su** puerta, con **su** candado (decisiones 6 y 7), no por la
+        de la agenda. Lo enviado se audita con el texto cifrado aparte."""
+        assert ctx.professional is not None
+        if ctx.channel is None:
+            return json_response(409, {"error": ""})
+        with ctx.channel.lock:
+            resultado = ctx.channel.gate.submit(
+                ActionRequest(
+                    action=ActionId(accion),
+                    arguments=argumentos,
+                    requested_by=ctx.professional.id,
+                )
+            )
+        if resultado.status == ToolStatus.DONE and accion == "enviar":
+            with self._lock:
+                ctx.audit.record(
+                    "message_sent",
+                    actor=ctx.professional,
+                    owner=resultado.data.get("message", ""),
+                    data={"action": accion},
+                    texts={"text": argumentos.get("text", "")},
+                )
+        return json_response(
+            200,
+            {
+                "status": resultado.status.value,
+                "reason": resultado.reason,
+                "reason_text": self._wording.reason(resultado.reason),
+                "data": dict(resultado.data),
+                "conflicts": [],
+            },
+        )
 
     def _search(self, body: bytes | None) -> Response:
         """Por `POST` y no en la dirección: lo que se busca es un nombre o un teléfono, y una
@@ -356,6 +527,8 @@ class AgendaArm:
             return self._action(body, ctx)
         if path == "buscar":
             return self._search(body)
+        if path == "canal-token":
+            return self._save_token(body, ctx)
         return None
 
     def _activity(self, body: bytes | None) -> Response:
@@ -387,6 +560,8 @@ class AgendaArm:
         accion = pedido["action"]
         # Quien pide lo pone la plataforma: el contacto no elige su propio nombre.
         argumentos = {**argumentos, "by": ctx.professional.id}
+        if accion in CHANNEL_ACTIONS:
+            return self._channel_action(accion, argumentos, ctx)
         with self._lock:
             resultado = self._puerta.submit(
                 ActionRequest(

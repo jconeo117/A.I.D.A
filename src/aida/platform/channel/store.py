@@ -43,6 +43,15 @@ class Message:
     """Quién envió, si salió del equipo; vacío si entró."""
 
 
+@dataclass(frozen=True, slots=True)
+class Conversation:
+    phone: str
+    name: str
+    """El último nombre de perfil que dio el contacto; vacío si nunca dio uno."""
+    last: Message
+    unread: int
+
+
 class ChannelStore(Protocol):
     def add_inbound(
         self, *, wamid: str, phone: str, name: str, kind: str, text: str, at: datetime
@@ -56,6 +65,14 @@ class ChannelStore(Protocol):
         """Las de ese teléfono, por `at` y, a igualdad, por `id`."""
         ...
     def last_inbound(self, phone: str) -> datetime | None: ...
+    def conversations(self) -> tuple[Conversation, ...]:
+        """Una por teléfono; la de actividad más reciente primero y, a igualdad, la de `id`
+        mayor."""
+        ...
+    def mark_read(self, phone: str, *, up_to: int, by: str, at: datetime) -> bool:
+        """Leída hasta `up_to` para todo el mostrador. No retrocede. `False` si no hay
+        conversación con ese teléfono."""
+        ...
 
 
 _SCHEMA = """
@@ -72,6 +89,12 @@ CREATE TABLE IF NOT EXISTS messages (
   by TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_phone ON messages(phone_index, id);
+CREATE TABLE IF NOT EXISTS reads (
+  phone_index TEXT PRIMARY KEY,
+  last_read INTEGER NOT NULL,
+  by TEXT NOT NULL,
+  at TEXT NOT NULL
+);
 """
 
 
@@ -79,8 +102,26 @@ def normalize_number(phone: str) -> str:
     return re.sub(r"\D", "", phone)
 
 
+def to_whatsapp(phone: str, country: str) -> str:
+    """El número como lo escribe Meta: con el prefijo del país. Una sola puerta: la usan el
+    índice del almacén y el envío, y con dos copias una conversación se partiría en dos."""
+    digitos = normalize_number(phone)
+    if country and digitos and not digitos.startswith(country):
+        return country + digitos
+    return digitos
+
+
+def national(phone: str, country: str) -> str:
+    """Sin el prefijo: como lo guarda la agenda si el mostrador no lo tecleó."""
+    digitos = normalize_number(phone)
+    if country and digitos.startswith(country):
+        return digitos[len(country) :]
+    return digitos
+
+
 class SqliteChannelStore:
-    def __init__(self, path: Path, key: bytes) -> None:
+    def __init__(self, path: Path, key: bytes, *, country: str = "") -> None:
+        self._country = country
         self._fernet = Fernet(key)
         self._clave_indice = hashlib.blake2b(key, person=_PERSON_INDEX, digest_size=32).digest()
         self._lock = threading.Lock()
@@ -96,7 +137,9 @@ class SqliteChannelStore:
 
     def _index(self, phone: str) -> str:
         return hmac.new(
-            self._clave_indice, normalize_number(phone).encode("utf-8"), hashlib.sha256
+            self._clave_indice,
+            to_whatsapp(phone, self._country).encode("utf-8"),
+            hashlib.sha256,
         ).hexdigest()
 
     def _seal(self, texto: str) -> bytes:
@@ -120,7 +163,7 @@ class SqliteChannelStore:
         self, *, wamid: str, phone: str, name: str, direction: Direction, kind: str,
         text: str, at: datetime, by: str,
     ) -> Message | None:
-        numero = normalize_number(phone)
+        numero = to_whatsapp(phone, self._country)
         with self._lock:
             cursor = self._db.execute(
                 "INSERT OR IGNORE INTO messages (wamid, phone_index, phone, name, direction,"
@@ -173,3 +216,52 @@ class SqliteChannelStore:
             ).fetchall()
         fechas = [datetime.fromisoformat(str(f["at"])) for f in filas]
         return max(fechas) if fechas else None
+
+    def conversations(self) -> tuple[Conversation, ...]:
+        # Descifra todo: a la escala de un mostrador cabe (la 106 lo resolverá en su base).
+        with self._lock:
+            filas = self._db.execute("SELECT * FROM messages").fetchall()
+            leidas = {
+                str(f["phone_index"]): int(f["last_read"])
+                for f in self._db.execute("SELECT phone_index, last_read FROM reads").fetchall()
+            }
+            grupos: dict[str, list[Message]] = {}
+            for f in filas:
+                grupos.setdefault(str(f["phone_index"]), []).append(self._row(f))
+        resultado: list[Conversation] = []
+        for indice in sorted(grupos):
+            lista = sorted(grupos[indice], key=lambda m: (m.at, m.id))
+            ultima = lista[-1]
+            hasta = leidas.get(indice, 0)
+            resultado.append(
+                Conversation(
+                    phone=ultima.phone,
+                    name=next(
+                        (m.name for m in reversed(lista) if m.direction == Direction.IN and m.name),
+                        "",
+                    ),
+                    last=ultima,
+                    unread=sum(
+                        1 for m in lista if m.direction == Direction.IN and m.id > hasta
+                    ),
+                )
+            )
+        return tuple(sorted(resultado, key=lambda c: (c.last.at, c.last.id), reverse=True))
+
+    def mark_read(self, phone: str, *, up_to: int, by: str, at: datetime) -> bool:
+        indice = self._index(phone)
+        with self._lock:
+            existe = self._db.execute(
+                "SELECT 1 FROM messages WHERE phone_index = ? LIMIT 1", (indice,)
+            ).fetchone()
+            if existe is None:
+                return False
+            self._db.execute(
+                "INSERT INTO reads (phone_index, last_read, by, at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(phone_index) DO UPDATE SET last_read = excluded.last_read,"
+                " by = excluded.by, at = excluded.at"
+                " WHERE excluded.last_read > reads.last_read",
+                (indice, up_to, by, at.isoformat()),
+            )
+            self._db.commit()
+            return True

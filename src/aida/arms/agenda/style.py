@@ -86,4 +86,21 @@ AGENDA_CSS = """/* La 101: la agenda */
 .side .stats { display: flex; gap: 1.25rem; margin: .6rem 0; }
 .side .stats b { display: block; font-size: 1.15rem; }
 .side .stats span { font-size: .78rem; color: var(--muted); }
+.tabs { margin-bottom: 1rem; }
+.convo-wrap { display: grid; grid-template-columns: 280px 1fr 300px; gap: 1rem; align-items: start; }
+.threads { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: auto; max-height: 70vh; }
+.thread { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; font: inherit; padding: .65rem .85rem; cursor: pointer; }
+.thread b { font-size: .9rem; } .thread small { display: block; color: var(--muted); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread[aria-current="true"] { background: color-mix(in srgb, var(--brand) 8%, var(--surface)); }
+.thread .count { float: right; }
+.convo { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); min-height: 60vh; }
+.convo-head { display: flex; align-items: center; gap: .75rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+.convo-head .who { flex: 1; } .convo-head .who b { display: block; } .convo-head .who small { color: var(--muted); }
+.msgs { flex: 1; overflow: auto; padding: 1rem; display: flex; flex-direction: column; gap: .5rem; background: color-mix(in srgb, var(--line) 25%, var(--surface)); }
+.msg { max-width: 70%; padding: .5rem .75rem; border-radius: 12px; font-size: .9rem; line-height: 1.4; white-space: pre-wrap; }
+.msg small { display: block; font-size: .7rem; color: var(--muted); margin-top: .2rem; }
+.msg.in { background: var(--surface); border: 1px solid var(--line); align-self: flex-start; }
+.msg.out { background: #e0e7ff; align-self: flex-end; }
+.compose { display: flex; gap: .5rem; padding: .75rem 1rem; border-top: 1px solid var(--line); }
+.compose input { flex: 1; }
 """

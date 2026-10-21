@@ -122,6 +122,10 @@ def whatsapp_token() -> str | None:
     return _env_or_file(_WHATSAPP_ENV, _WHATSAPP_FILE)
 
 
+def save_whatsapp_token(value: str) -> None:
+    _write_private(user_dir("config") / _WHATSAPP_FILE, value.strip())
+
+
 def relay_token(*, create: bool = False) -> str | None:
     """Con el que el equipo recoge del relé. Con `create`, si no hay ninguno, lo genera y lo
     guarda: el relé solo conoce su huella."""

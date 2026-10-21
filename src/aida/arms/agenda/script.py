@@ -407,6 +407,9 @@ function pintarFicha(lado) {
     lista.append(fila);
   }
   lado.append(lista);
+  if (CONFIG.canal && f.conversation_phone) {
+    lado.append(botonSimple(W.convo_link, () => { mostrarPestana('convo'); abrirConversacion(f.conversation_phone, true); }, 'btn btn-quiet'));
+  }
   const acciones = el('div', 'side-actions');
   acciones.append(botonSimple(W.card_edit, () => { MODO = { tipo: 'contacto', ficha: f }; pintarPanel(); }));
   acciones.append(botonSimple(W.new_button, () => {
@@ -462,4 +465,146 @@ document.getElementById('new-btn').addEventListener('click', () => nuevaCita('',
 document.getElementById('block-btn').addEventListener('click', () => { SELECCION = null; MODO = { tipo: 'bloquear' }; pintarPanel(); });
 document.getElementById('search').addEventListener('change', (ev) => buscar(ev.target.value));
 cargar(DIA);
+"""
+
+CONVERSATIONS_JS = """
+const CONVO = { lista: null, actual: null, borrador: '', leido: {} };
+
+function mostrarPestana(cual) {
+  document.getElementById('pane-agenda').hidden = cual !== 'agenda';
+  document.getElementById('pane-convo').hidden = cual !== 'convo';
+  document.getElementById('tab-agenda').setAttribute('aria-selected', String(cual === 'agenda'));
+  document.getElementById('tab-convo').setAttribute('aria-selected', String(cual === 'convo'));
+}
+function convoVisible() { return !document.getElementById('pane-convo').hidden; }
+async function cargarConversaciones(conPanel) {
+  const r = await fetch('/' + TOKEN + '/conversaciones', { headers: { 'X-AIDA-Background': '1' } });
+  if (!r.ok) { return; }
+  CONVO.lista = await r.json();
+  pintarConversaciones();
+  if (conPanel) { pintarCanal(); }
+  if (CONVO.actual && convoVisible()) { await abrirConversacion(CONVO.actual.phone, true, true); }
+}
+function textoUltimo(c) { return c.last_kind === 'text' ? c.last_text : '[' + c.last_kind + ']'; }
+function pintarConversaciones() {
+  const total = CONVO.lista.conversations.reduce((s, c) => s + c.unread, 0);
+  const marca = document.getElementById('unread-total');
+  marca.hidden = total === 0;
+  marca.textContent = String(total);
+  const hilos = document.getElementById('threads');
+  hilos.replaceChildren();
+  if (!CONVO.lista.conversations.length) { hilos.append(el('p', 'lead', W.convo_empty)); return; }
+  for (const c of CONVO.lista.conversations) {
+    const b = el('button', 'thread');
+    b.type = 'button';
+    if (CONVO.actual && CONVO.actual.phone === c.phone) { b.setAttribute('aria-current', 'true'); }
+    if (c.unread) { b.append(el('span', 'count', String(c.unread))); }
+    b.append(el('b', '', c.name || ('+' + c.phone)));
+    b.append(el('small', '', (c.last_direction === 'out' ? W.convo_you : '') + textoUltimo(c)));
+    b.addEventListener('click', () => abrirConversacion(c.phone, true, false));
+    hilos.append(b);
+  }
+}
+async function abrirConversacion(telefono, marcar, deFondo) {
+  const cabeceras = deFondo ? { 'X-AIDA-Background': '1' } : {};
+  const r = await fetch('/' + TOKEN + '/conversacion/' + telefono, { headers: cabeceras });
+  if (!r.ok) { return; }
+  if (!CONVO.actual || CONVO.actual.phone !== telefono) { CONVO.borrador = ''; }
+  CONVO.actual = await r.json();
+  pintarConversacion();
+  const entradas = CONVO.actual.messages.filter((m) => m.direction === 'in');
+  const ultima = entradas.length ? entradas[entradas.length - 1].id : 0;
+  if (marcar && ultima > (CONVO.leido[telefono] || 0)) {
+    CONVO.leido[telefono] = ultima;
+    await actuarCanal('marcar_leida', { phone: telefono, up_to: String(ultima) });
+  }
+}
+async function actuarCanal(accion, argumentos) {
+  const r = await fetch('/' + TOKEN + '/accion', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: accion, arguments: argumentos }),
+  });
+  const respuesta = await r.json();
+  if (respuesta.status === 'done') { await cargarConversaciones(false); return true; }
+  const aviso = document.getElementById('convo-aviso');
+  if (aviso) { aviso.textContent = respuesta.reason_text || W.reason_failed; aviso.hidden = false; }
+  return false;
+}
+function pintarConversacion() {
+  const c = CONVO.actual;
+  const caja = document.getElementById('convo');
+  caja.replaceChildren();
+  const cabeza = el('div', 'convo-head');
+  const quien = el('div', 'who');
+  quien.append(el('b', '', c.name || ('+' + c.phone)), el('small', '', '+' + c.phone));
+  cabeza.append(quien);
+  if (c.client_id !== null) {
+    cabeza.append(botonSimple(W.card_link, () => { mostrarPestana('agenda'); abrirFicha(c.client_id); }, 'btn btn-quiet'));
+  }
+  caja.append(cabeza);
+  const lista = el('div', 'msgs');
+  for (const m of c.messages) {
+    const burbuja = el('div', 'msg ' + m.direction, m.kind === 'text' ? m.text : '[' + m.kind + ']');
+    burbuja.append(el('small', '', (m.direction === 'out' ? m.by + ' · ' : '') + fecha(m.at) + ' ' + hora(m.at)));
+    lista.append(burbuja);
+  }
+  caja.append(lista);
+  const aviso = el('p', 'confirm');
+  aviso.id = 'convo-aviso';
+  aviso.hidden = true;
+  caja.append(aviso);
+  if (!c.window_open) { caja.append(el('p', 'lead', W.window_closed_hint)); return; }
+  const escribir = el('div', 'compose');
+  const texto = el('input', 'input');
+  texto.placeholder = W.compose_placeholder;
+  texto.value = CONVO.borrador;
+  texto.addEventListener('input', () => { CONVO.borrador = texto.value; marcarSucio(texto.value !== ''); });
+  const enviar = botonSimple(W.send_button, async () => {
+    if (await actuarCanal('enviar', { phone: c.phone, text: texto.value })) {
+      CONVO.borrador = '';
+      marcarSucio(false);
+      await abrirConversacion(c.phone, false, false);
+    }
+  }, 'btn btn-primary');
+  escribir.append(texto, enviar);
+  caja.append(escribir);
+}
+function pintarCanal() {
+  const p = document.getElementById('channel-panel');
+  const e = CONVO.lista;
+  p.replaceChildren(el('h3', '', W.channel_title));
+  let estado = W.channel_running;
+  if (e.missing.length) {
+    estado = W.channel_missing + ' ' + e.missing.map((x) => W['channel_missing_' + x] || x).join(', ');
+  } else if (!e.running) {
+    estado = W.channel_restart;
+  } else if (e.poll_error) {
+    estado = W.channel_error.replace('{0}', e.poll_error);
+  }
+  p.append(el('p', 'lead', estado));
+  p.append(el('label', 'label', W.channel_public_key));
+  const clave = el('input', 'input');
+  clave.readOnly = true;
+  clave.value = e.public_key;
+  p.append(clave);
+  p.append(el('label', 'label', W.channel_token));
+  const token = el('input', 'input');
+  token.type = 'password';
+  p.append(token);
+  const resultado = el('p', 'event-line');
+  p.append(botonSimple(W.channel_token_save, async () => {
+    const r = await fetch('/' + TOKEN + '/canal-token', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token.value }),
+    });
+    const d = await r.json();
+    resultado.textContent = d.ok ? W.channel_token_saved : W.channel_token_bad.replace('{0}', d.reason || '');
+  }, 'btn'));
+  p.append(resultado);
+}
+
+document.getElementById('tab-agenda').addEventListener('click', () => mostrarPestana('agenda'));
+document.getElementById('tab-convo').addEventListener('click', () => { mostrarPestana('convo'); cargarConversaciones(true); });
+cargarConversaciones(true);
+setInterval(() => cargarConversaciones(false), 15000);
 """

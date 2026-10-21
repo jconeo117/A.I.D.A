@@ -25,6 +25,7 @@ from secrets import token_urlsafe
 from typing import Any, Protocol
 
 from aida.platform.audit import AuditLog
+from aida.platform.channel import Channel
 from aida.platform.identity import IdentityError, Professional, ProfileStore
 from aida.platform.license import LicenseState, read_license
 from aida.platform.web.pages import (
@@ -68,6 +69,9 @@ class ShellContext:
     profiles: tuple[Professional, ...]
     launcher_link: str = ""
     """El botón «Inicio» de la cabecera, con varios brazos; vacío con uno (101b)."""
+    channel: Channel | None = None
+    """El canal de WhatsApp, si la licencia lo da y está configurado (102b). Uno para todos los
+    brazos: lo abre `_open_platform`."""
 
 
 class ArmApp(Protocol):
@@ -124,6 +128,7 @@ def run_shell(
     lock: threading.Lock,
     presentacion: Mapping[str, tuple[str, str]] | None = None,
     open_browser: Callable[[str], None] | None = None,
+    channel: Channel | None = None,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = datetime.now,
     today: Callable[[], date] = date.today,
@@ -166,6 +171,7 @@ def run_shell(
             lock=lock,
             profiles=tuple(profiles.professionals()),
             launcher_link=enlace,
+            channel=channel,
         )
 
     def brazo() -> ArmApp | None:
@@ -205,9 +211,11 @@ def run_shell(
             sesion.current = None
             sesion.state = "launcher"
 
-    def vigilar() -> None:
+    def vigilar(background: bool = False) -> None:
         """Con el candado tomado, en cada petición. Bloquea si pasó el plazo sin uso, y solo donde
-        no hay nada a medias: lo deciden los brazos, y el lanzador siempre es reposo."""
+        no hay nada a medias: lo deciden los brazos, y el lanzador siempre es reposo. Una
+        petición de fondo (el refresco de una pestaña) comprueba el plazo pero no cuenta como
+        uso: si contara, una pestaña abierta impediría bloquear (102b, decisión 9)."""
         if sesion.professional is None or sesion.state not in ("arm", "launcher"):
             return
         ahora = clock()
@@ -217,7 +225,8 @@ def run_shell(
             sesion.state = "locked"
             audit.record("locked", actor=sesion.professional)
             return
-        sesion.last_activity = ahora
+        if not background:
+            sesion.last_activity = ahora
 
     def pagina() -> str:
         if sesion.state == "first_profile":
@@ -273,7 +282,7 @@ def run_shell(
 
         def do_GET(self) -> None:
             with lock:
-                vigilar()
+                vigilar(self.headers.get("X-AIDA-Background") == "1")
                 if self.path == f"/{token}":
                     self._send(200, pagina().encode("utf-8"), "text/html; charset=utf-8")
                     return

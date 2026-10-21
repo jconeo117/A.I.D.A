@@ -386,6 +386,7 @@ def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int
             lock=candado,
             presentacion={b.id: (b.description, b.icon) for b in elegidos},
             open_browser=open_browser,
+            channel=canal,
         )
     finally:
         if canal is not None:
