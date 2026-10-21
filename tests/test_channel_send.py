@@ -9,7 +9,11 @@ from cryptography.fernet import Fernet
 
 from aida.engine.actions import ToolStatus
 from aida.platform.channel.config import ChannelConfig
-from aida.platform.channel.send import ChannelTool
+from aida.platform.channel.send import (
+    ChannelTool,
+    check_whatsapp_token,
+    window_open,
+)
 from aida.platform.channel.store import SqliteChannelStore
 
 
@@ -201,3 +205,134 @@ def test_enviar_texto_vacio_missing_text(tmp_path: Path) -> None:
 
     r3 = tool.execute(action="desconocida", arguments={})
     assert r3.status == ToolStatus.REJECTED and r3.reason == "unknown_action"
+
+
+def test_window_open_bordes() -> None:
+    t0 = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)
+    assert window_open(None, t0) is False
+    # 23:59:59 después -> abierta
+    t_casi_24h = t0 + timedelta(hours=24) - timedelta(seconds=1)
+    assert window_open(t0, t_casi_24h) is True
+    # 24:00:00 exactas -> cerrada
+    t_24h = t0 + timedelta(hours=24)
+    assert window_open(t0, t_24h) is False
+
+
+def test_enviar_pone_prefijo_en_to(tmp_path: Path) -> None:
+    store = SqliteChannelStore(tmp_path / "ch.sqlite", Fernet.generate_key(), country="57")
+    t0 = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)
+    # Entrada llega con 573001112233
+    store.add_inbound(
+        wamid="w.in", phone="573001112233", name="Ana", kind="text", text="Hola", at=t0
+    )
+    peticiones: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        peticiones.append(request)
+        return httpx.Response(200, json={"messages": [{"id": "w.out"}]})
+
+    cliente = httpx.Client(transport=httpx.MockTransport(handler))
+    config = ChannelConfig(
+        relay_url="http://relay.local",
+        phone_number_id="num-1",
+        graph_url="https://graph.local",
+        poll_seconds=10,
+        country_code="57",
+    )
+    tool = ChannelTool(
+        store=store,
+        config=config,
+        token="tok",
+        http=cliente,
+        now=lambda: t0 + timedelta(minutes=1),
+    )
+    # Envío con número sin prefijo nacional
+    res = tool.execute(
+        action="enviar",
+        arguments={"phone": "3001112233", "text": "Respuesta", "by": "prof-1"},
+    )
+    assert res.status == ToolStatus.DONE
+    assert len(peticiones) == 1
+    cuerpo = json.loads(peticiones[0].content)
+    assert cuerpo["to"] == "573001112233"
+
+
+def test_marcar_leida_done_unknown_y_bad_argument(tmp_path: Path) -> None:
+    store = SqliteChannelStore(tmp_path / "ch.sqlite", Fernet.generate_key(), country="57")
+    t0 = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)
+    m1 = store.add_inbound(
+        wamid="w.1", phone="573001112233", name="Ana", kind="text", text="Hola", at=t0
+    )
+    assert m1 is not None
+
+    config = ChannelConfig(
+        relay_url="http://relay.local",
+        phone_number_id="num-1",
+        graph_url="https://graph.local",
+        poll_seconds=10,
+        country_code="57",
+    )
+    tool = ChannelTool(
+        store=store,
+        config=config,
+        token="tok",
+        http=httpx.Client(),
+        now=lambda: t0 + timedelta(minutes=1),
+    )
+
+    # 1. bad_argument (up_to no es número entero)
+    r_bad = tool.execute(
+        action="marcar_leida", arguments={"phone": "573001112233", "up_to": "xyz", "by": "p1"}
+    )
+    assert r_bad.status == ToolStatus.REJECTED
+    assert r_bad.reason == "bad_argument"
+
+    # 2. unknown_conversation (teléfono que no existe)
+    r_unk = tool.execute(
+        action="marcar_leida", arguments={"phone": "573009999999", "up_to": "1", "by": "p1"}
+    )
+    assert r_unk.status == ToolStatus.REJECTED
+    assert r_unk.reason == "unknown_conversation"
+
+    # 3. done (marca leída exitosa)
+    r_ok = tool.execute(
+        action="marcar_leida",
+        arguments={"phone": "573001112233", "up_to": str(m1.id), "by": "p1"},
+    )
+    assert r_ok.status == ToolStatus.DONE
+
+
+def test_check_whatsapp_token_200_401_y_red() -> None:
+    config = ChannelConfig(
+        relay_url="http://relay.local",
+        phone_number_id="num-123",
+        graph_url="https://graph.local",
+        poll_seconds=10,
+    )
+
+    # 1. 200 OK
+    def handler_200(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "num-123"})
+
+    c_200 = httpx.Client(transport=httpx.MockTransport(handler_200))
+    ok, motivo = check_whatsapp_token("tok-valido", config, http=c_200)
+    assert ok is True
+    assert motivo == "200"
+
+    # 2. 401 Unauthorized
+    def handler_401(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    c_401 = httpx.Client(transport=httpx.MockTransport(handler_401))
+    ok, motivo = check_whatsapp_token("tok-invalido", config, http=c_401)
+    assert ok is False
+    assert motivo == "401"
+
+    # 3. Error de red
+    def handler_err(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("sin red", request=request)
+
+    c_err = httpx.Client(transport=httpx.MockTransport(handler_err))
+    ok, motivo = check_whatsapp_token("tok", config, http=c_err)
+    assert ok is False
+    assert motivo == "ConnectError"

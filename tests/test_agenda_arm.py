@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import date, datetime, timedelta, timezone
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
+import yaml
 from cryptography.fernet import Fernet
 
 from aida.arms.agenda.app import AgendaArm, load_agenda_wording
 from aida.arms.agenda.store import AppointmentState, SqliteAgendaStore
+from aida.engine.actions import ActionGate
+from aida.engine.events import EventLog
+from aida.keys import whatsapp_token
 from aida.platform.audit import AuditLog
+from aida.platform.channel import LICENSE_ID, Channel
+from aida.platform.channel.config import ChannelConfig
+from aida.platform.channel.poller import OWNER, Poller
+from aida.platform.channel.send import CHANNEL_ACTIONS, ChannelTool
+from aida.platform.channel.store import SqliteChannelStore
 from aida.platform.identity import Professional
 from aida.platform.license import License, LicenseState
 from aida.platform.web.shell import ShellContext
@@ -363,3 +374,326 @@ def test_get_cliente_inexistente_none(
     arm, ctx, _, _ = arm_contexto
     assert arm.get("contacto/99999", ctx) is None
     assert arm.get("contacto/invalido", ctx) is None
+
+
+def _crear_canal_prueba(tmp_path: Path, reloj: list[datetime]) -> Channel:
+    key = Fernet.generate_key()
+    store = SqliteChannelStore(tmp_path / "canal_test.sqlite", key, country="57")
+    config = ChannelConfig(
+        relay_url="http://relay.local",
+        phone_number_id="num-meta-1",
+        graph_url="https://graph.local",
+        poll_seconds=10,
+        country_code="57",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"messaging_product": "whatsapp", "messages": [{"id": "wamid.OUT_TEST"}]}
+        )
+
+    cliente = httpx.Client(transport=httpx.MockTransport(handler))
+    tool = ChannelTool(
+        store=store, config=config, token="tok-meta", http=cliente, now=lambda: reloj[0]
+    )
+    log = EventLog()
+    gate = ActionGate(actions=CHANNEL_ACTIONS, tool=tool, log=log, owner=OWNER, tick=lambda: 1)
+    poller = Poller(lambda: None, seconds=10)
+    lock = threading.Lock()
+    return Channel(
+        config=config,
+        store=store,
+        tool=tool,
+        gate=gate,
+        poller=poller,
+        log=log,
+        lock=lock,
+    )
+
+
+def test_get_conversaciones_con_estado_del_canal(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+    canal.store.add_inbound(
+        wamid="w.in1",
+        phone="573001112233",
+        name="Carlos",
+        kind="text",
+        text="Hola",
+        at=reloj[0],
+    )
+    ctx_canal = replace(ctx, channel=canal)
+    resp = arm.get("conversaciones", ctx_canal)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["running"] is True
+    assert data["poll_error"] == ""
+    assert len(data["conversations"]) == 1
+    c = data["conversations"][0]
+    assert c["phone"] == "573001112233"
+    assert c["name"] == "Carlos"
+    assert c["unread"] == 1
+    assert c["last_text"] == "Hola"
+    assert c["last_direction"] == "in"
+
+
+def test_get_conversacion_enlaza_ficha_sin_prefijo(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+
+    # Cliente registrado en agenda con número nacional (sin prefijo 57)
+    cliente = arm._store.add_client(name="Ana Ruiz", phone="3001112233")
+
+    # Mensaje en canal guardado con prefijo internacional
+    canal.store.add_inbound(
+        wamid="w.in1",
+        phone="573001112233",
+        name="Ana",
+        kind="text",
+        text="Hola",
+        at=reloj[0],
+    )
+
+    ctx_canal = replace(ctx, channel=canal)
+    resp = arm.get("conversacion/573001112233", ctx_canal)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["phone"] == "573001112233"
+    assert data["client_id"] == cliente.id
+    assert data["window_open"] is True
+
+
+def test_get_conversacion_hora_en_zona_local(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+
+    t_utc = datetime(2026, 10, 20, 15, 0, tzinfo=UTC)
+    canal.store.add_inbound(
+        wamid="w.in1",
+        phone="573001112233",
+        name="Ana",
+        kind="text",
+        text="Hola",
+        at=t_utc,
+    )
+
+    ctx_canal = replace(ctx, channel=canal)
+    resp = arm.get("conversacion/573001112233", ctx_canal)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    msg_at = data["messages"][0]["at"]
+    assert "-05:00" in msg_at
+    assert "+00:00" not in msg_at
+    assert msg_at == t_utc.astimezone(TZ).isoformat()
+
+
+def test_ficha_trae_conversation_phone(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, _, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+
+    # Cliente registrado en agenda con número nacional
+    cliente = arm._store.add_client(name="Beto", phone="3009998877")
+
+    # Inbound en canal
+    canal.store.add_inbound(
+        wamid="w.b1",
+        phone="573009998877",
+        name="Beto",
+        kind="text",
+        text="Mensaje Beto",
+        at=reloj[0],
+    )
+
+    # Con canal
+    ctx_canal = replace(ctx, channel=canal)
+    resp = arm.get(f"contacto/{cliente.id}", ctx_canal)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["conversation_phone"] == "573009998877"
+
+    # Sin canal
+    resp_sin = arm.get(f"contacto/{cliente.id}", ctx)
+    assert resp_sin is not None and resp_sin.status == 200
+    assert json.loads(resp_sin.body)["conversation_phone"] == ""
+
+
+def test_enviar_por_accion_audita_message_sent_con_texto_cifrado(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, audit, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+
+    # Abrir ventana de conversación
+    canal.store.add_inbound(
+        wamid="w.in1",
+        phone="573001112233",
+        name="Ana",
+        kind="text",
+        text="Hola",
+        at=reloj[0],
+    )
+
+    ctx_canal = replace(ctx, channel=canal)
+    post_body = json.dumps({
+        "action": "enviar",
+        "arguments": {"phone": "573001112233", "text": "TextoSuperSecreto123"},
+    }).encode()
+    resp = arm.post("accion", post_body, {}, ctx_canal)
+    assert resp is not None and resp.status == 200
+    data = json.loads(resp.body)
+    assert data["status"] == "done"
+
+    # Auditoría contiene message_sent firmado por ctx.professional
+    assert ctx.professional is not None
+    lineas = [x for x in audit.lines() if x["kind"] == "message_sent"]
+    assert len(lineas) == 1
+    assert lineas[0]["actor"] == ctx.professional.id
+    assert lineas[0]["owner"] == data["data"]["message"]
+
+    # Texto secreto cifrado aparte en disco (no aparece en crudo en audit.jsonl)
+    assert audit._chain._path is not None
+    crudo = audit._chain._path.read_bytes()
+    assert b"TextoSuperSecreto123" not in crudo
+
+
+def test_enviar_sin_canal_409(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    post_body = json.dumps({
+        "action": "enviar",
+        "arguments": {"phone": "573001112233", "text": "Hola"},
+    }).encode()
+    resp = arm.post("accion", post_body, {}, ctx)
+    assert resp is not None and resp.status == 409
+
+
+def test_marcar_leida_no_audita(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+) -> None:
+    arm, ctx, audit, reloj = arm_contexto
+    canal = _crear_canal_prueba(tmp_path, reloj)
+    canal.store.add_inbound(
+        wamid="w.in1",
+        phone="573001112233",
+        name="Ana",
+        kind="text",
+        text="Hola",
+        at=reloj[0],
+    )
+
+    ctx_canal = replace(ctx, channel=canal)
+    post_body = json.dumps({
+        "action": "marcar_leida",
+        "arguments": {"phone": "573001112233", "up_to": "1"},
+    }).encode()
+    resp = arm.post("accion", post_body, {}, ctx_canal)
+    assert resp is not None and resp.status == 200
+    assert json.loads(resp.body)["status"] == "done"
+
+    # Marcar leída no genera evento de auditoría
+    assert not any(x["kind"] == "marcar_leida" for x in audit.lines())
+    assert not any(x["kind"] == "message_sent" for x in audit.lines())
+
+
+def test_canal_token_guarda_solo_si_meta_acepta(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("AIDA_CONFIG_DIR", str(cfg_dir))
+
+    ch_yaml = cfg_dir / "channel.yaml"
+    ch_yaml.write_text(
+        yaml.dump({
+            "relay_url": "http://relay.local",
+            "phone_number_id": "123",
+            "graph_url": "https://graph.local",
+            "poll_seconds": 10,
+        }),
+        encoding="utf-8",
+    )
+
+    lic_wa = LicenseState(
+        status="valid",
+        license=License(
+            id="l1",
+            client="C",
+            arms=("agenda", "whatsapp"),
+            issued=date.today(),
+            expires=date.today() + timedelta(days=1),
+        ),
+    )
+    ctx_wa = replace(ctx, license=lic_wa)
+
+    # 1. Meta rechaza -> no guarda
+    monkeypatch.setattr(
+        "aida.arms.agenda.app.check_whatsapp_token", lambda tok, cfg: (False, "401")
+    )
+    r_bad = arm.post("canal-token", json.dumps({"token": "tok_malo"}).encode(), {}, ctx_wa)
+    assert r_bad is not None and r_bad.status == 200
+    d_bad = json.loads(r_bad.body)
+    assert d_bad["ok"] is False
+    assert d_bad["reason"] == "401"
+    assert whatsapp_token() != "tok_malo"
+
+    # 2. Meta acepta -> sí guarda
+    monkeypatch.setattr(
+        "aida.arms.agenda.app.check_whatsapp_token", lambda tok, cfg: (True, "200")
+    )
+    r_ok = arm.post("canal-token", json.dumps({"token": "tok_bueno"}).encode(), {}, ctx_wa)
+    assert r_ok is not None and r_ok.status == 200
+    d_ok = json.loads(r_ok.body)
+    assert d_ok["ok"] is True
+    assert d_ok["reason"] == "200"
+    assert whatsapp_token() == "tok_bueno"
+
+
+def test_pagina_sin_licencia_whatsapp_no_trae_pestanas(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    # ctx por defecto solo tiene arms=("agenda", "health")
+    assert not ctx.license.allows(LICENSE_ID)
+    pagina = arm.page(ctx)
+    assert 'id="tab-convo"' not in pagina
+    assert 'id="pane-convo"' not in pagina
+    assert "CONVERSATIONS_JS" not in pagina
+
+
+def test_pagina_con_licencia_trae_pestanas(
+    arm_contexto: tuple[AgendaArm, ShellContext, AuditLog, list[datetime]],
+) -> None:
+    arm, ctx, _, _ = arm_contexto
+    lic_wa = LicenseState(
+        status="valid",
+        license=License(
+            id="l1",
+            client="C",
+            arms=("agenda", "whatsapp"),
+            issued=date.today(),
+            expires=date.today() + timedelta(days=1),
+        ),
+    )
+    ctx_wa = replace(ctx, license=lic_wa)
+    pagina = arm.page(ctx_wa)
+    assert 'id="tab-convo"' in pagina
+    assert 'id="pane-convo"' in pagina
+    assert "cargarConversaciones" in pagina
