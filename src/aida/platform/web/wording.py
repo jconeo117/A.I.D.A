@@ -35,6 +35,12 @@ SHELL_KEYS = (
     "identity_bad_code", "recovery_alert", "forgot_link", "pin_title", "pin_lead",
     "recover_code_label", "recover_button", "recover_done", "reset_title", "reset_button",
     "reset_done", "code_button",
+    "snapshot_title", "snapshot_text", "snapshot_pass", "snapshot_pass2", "snapshot_create",
+    "snapshot_created", "snapshot_restore_title", "snapshot_restore_text", "snapshot_file",
+    "snapshot_restore_pass", "snapshot_restore", "snapshot_confirm", "snapshot_restored",
+    "snapshot_nofile", "snapshot_first_link", "snapshot_error_weak", "snapshot_error_mismatch",
+    "snapshot_error_empty", "snapshot_error_too_large", "snapshot_error_bad_file",
+    "snapshot_error_bad_passphrase", "snapshot_error_unsafe_path", "snapshot_confirm_needed",
 )
 """Las claves que el armazón pinta. Ninguna de ellas puede estar en `app` de salud."""
 

@@ -80,6 +80,7 @@ from aida.platform.sealed import (
     seal_bytes,
 )
 from aida.platform.web.pages import (
+    JS_SNAPSHOT,
     JS_TO_SETTINGS,
     identity_script,
     license_block,
@@ -89,6 +90,7 @@ from aida.platform.web.pages import (
     profiles_block,
     readonly_page,
     settings_frame,
+    snapshot_block,
     user_chip,
 )
 from aida.platform.web.shell import Response, ShellContext, json_response, run_shell
@@ -1272,7 +1274,7 @@ def _settings_script(w: AppWording, token: str, tools: AppTools) -> str:
     textos = json.dumps({c: w[c] for c in claves}, ensure_ascii=False)
     return (
         f"const TOKEN = {json.dumps(token)};\nconst W = {textos};\n{_JS_SETTINGS}"
-        f"\n{_JS_LOCAL_ONLY}"
+        f"\n{_JS_LOCAL_ONLY}\n{JS_SNAPSHOT}"
     )
 
 
@@ -2009,6 +2011,7 @@ def _settings_cards(
         </div>
         {profiles_block(w, profiles)}
         {license_block(w, license)}
+        {snapshot_block(w, create=True)}
         <div class="setting">
           <div class="setting-head"><svg><use href="#i-key"/></svg><h3>{e(w["cipher_title"])}</h3>
             <span class="status ok">{e(w["cipher_ok"])}</span></div>

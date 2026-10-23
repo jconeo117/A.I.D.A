@@ -10,6 +10,7 @@ de ellas.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import html
 import json
@@ -24,10 +25,18 @@ from pathlib import Path
 from secrets import token_urlsafe
 from typing import Any, Protocol
 
+from aida import __version__
 from aida.platform.audit import AuditLog
 from aida.platform.channel import Channel
 from aida.platform.identity import IdentityError, Professional, ProfileStore
 from aida.platform.license import LicenseState, read_license
+from aida.platform.snapshot import (
+    SnapshotError,
+    clear_pending,
+    create_snapshot,
+    pending_restore,
+    restore_snapshot,
+)
 from aida.platform.web.pages import (
     first_profile_page,
     launcher_page,
@@ -36,9 +45,18 @@ from aida.platform.web.pages import (
     who_page,
 )
 from aida.platform.web.wording import Textos
+from aida.resources import user_dir
 
 _MAX_BYTES = 512 * 1024 * 1024
-_IDENTIDAD = ("perfil", "entrar", "desbloquear", "cambiar", "salir", "recuperar-pin")
+_IDENTIDAD = (
+    "perfil",
+    "entrar",
+    "desbloquear",
+    "cambiar",
+    "salir",
+    "recuperar-pin",
+    "copia-restaurar",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +150,13 @@ def run_shell(
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = datetime.now,
     today: Callable[[], date] = date.today,
+    config_dir: Path | None = None,
 ) -> None:
     """Levanta el armazón y bloquea hasta que alguien pulsa «Salir» (o Ctrl-C). Con un solo brazo
     entra directamente en él; con varios, primero el lanzador (101b). `presentacion` da, por id de
     brazo, su descripción y su símbolo: lo que dice su manifiesto."""
     presentacion = presentacion or {}
+    carpeta_config = config_dir if config_dir is not None else user_dir("config")
     if not arms:
         raise ValueError("el armazón necesita al menos un brazo")
     por_id: dict[str, ArmApp] = {}
@@ -203,6 +223,10 @@ def run_shell(
         return actual is not None and actual.at_rest()
 
     def tras_identificarse() -> None:
+        pendiente = pending_restore(carpeta_config)
+        if pendiente is not None and sesion.professional is not None:
+            audit.record("snapshot_restored", actor=sesion.professional, data=pendiente)
+            clear_pending(carpeta_config)
         sesion.last_activity = clock()
         if unico:
             sesion.current = arms[0].id
@@ -316,6 +340,9 @@ def run_shell(
             if not permitido:
                 self._json(401, {"error": ""})
                 return
+            if accion == "copia-crear":
+                self._copia_crear()
+                return
             if accion == "licencia":
                 self._license()
                 return
@@ -382,6 +409,9 @@ def run_shell(
         def _identity(self, accion: str) -> None:
             """Entrar, crear un perfil, desbloquear, cambiar de profesional y salir: lo único que se
             atiende sin estar identificado."""
+            if accion == "copia-restaurar":
+                self._copia_restaurar()
+                return
             if accion == "recuperar-pin":
                 self._recuperar()
                 return
@@ -575,6 +605,63 @@ def run_shell(
                     },
                 )
             self._json(200, {"ok": True})
+
+        def _copia_crear(self) -> None:
+            """Guardar la copia: la firma quien la pide. La respuesta es el archivo; el nombre lo
+            pone el navegador."""
+            try:
+                pedido = json.loads(self._body() or b"{}")
+                frase = str(pedido["passphrase"])
+                repetida = str(pedido["passphrase2"])
+            except (ValueError, KeyError, TypeError):
+                self._json(400, {"error": wording["snapshot_error_bad_file"]})
+                return
+            if frase != repetida:
+                self._json(400, {"error": wording["snapshot_error_mismatch"]})
+                return
+            try:
+                copia = create_snapshot(carpeta_config, frase, now=now(), version=__version__)
+            except SnapshotError as exc:
+                self._json(400, {"error": wording[f"snapshot_error_{exc.reason}"]})
+                return
+            with lock:
+                audit.record("snapshot_created", actor=actor(), data={"files": str(copia.files)})
+            self._send(200, copia.data, "application/octet-stream")
+
+        def _copia_restaurar(self) -> None:
+            """Restaurar: sin estar identificado **solo** si aún no hay perfiles (la primera
+            pantalla de un equipo nuevo). Con perfiles, hace falta entrar, que nada esté a
+            medias y marcar la confirmación. Al terminar, AIDA se cierra (decisión 7)."""
+            with lock:
+                hay_perfiles = bool(profiles.professionals())
+                dentro = identificado()
+                if hay_perfiles and not dentro:
+                    self._json(401, {"error": ""})
+                    return
+                if dentro and not all(b.at_rest() for b in arms):
+                    self._json(409, {"error": ""})
+                    return
+            try:
+                pedido = json.loads(self._body() or b"{}")
+                datos = base64.b64decode(str(pedido["file"]), validate=True)
+                frase = str(pedido["passphrase"])
+                confirmado = pedido.get("confirm") is True
+            except (ValueError, KeyError, TypeError):
+                self._json(400, {"error": wording["snapshot_error_bad_file"]})
+                return
+            if hay_perfiles and not confirmado:
+                self._json(400, {"error": wording["snapshot_confirm_needed"]})
+                return
+            try:
+                restore_snapshot(carpeta_config, datos, frase, now=now())
+            except SnapshotError as exc:
+                self._json(400, {"error": wording[f"snapshot_error_{exc.reason}"]})
+                return
+            with lock:
+                todos(lambda b: b.reset())
+                sesion.state = "closed"
+            self._json(200, {"ok": True})
+            threading.Thread(target=http_server.shutdown, daemon=True).start()
 
     http_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     url = f"http://127.0.0.1:{http_server.server_port}/{token}"

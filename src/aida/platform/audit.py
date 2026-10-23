@@ -47,6 +47,8 @@ KINDS = (
     "pin_recovered",
     "pin_reset",
     "recovery_code_created",
+    "snapshot_created",
+    "snapshot_restored",
 )
 
 

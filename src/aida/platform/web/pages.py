@@ -207,6 +207,9 @@ def first_profile_page(w: Textos, brand: str, token: str, moment: datetime) -> s
       </div>
       <p class="hint">{e(w["first_hint"])}</p>
       <p class="pin-error" id="np-error" hidden></p>
+      <details class="first-snapshot"><summary>{e(w["snapshot_first_link"])}</summary>
+        {snapshot_block(w, create=False)}
+      </details>
     </div>
   </div>
   <footer class="bar">
@@ -220,7 +223,7 @@ def first_profile_page(w: Textos, brand: str, token: str, moment: datetime) -> s
     script = (
         f"const TOKEN = {json.dumps(token)};\n"
         f"const W = {json.dumps(_textos_primer_perfil(w), ensure_ascii=False)};\n"
-        f"{_JS_NEW_PROFILE}"
+        f"{_JS_NEW_PROFILE}{JS_SNAPSHOT}"
     )
     return page_frame(
         brand=brand,
@@ -494,6 +497,58 @@ def license_block(w: Textos, license: LicenseState | None) -> str:
         </div>"""
 
 
+def snapshot_block(w: Textos, *, create: bool) -> str:
+    """La tarjeta de la copia. En la primera pantalla, solo restaurar: no hay nada que copiar y
+    nadie identificado. En Ajustes, las dos cosas, y restaurar pide confirmación. Los textos que
+    usa el JavaScript van en `data-*`: la tarjeta se monta en pantallas con textos distintos."""
+    e = html.escape
+    guardar = (
+        f"""<p>{e(w["snapshot_text"])}</p>
+          <div class="fields-2">
+            <div><label class="label" for="snapshot-pass">{e(w["snapshot_pass"])}</label>
+              <input class="input" id="snapshot-pass" type="password"
+                autocomplete="new-password"></div>
+            <div><label class="label" for="snapshot-pass2">{e(w["snapshot_pass2"])}</label>
+              <input class="input" id="snapshot-pass2" type="password"
+                autocomplete="new-password"></div>
+          </div>
+          <div class="key-row"><button type="button" class="btn btn-primary" id="snapshot-create">
+            {e(w["snapshot_create"])}</button></div>"""
+        if create
+        else ""
+    )
+    confirmar = (
+        f"""<label class="hint"><input type="checkbox" id="snapshot-confirm">
+            {e(w["snapshot_confirm"])}</label>"""
+        if create
+        else ""
+    )
+    return f"""<div class="setting" id="snapshot-card"
+          data-created="{e(w["snapshot_created"])}" data-restored="{e(w["snapshot_restored"])}"
+          data-nofile="{e(w["snapshot_nofile"])}">
+          <div class="setting-head"><svg><use href="#i-key"/></svg>
+            <h3>{e(w["snapshot_title"])}</h3></div>
+          {guardar}
+          <h4>{e(w["snapshot_restore_title"])}</h4>
+          <p>{e(w["snapshot_restore_text"])}</p>
+          <div class="fields-2">
+            <div><label class="label" for="snapshot-file">{e(w["snapshot_file"])}</label>
+              <input class="input" id="snapshot-file" type="file" accept=".aidacopia"></div>
+            <div><label class="label" for="snapshot-restore-pass">{e(w["snapshot_restore_pass"])}
+              </label>
+              <input class="input" id="snapshot-restore-pass" type="password"
+                autocomplete="off"></div>
+          </div>
+          {confirmar}
+          <div class="key-row"><button type="button" class="btn" id="snapshot-restore">
+            {e(w["snapshot_restore"])}</button></div>
+          <div class="result ok" id="snapshot-ok" hidden><svg><use href="#i-check"/></svg>
+            <span></span></div>
+          <div class="result fail" id="snapshot-fail" hidden><svg><use href="#i-alert"/></svg>
+            <span></span></div>
+        </div>"""
+
+
 def license_page(
     w: Textos,
     brand: str,
@@ -601,6 +656,65 @@ if (licenseFile) {
     box.hidden = false;
   });
 }
+"""
+
+
+JS_SNAPSHOT = """
+// Copia de la configuración (78d). Los textos van en data-* de la tarjeta.
+(function () {
+  const card = document.getElementById('snapshot-card');
+  if (!card) { return; }
+  const say = (id, text) => {
+    const n = document.getElementById(id);
+    n.querySelector('span').textContent = text;
+    n.hidden = false;
+  };
+  const hide = () => {
+    document.getElementById('snapshot-ok').hidden = true;
+    document.getElementById('snapshot-fail').hidden = true;
+  };
+  const create = document.getElementById('snapshot-create');
+  if (create) {
+    create.addEventListener('click', async () => {
+      hide();
+      const r = await fetch('/' + TOKEN + '/copia-crear', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          passphrase: document.getElementById('snapshot-pass').value,
+          passphrase2: document.getElementById('snapshot-pass2').value,
+        }),
+      });
+      if (!r.ok) { say('snapshot-fail', (await r.json()).error); return; }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'aida-copia-' + new Date().toISOString().slice(0, 10) + '.aidacopia';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      say('snapshot-ok', card.dataset.created);
+    });
+  }
+  document.getElementById('snapshot-restore').addEventListener('click', async () => {
+    hide();
+    const file = document.getElementById('snapshot-file').files[0];
+    if (!file) { say('snapshot-fail', card.dataset.nofile); return; }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (const b of bytes) { bin += String.fromCharCode(b); }
+    const confirm = document.getElementById('snapshot-confirm');
+    const r = await fetch('/' + TOKEN + '/copia-restaurar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file: btoa(bin),
+        passphrase: document.getElementById('snapshot-restore-pass').value,
+        confirm: confirm ? confirm.checked : false,
+      }),
+    });
+    if (!r.ok) { say('snapshot-fail', (await r.json()).error); return; }
+    document.body.textContent = card.dataset.restored;
+  });
+})();
 """
 
 
