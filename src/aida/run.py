@@ -352,29 +352,45 @@ def _channel_setup() -> int:
 def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int:
     """`--app`: la plataforma abre todos los brazos que la licencia da. Si ninguno, el primero
     instalado, para que se pueda cargar una licencia. Un armazón y un solo candado para todos
-    (101b): el lanzador aparece solo cuando hay más de uno."""
+    (101b): el lanzador aparece solo cuando hay más de uno. Una sola copia por usuario
+    (78b): si ya hay otra, se abre su sesión y se termina."""
     import threading
+    import webbrowser
 
     from aida.platform.arms import discover
     from aida.platform.channel import open_channel
+    from aida.platform.instance import acquire, running_url
     from aida.platform.license import load_license
     from aida.platform.web.shell import run_shell
     from aida.platform.web.wording import load_shell_wording
 
+    navegador = open_browser if open_browser is not None else webbrowser.open
     estado = load_license(_license_path())
     brazos = discover()
     if not brazos:
         print("aida: error: no hay ningún brazo instalado", file=sys.stderr)
         return 1
-    licenciados = [b for b in brazos if estado.licensed(b.id)]
-    elegidos = licenciados or brazos[:1]
-    candado = threading.Lock()
-    armas = [manifiesto.entry()(args, estado, manifiesto, candado) for manifiesto in elegidos]
-    textos = load_shell_wording()
-    canal = open_channel(estado)
-    if canal is not None:
-        canal.poller.start()
+    instancia = acquire(user_dir("data"))
+    if instancia is None:
+        viva = running_url(user_dir("data"))
+        if viva is not None:
+            navegador(viva)
+        return 0
+
+    def abrir(url: str) -> None:
+        instancia.record(url)
+        navegador(url)
+
+    canal = None
     try:
+        licenciados = [b for b in brazos if estado.licensed(b.id)]
+        elegidos = licenciados or brazos[:1]
+        candado = threading.Lock()
+        armas = [manifiesto.entry()(args, estado, manifiesto, candado) for manifiesto in elegidos]
+        textos = load_shell_wording()
+        canal = open_channel(estado)
+        if canal is not None:
+            canal.poller.start()
         run_shell(
             armas,
             brand=textos["brand"],
@@ -385,12 +401,13 @@ def _open_platform(args: argparse.Namespace, *, open_browser: Any = None) -> int
             license_path=_license_path(),
             lock=candado,
             presentacion={b.id: (b.description, b.icon) for b in elegidos},
-            open_browser=open_browser,
+            open_browser=abrir,
             channel=canal,
         )
     finally:
         if canal is not None:
             canal.poller.stop()
+        instancia.release()
     return 0
 
 
@@ -1130,7 +1147,19 @@ def _converse_by_voice(args: argparse.Namespace, session: Session) -> int:
         return 0
 
 
+def _quiet_streams() -> None:
+    """Sin consola (`AIDA.exe`, plan 78b), `sys.stdout` y `sys.stderr` son `None`: `print`
+    lo tolera, pero la barra de progreso de la descarga del modelo y otras librerías
+    escriben en ellos y revientan. A `devnull` y no a un archivo: lo que se escribe
+    ahí puede llevar texto de la consulta, y en reposo nada va en claro (85a)."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _quiet_streams()
     parser = _construir_parser()
     entrada = sys.argv[1:] if argv is None else list(argv)
     # Empaquetada (plan 78b), AIDA se abre con un icono y sin argumentos: eso es la

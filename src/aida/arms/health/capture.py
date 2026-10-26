@@ -341,13 +341,25 @@ def build_local_capture(
     )
 
 
+def _bundled_tesseract() -> Path | None:
+    """El Tesseract que el instalador deja junto a los datos (plan 78b). Se busca bajo
+    `data_root()` y no en `sys._MEIPASS`: una sola puerta para saber dónde están los
+    datos. Si no está, `None`, y se usa el del `PATH` como siempre."""
+    import sys
+
+    nombre = "tesseract.exe" if sys.platform == "win32" else "tesseract"
+    ruta = data_root() / "tesseract" / nombre
+    return ruta if ruta.is_file() else None
+
+
 def build_document_reader() -> LocalTesseractOCR:
     """El lector de documentos, separado del modelo de transcripción: AIDA puede
     arrancar sin modelo local, solo con la nube (plan 78), pero sin leer la historia
     no hay códigos que ya constaban.
 
-    `AIDA_TESSERACT` apunta al ejecutable cuando no está en el PATH: en Windows el
-    instalador lo deja en su propia carpeta (plan 78b)."""
+    `AIDA_TESSERACT` manda si se declara. Si no, el Tesseract incluido, con **su**
+    `tessdata`: si el equipo tiene otro Tesseract con `TESSDATA_PREFIX` apuntando a sus
+    idiomas, el incluido leería los de aquel (plan 78b)."""
     import os
 
     import pytesseract
@@ -355,6 +367,11 @@ def build_document_reader() -> LocalTesseractOCR:
     ruta = os.environ.get("AIDA_TESSERACT")
     if ruta:
         pytesseract.pytesseract.tesseract_cmd = ruta
+    else:
+        incluido = _bundled_tesseract()
+        if incluido is not None:
+            pytesseract.pytesseract.tesseract_cmd = str(incluido)
+            os.environ["TESSDATA_PREFIX"] = str(incluido.parent / "tessdata")
     return LocalTesseractOCR(pytesseract)
 
 
@@ -434,12 +451,16 @@ def capture_diagnosis(
     La aplicación pide `need_microphone=False` —graba con el navegador, no con
     `sounddevice`— y `need_model=False`: el modelo local se comprueba aparte, porque
     sin él se puede trabajar con la nube (plan 78)."""
-    import importlib.util
+    import importlib
 
     lineas: list[tuple[str, bool]] = []
-    modulos = ("faster_whisper", "sounddevice", "pytesseract")
-    for nombre in modulos if need_microphone else ("faster_whisper", "pytesseract"):
-        lineas.append((f"módulo {nombre}", importlib.util.find_spec(nombre) is not None))
+    modulos = ("faster_whisper", "onnxruntime", "av", "pypdfium2", "sounddevice", "pytesseract")
+    for nombre in modulos if need_microphone else tuple(m for m in modulos if m != "sounddevice"):
+        try:
+            importlib.import_module(nombre)
+            lineas.append((f"módulo {nombre}", True))
+        except Exception as exc:
+            lineas.append((f"módulo {nombre}: {exc}", False))
 
     try:
         ajustes = load_capture_settings()

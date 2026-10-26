@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
+from aida import __version__
 from aida.platform.identity import Professional
 from aida.platform.license import LicenseState
 from aida.platform.web.assets import (
@@ -818,6 +819,7 @@ def settings_frame(
   <footer class="bar">
     <button type="button" class="btn btn-quiet" id="back">
       <svg><use href="#i-back"/></svg>{e(w["back_label"])}</button>
+    <span class="stat">{e(brand)} {e(__version__)}</span>
   </footer>
 </section>"""
     return page_frame(

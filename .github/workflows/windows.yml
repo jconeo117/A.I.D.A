@@ -1,0 +1,107 @@
+# Construye el instalador de Windows (plan 78b). Solo al etiquetar una versión o a mano: los
+# minutos de Windows cuentan doble en un repositorio privado.
+name: windows
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  UV_PYTHON: "3.12"
+
+jobs:
+  instalador:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Versión coherente
+        shell: pwsh
+        run: |
+          $v = uv run --no-project python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $i = (Select-String -Path src/aida/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          if ($v -ne $i) { throw "pyproject $v y __init__ $i no coinciden" }
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$v") { throw "la etiqueta ${{ github.ref_name }} no es v$v" }
+          "AIDA_VERSION=$v" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Tesseract con español
+        shell: pwsh
+        run: |
+          choco install tesseract --version 5.5.3.20260724 -y --no-progress
+          $dst = "build\tesseract"
+          Copy-Item "C:\Program Files\Tesseract-OCR" $dst -Recurse
+          Remove-Item "$dst\tesseract-uninstall.exe" -ErrorAction SilentlyContinue
+          Invoke-WebRequest https://github.com/tesseract-ocr/tessdata/raw/4.1.0/spa.traineddata -OutFile "$dst\tessdata\spa.traineddata"
+          $h = (Get-FileHash "$dst\tessdata\spa.traineddata" -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "0b0fcbb4665189e01ab8019e591f014dd7260460de072543edd4b2cb4ede7c96") { throw "spa.traineddata no es el esperado: $h" }
+          "AIDA_TESSERACT_DIR=$((Resolve-Path $dst).Path)" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Ejecutable
+        shell: pwsh
+        run: |
+          uv sync --locked --no-dev --group build --extra capture
+          uv run --no-sync pyinstaller --noconfirm --distpath dist --workpath build\pyi packaging\aida.spec
+
+      - name: Prueba de arranque
+        shell: pwsh
+        run: |
+          $cli = "dist\AIDA\aida-cli.exe"
+          $out = & $cli --version
+          if ($out -ne "aida $env:AIDA_VERSION") { throw "versión: $out" }
+          $diag = (& $cli --check-capture) -join "`n"
+          $diag
+          foreach ($m in "faster_whisper","onnxruntime","av","pypdfium2","sounddevice","pytesseract") {
+            if ($diag -cnotmatch "(?m)^ok\s+m.{1,2}dulo $m$") { throw "falta el módulo $m" }
+          }
+          if ($diag -cnotmatch "(?m)^ok\s+tesseract 5\.\S+, espa.{1,2}ol$") { throw "Tesseract sin español" }
+          $url_file = Join-Path $env:LOCALAPPDATA "AIDA\aida.url"
+          $p = Start-Process $cli -ArgumentList "--app" -PassThru
+          $url = $null
+          foreach ($i in 1..90) { if (Test-Path $url_file) { $url = (Get-Content $url_file -Raw).Trim(); break }; Start-Sleep 1 }
+          if (-not $url) { Stop-Process $p -Force; throw "--app no escribió aida.url" }
+          $r = Invoke-WebRequest -UseBasicParsing $url
+          if ($r.StatusCode -ne 200 -or $r.Content -notmatch "Su perfil") { throw "la página de inicio no cargó" }
+          $q = Start-Process $cli -ArgumentList "--app" -PassThru
+          if (-not $q.WaitForExit(30000)) { throw "la segunda copia no terminó" }
+          if ($q.ExitCode -ne 0) { throw "la segunda copia salió con $($q.ExitCode)" }
+          if ($p.HasExited) { throw "la primera copia murió" }
+          Stop-Process $p -Force
+
+      - name: Instalador
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$env:AIDA_VERSION" packaging\aida.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falló" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIDA-Setup-${{ env.AIDA_VERSION }}
+          path: dist/AIDA-Setup-*.exe
+
+      - name: Versión publicada
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" (Get-Item dist\AIDA-Setup-*.exe).FullName --title "AIDA $env:AIDA_VERSION" --notes "Instalador de Windows. Ver packaging/GUIA-CLIENTE.md."
+
+  bateria:
+    runs-on: windows-2022
+    continue-on-error: true   # decisión 3: la primera vez informa, no bloquea
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - shell: pwsh
+        run: |
+          uv sync --locked --extra capture
+          uv run pytest -q --junitxml=bateria-windows.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bateria-windows
+          path: bateria-windows.xml
