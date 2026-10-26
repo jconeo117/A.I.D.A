@@ -53,6 +53,9 @@ jobs:
           if ($out -ne "aida $env:AIDA_VERSION") { throw "versión: $out" }
           $diag = (& $cli --check-capture) -join "`n"
           $diag
+          # --check-capture devuelve 1 porque aquí no hay modelo ni micrófono, que no se exigen;
+          # sin esto, el `exit $LASTEXITCODE` que GitHub añade al final tumba el paso (78b-fix).
+          $global:LASTEXITCODE = 0
           foreach ($m in "faster_whisper","onnxruntime","av","pypdfium2","sounddevice","pytesseract") {
             if ($diag -cnotmatch "(?m)^ok\s+m.{1,2}dulo $m$") { throw "falta el módulo $m" }
           }
@@ -69,6 +72,7 @@ jobs:
           if ($q.ExitCode -ne 0) { throw "la segunda copia salió con $($q.ExitCode)" }
           if ($p.HasExited) { throw "la primera copia murió" }
           Stop-Process $p -Force
+          "prueba de arranque: ok"
 
       - name: Instalador
         shell: pwsh
@@ -92,7 +96,6 @@ jobs:
 
   bateria:
     runs-on: windows-2022
-    continue-on-error: true   # decisión 3: la primera vez informa, no bloquea
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
