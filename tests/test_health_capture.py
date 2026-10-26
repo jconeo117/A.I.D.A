@@ -20,6 +20,7 @@ Cubre §B.1 a §B.3 de `.claude/workflow/56-plan-captura-robusta.md`:
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -765,6 +766,9 @@ def test_capture_diagnosis_todo_presente(monkeypatch: pytest.MonkeyPatch) -> Non
 
     whisper_mod = _modulo_doble("faster_whisper", WhisperModel=MockWhisperModel)
     monkeypatch.setitem(sys.modules, "faster_whisper", whisper_mod)
+    monkeypatch.setitem(sys.modules, "onnxruntime", _modulo_doble("onnxruntime"))
+    monkeypatch.setitem(sys.modules, "av", _modulo_doble("av"))
+    monkeypatch.setitem(sys.modules, "pypdfium2", _modulo_doble("pypdfium2"))
 
     tess_mod = _modulo_doble(
         "pytesseract",
@@ -779,7 +783,7 @@ def test_capture_diagnosis_todo_presente(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
 
     diagnosis = capture_diagnosis()
-    assert len(diagnosis) >= 6
+    assert len(diagnosis) >= 9
     assert all(correcto for _texto, correcto in diagnosis)
 
 
@@ -793,6 +797,9 @@ def test_capture_diagnosis_modelo_falla_solo_esa_linea_en_false(
 
     whisper_mod = _modulo_doble("faster_whisper", WhisperModel=FailingWhisperModel)
     monkeypatch.setitem(sys.modules, "faster_whisper", whisper_mod)
+    monkeypatch.setitem(sys.modules, "onnxruntime", _modulo_doble("onnxruntime"))
+    monkeypatch.setitem(sys.modules, "av", _modulo_doble("av"))
+    monkeypatch.setitem(sys.modules, "pypdfium2", _modulo_doble("pypdfium2"))
 
     tess_mod = _modulo_doble(
         "pytesseract",
@@ -807,12 +814,12 @@ def test_capture_diagnosis_modelo_falla_solo_esa_linea_en_false(
     monkeypatch.setitem(sys.modules, "sounddevice", sd_mod)
 
     diagnosis = capture_diagnosis()
-    assert len(diagnosis) == 6
+    assert len(diagnosis) == 9
     falsos = [texto for texto, correcto in diagnosis if not correcto]
     assert len(falsos) == 1
     assert "modelo small en cpu: no se pudo cargar 'small' en 'cpu'" in falsos[0]
     ciertos = [texto for texto, correcto in diagnosis if correcto]
-    assert len(ciertos) == 5
+    assert len(ciertos) == 8
     assert any("tesseract" in t for t in ciertos)
     assert any("entrada de audio" in t for t in ciertos)
 
@@ -981,3 +988,91 @@ def test_load_capture_settings_lee_model_download_mb_y_cero_si_falta(
     )
     s = load_capture_settings(yaml_path)
     assert s.model_download_mb == 0
+
+
+def test_build_document_reader_bundled_tesseract_y_precedencia(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """T7 (§B): Con data_root()/tesseract/tesseract(.exe) creado en el AIDA_DATA_DIR
+    del test y sin AIDA_TESSERACT, tesseract_cmd es esa ruta y TESSDATA_PREFIX es su
+    tessdata; con AIDA_TESSERACT, manda la variable."""
+    pytest.importorskip("pytesseract", reason="requiere pytesseract (extra capture)")
+    import pytesseract
+
+    cmd_original = pytesseract.pytesseract.tesseract_cmd
+    monkeypatch.setenv("TESSDATA_PREFIX", "previo")
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("AIDA_DATA_DIR", str(data_dir))
+    tess_dir = data_dir / "tesseract"
+    tess_dir.mkdir(parents=True)
+    nombre = "tesseract.exe" if sys.platform == "win32" else "tesseract"
+    ejecutable = tess_dir / nombre
+    ejecutable.write_text("#!/bin/sh\n", encoding="utf-8")
+    tessdata_esperado = str(tess_dir / "tessdata")
+
+    try:
+        # 1. Sin AIDA_TESSERACT: usa el bundled tesseract y fija TESSDATA_PREFIX
+        monkeypatch.delenv("AIDA_TESSERACT", raising=False)
+        reader = build_document_reader()
+        assert reader is not None
+        assert pytesseract.pytesseract.tesseract_cmd == str(ejecutable)
+        assert os.environ.get("TESSDATA_PREFIX") == tessdata_esperado
+
+        # 2. Con AIDA_TESSERACT: manda la variable sobre el bundled
+        ruta_custom = "/opt/custom/bin/tesseract"
+        monkeypatch.setenv("AIDA_TESSERACT", ruta_custom)
+        monkeypatch.setenv("TESSDATA_PREFIX", "otro_prefix")
+        build_document_reader()
+        assert pytesseract.pytesseract.tesseract_cmd == ruta_custom
+        assert os.environ.get("TESSDATA_PREFIX") == "otro_prefix"
+    finally:
+        pytesseract.pytesseract.tesseract_cmd = cmd_original
+
+
+def test_capture_diagnosis_modulo_av_falla_con_error_de_importacion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """T8 (§B): Un av/__init__.py que lanza ImportError("DLL load failed") en tmp_path,
+    puesto al frente de sys.path y sin av en sys.modules: la línea de av sale False y su
+    texto lleva el error."""
+    av_pkg = tmp_path / "av"
+    av_pkg.mkdir()
+    (av_pkg / "__init__.py").write_text("raise ImportError('DLL load failed')\n", encoding="utf-8")
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "av", raising=False)
+
+    class MockWhisperModel:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        _modulo_doble("faster_whisper", WhisperModel=MockWhisperModel),
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", _modulo_doble("onnxruntime"))
+    monkeypatch.setitem(sys.modules, "pypdfium2", _modulo_doble("pypdfium2"))
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        _modulo_doble("sounddevice", query_devices=lambda kind: {"name": "mic"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pytesseract",
+        _modulo_doble(
+            "pytesseract",
+            get_tesseract_version=lambda: "5.3",
+            get_languages=lambda: ["spa"],
+        ),
+    )
+
+    diagnosis = capture_diagnosis()
+    lineas_av = [linea for linea in diagnosis if "módulo av" in linea[0]]
+    assert len(lineas_av) == 1, "No se encontró la línea del módulo av"
+    texto_av, ok_av = lineas_av[0]
+    assert ok_av is False
+    assert "DLL load failed" in texto_av
+

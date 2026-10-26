@@ -4836,3 +4836,37 @@ def test_run_caches_y_launch_health_leen_retencion(
     assert len(llamadas_build) == 1
     assert llamadas_build[0]["retention_days"] == 999
     assert llamadas_build[0]["interrupted_hours"] == 72
+
+
+def test_quiet_streams_redirige_si_son_none_y_conserva_existentes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T9 (§B): Con sys.stdout y sys.stderr a None, _quiet_streams() los deja escribibles;
+    si no son None, conserva los mismos objetos."""
+    from aida.run import _quiet_streams
+
+    # 1. Cuando son None: los redirige a devnull (escribibles)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    _quiet_streams()
+
+    assert sys.stdout is not None
+    assert sys.stderr is not None
+    assert sys.stdout.writable()
+    assert sys.stderr.writable()
+
+    sys.stdout.write("prueba stdout")
+    sys.stderr.write("prueba stderr")
+
+    # 2. Cuando NO son None: conserva los mismos objetos intactos
+    dummy_out = io.StringIO()
+    dummy_err = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", dummy_out)
+    monkeypatch.setattr(sys, "stderr", dummy_err)
+
+    _quiet_streams()
+
+    assert sys.stdout is dummy_out
+    assert sys.stderr is dummy_err
+

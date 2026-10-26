@@ -505,6 +505,39 @@ def test_ajustes_marco_plataforma_y_tarjetas_del_brazo() -> None:
     assert wording["back_label"] in html  # Volver al inicio
 
 
+def test_settings_frame_contiene_brand_y_version() -> None:
+    """T10 (§B): settings_frame(...) contiene brand y __version__."""
+    from aida import __version__
+
+    wording = load_shell_wording()
+    prof = Professional(id="p1", name="Dra. Laura Gómez", registry="52.341.889")
+    lic = LicenseState(
+        status="valid",
+        license=License(
+            id="lic-1",
+            client="Centro Aurora",
+            arms=("dummy",),
+            issued=date.today(),
+            expires=date.today() + timedelta(days=30),
+        ),
+        days_left=30,
+    )
+    brand = "AIDA Test Brand"
+    html = settings_frame(
+        wording,
+        brand,
+        "tok-prueba",
+        datetime.now(),
+        cards="<div>cards</div>",
+        script="",
+        professional=prof,
+        license=lic,
+    )
+
+    esperado = f'<span class="stat">{brand} {__version__}</span>'
+    assert esperado in html
+
+
 # ---------------------------------------------------------------------------
 # B.2 §7 — Textos
 # ---------------------------------------------------------------------------
