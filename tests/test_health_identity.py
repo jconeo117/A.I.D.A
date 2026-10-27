@@ -34,6 +34,7 @@ import hashlib
 import io
 import json
 import stat
+import sys
 import threading
 import time
 import wave
@@ -391,7 +392,7 @@ def test_profile_store_create_guarda_0600_sin_pin_en_claro_y_valida_campos(tmp_p
 
     # Permisos 0o600
     assert archivo.is_file()
-    assert stat.S_IMODE(archivo.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(archivo.stat().st_mode) == 0o600
 
     # Sin PIN en claro en el archivo
     contenido = archivo.read_text(encoding="utf-8")

@@ -10,6 +10,7 @@ Cubre:
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def test_seal_bytes_open_bytes_cifrado_y_permisos(tmp_path: Path) -> None:
     seal_bytes(archivo_sellado, datos, clave)
 
     assert archivo_sellado.is_file()
-    assert (archivo_sellado.stat().st_mode & 0o777) == 0o600
+    assert sys.platform == "win32" or (archivo_sellado.stat().st_mode & 0o777) == 0o600
     contenido_disco = archivo_sellado.read_bytes()
     assert marca_secreta not in contenido_disco
     assert b"RIFF" not in contenido_disco
@@ -106,7 +107,7 @@ def test_plain_copy_y_purge_leftovers(tmp_path: Path) -> None:
     with plain_copy(sellado, clave) as claro:
         assert claro.is_file()
         assert claro.name == "historia.pdf"
-        assert (claro.stat().st_mode & 0o777) == 0o600
+        assert sys.platform == "win32" or (claro.stat().st_mode & 0o777) == 0o600
         assert claro.read_bytes() == datos
         carpeta_guardada = claro.parent
         assert carpeta_guardada.name.startswith(PLAIN_PREFIX)

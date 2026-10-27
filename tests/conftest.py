@@ -43,6 +43,10 @@ def _sin_claves_del_equipo(
     (data_dir / "data").symlink_to(repo_root / "data")
     monkeypatch.setenv("AIDA_CONFIG_DIR", str(tmp_path_factory.mktemp("config-aida")))
     monkeypatch.setenv("AIDA_DATA_DIR", str(data_dir))
+    # En Windows `user_dir` lee estas dos del entorno, y un test que cambia `Path.home`
+    # seguiría escribiendo en las carpetas reales de quien corre la batería (78b-fix).
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
 
 
 @pytest.fixture(scope="session")

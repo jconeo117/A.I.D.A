@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import json
 import stat
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -705,7 +706,7 @@ def test_keys_save_local_only_crea_0600_y_borra(
     assert local_only() is True
     archivo = falso_config / "solo-local"
     assert archivo.is_file()
-    assert stat.S_IMODE(archivo.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(archivo.stat().st_mode) == 0o600
 
     save_local_only(False)
     assert local_only() is False
@@ -726,6 +727,11 @@ def test_app_build_con_local_only_y_clave_apaga_nube(
     monkeypatch.setattr("aida.keys.local_only", lambda: True)
     monkeypatch.setattr("aida.run.local_only", lambda: True)
     monkeypatch.setattr("aida.arms.health.capture.local_model_available", lambda: True)
+    # Ni el modelo ni Tesseract de este equipo: el test mide la decisión, no la instalación.
+    monkeypatch.setattr(
+        "aida.arms.health.capture.capture_diagnosis", lambda **_: (("ok", True),)
+    )
+    monkeypatch.setattr("faster_whisper.WhisperModel", lambda *a, **k: object())
 
     args = argparse.Namespace(llm=None)
     res = _app_build(args)
@@ -804,9 +810,10 @@ def test_cli_consent_cloud_registra_true_o_false(
 
 
 def test_cli_consent_cloud_sin_consent_termina_con_uno(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     pytest.importorskip("faster_whisper", reason="requiere capture")
+    monkeypatch.setattr("faster_whisper.WhisperModel", lambda *a, **k: object())
     audio = tmp_path / "a.wav"
     audio.write_bytes(_crear_wav_minimo())
     hist = tmp_path / "h.txt"

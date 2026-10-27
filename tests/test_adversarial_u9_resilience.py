@@ -168,6 +168,10 @@ def test_cache_zero_and_negative_ttl_expire_immediately(tmp_path: Path, fernet_k
     cache_zero = ConsultationCache(tmp_path, key=fernet_key, ttl_seconds=0)
     owner_zero = ontology.AgentId("paciente_ttl_cero")
     cache_zero.store(owner=owner_zero, summary_markdown="# Resumen")
+    # En Windows guardar y leer pueden caer en el mismo instante del reloj (78b-fix).
+    guardado = tmp_path / "paciente_ttl_cero.cache"
+    atras = guardado.stat().st_mtime - 1
+    os.utime(guardado, (atras, atras))
     # Almacenado con éxito; load expira de inmediato
     assert cache_zero.load(owner=owner_zero) is None
 
@@ -234,6 +238,9 @@ def test_cache_unlinking_race_condition_suppresses_filenotfounderror(
 
     monkeypatch.setattr(Path, "unlink", racy_unlink)
     cache.store(owner=owner, summary_markdown="# Resumen caduco 2")
+    guardado = tmp_path / "paciente_carrera.cache"
+    atras = guardado.stat().st_mtime - 1
+    os.utime(guardado, (atras, atras))
     assert cache.load(owner=owner) is None
 
 

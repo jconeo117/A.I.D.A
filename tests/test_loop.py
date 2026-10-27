@@ -675,6 +675,10 @@ def test_loop_inbox_observed_seq_precedes_action_started() -> None:
 
 @contextmanager
 def _time_limit(seconds: int = 2) -> Iterator[None]:
+    if not hasattr(signal, "SIGALRM"):  # Windows: sin alarma, el test corre sin límite
+        yield
+        return
+
     def _handle_timeout(signum: int, frame: object) -> None:
         raise TimeoutError(
             f"Operación excedió el límite de {seconds}s (posible bucle infinito en deliberación)"

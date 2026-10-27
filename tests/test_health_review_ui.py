@@ -494,7 +494,7 @@ def test_servidor_se_apaga_tras_guardar() -> None:
     hilo.join(timeout=5.0)
 
     # Segundo POST falla en conexión
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
         httpx.post(f"{url}/guardar", json=_payload_valido(), timeout=1.0)
 
 
@@ -511,7 +511,7 @@ def test_expiracion_levanta_review_abandoned_y_libera_puerto() -> None:
     assert isinstance(info["error"], ReviewAbandoned)
 
     # El puerto quedó liberado
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
         httpx.get(f"http://127.0.0.1:{puerto}/", timeout=1.0)
 
 

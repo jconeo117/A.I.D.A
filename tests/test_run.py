@@ -646,6 +646,7 @@ def test_consultation_sin_cache_key_crea_clave_y_falla_por_audio(
     from aida.resources import user_dir
 
     monkeypatch.delenv("AIDA_CONSULT_CACHE_KEY", raising=False)
+    monkeypatch.setattr("faster_whisper.WhisperModel", lambda *a, **k: object())
     perfil = _crear_perfil_cli(monkeypatch)
 
     with pytest.raises(FileNotFoundError):
@@ -867,7 +868,7 @@ def test_consultation_ejecucion_completa_con_extra_capture_y_clave_real(
     assert captured.err.replace(_AVISO_FALTA_KEY, "") == ""
 
     # Comprueba que el caché cifrado fue escrito en disco y es descifrable con la clave
-    cache_file = tmp_path / ".cache" / "aida" / "consultas" / "paciente_test_cli.cache"
+    cache_file = user_dir("cache") / "consultas" / "paciente_test_cli.cache"
     assert cache_file.exists()
     contenido_descifrado = Fernet(key.encode()).decrypt(cache_file.read_bytes()).decode("utf-8")
     assert "- El paciente dijo:" in contenido_descifrado
@@ -2109,7 +2110,7 @@ def test_consultation_cli_review_eof_cancela_sin_guardar_cache(
     assert codigo == 1
     assert "revisión incompleta" in captured.err
 
-    cache_file = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    cache_file = user_dir("cache") / "consultas" / f"{owner}.cache"
     assert not cache_file.exists()
 
 
@@ -2708,7 +2709,7 @@ def test_cli_consultation_export_sin_ruta_escribe_en_carpeta_por_defecto(
     captured = capsys.readouterr()
     assert codigo == 0
 
-    export_dir = tmp_path / "Documentos" / "aida" / "consultas"
+    export_dir = user_dir("documents") / "consultas"
     assert export_dir.exists()
     archivos = list(export_dir.glob("*.md"))
     assert len(archivos) == 1
@@ -2743,7 +2744,7 @@ def test_cli_consultation_sin_export_no_escribe_en_carpeta_por_defecto(
     captured = capsys.readouterr()
     assert codigo == 0
 
-    export_dir = tmp_path / "Documentos" / "aida" / "consultas"
+    export_dir = user_dir("documents") / "consultas"
     assert not export_dir.exists() or len(list(export_dir.glob("*.md"))) == 0
     assert "aida: consulta escrita en" not in captured.err
     assert "aida: consulta escrita en" not in captured.out
@@ -3377,8 +3378,8 @@ def test_transcription_caida_respaldo_y_recuperacion_genera_dos_caches(
     from aida.run import _transcription
 
     key = Fernet.generate_key().decode()
-    cache_dir = tmp_path / ".cache" / "aida" / "transcripciones"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cache_dir = user_dir("cache") / "transcripciones"
     monkeypatch.setenv("AIDA_STT_API_KEY", "test-key")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"RIFF audio data")
@@ -3676,7 +3677,7 @@ def test_consultation_cli_ui_review_abandoned_avisa_y_no_escribe_cache_ni_export
     ui_settings = load_ui_settings()
     assert ui_settings.wording.abandoned_text in captured.err
 
-    cache_path = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    cache_path = user_dir("cache") / "consultas" / f"{owner}.cache"
     assert not cache_path.exists()
     assert list(export_dir.iterdir()) == []
 
@@ -3742,7 +3743,7 @@ def test_consultation_cli_sin_ui_usa_stdin_y_no_llama_collect_review(
     assert codigo == 0
     assert not collect_called
 
-    cache_path = tmp_path / ".cache" / "aida" / "consultas" / f"{owner}.cache"
+    cache_path = user_dir("cache") / "consultas" / f"{owner}.cache"
     assert cache_path.exists()
 
 

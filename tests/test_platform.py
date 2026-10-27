@@ -25,6 +25,7 @@ import importlib
 import json
 import os
 import re
+import sys
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -516,7 +517,7 @@ def test_app_post_licencia(
         )
         assert resp_ok.status_code == 200
         assert lic_path.exists()
-        assert (lic_path.stat().st_mode & 0o777) == 0o600
+        assert sys.platform == "win32" or (lic_path.stat().st_mode & 0o777) == 0o600
 
         # Verificación en auditoría
         lineas = [x for x in auditoria.lines() if x["kind"] == "license_loaded"]
@@ -752,7 +753,7 @@ def test_tools_licencias_keygen_sign_show(
     assert res_ok == 0
     priv = dir_claves / "aida-licencias.key"
     assert priv.exists()
-    assert (priv.stat().st_mode & 0o777) == 0o600
+    assert sys.platform == "win32" or (priv.stat().st_mode & 0o777) == 0o600
     assert mod_redir.exists()
     contenido_mod = mod_redir.read_text(encoding="utf-8")
     assert "PUBLIC_KEY" in contenido_mod

@@ -133,7 +133,7 @@ def test_transcript_fingerprint_depende_del_contenido_no_de_la_ruta(tmp_path: Pa
     codigo = f"""
 from pathlib import Path
 from aida.arms.health.transcripts import transcript_fingerprint
-print(transcript_fingerprint(Path('{audio_a}'), model='small', no_speech_threshold=0.6))
+print(transcript_fingerprint(Path({str(audio_a)!r}), model='small', no_speech_threshold=0.6))
 """
     res1 = subprocess.check_output(
         [sys.executable, "-c", codigo],

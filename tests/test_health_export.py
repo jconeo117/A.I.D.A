@@ -16,6 +16,7 @@ Cubre el contrato de `60-plan-exportar.md` §B.1:
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -65,7 +66,11 @@ def _crear_resultado_prueba(
 
 def test_default_export_dir_bajo_documentos_aida_consultas() -> None:
     """Verifica que la carpeta por defecto es visible y fuera de directorios ocultos."""
-    assert default_export_dir() == Path.home() / "Documentos" / "aida" / "consultas"
+    if sys.platform == "win32":
+        esperada = Path.home() / "Documents" / "AIDA" / "consultas"
+    else:
+        esperada = Path.home() / "Documentos" / "aida" / "consultas"
+    assert default_export_dir() == esperada
 
 
 def test_export_consultation_destino_directorio_formato_y_sin_id_paciente(

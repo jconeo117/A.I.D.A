@@ -10,6 +10,7 @@ Cubre §5.1 de 42-plan-diarizacion.md:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -142,7 +143,7 @@ def test_local_pyannote_diarizer_pipeline_exception_relanza_diarization_error() 
     diarizer = LocalPyannoteDiarizer(pipeline)
 
     audio_path = Path("/tmp/audio_fallido.wav")
-    pattern = r"no se pudo diarizar /tmp/audio_fallido\.wav: CUDA out of memory"
+    pattern = re.escape(f"no se pudo diarizar {audio_path}: CUDA out of memory")
     with pytest.raises(DiarizationError, match=pattern) as exc_info:
         diarizer.diarize(audio_path)
 

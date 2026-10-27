@@ -13,6 +13,7 @@ Cubre:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import httpx
@@ -49,7 +50,7 @@ def test_cache_key_crea_archivo_con_permisos_y_reutiliza(
     archivo = config_dir / "cache.key"
     assert archivo.is_file()
     assert archivo.read_text(encoding="utf-8").strip() == key1
-    assert (archivo.stat().st_mode & 0o777) == 0o600
+    assert sys.platform == "win32" or (archivo.stat().st_mode & 0o777) == 0o600
 
     # Segunda llamada devuelve exactamente la misma clave sin regenerar
     key2 = cache_key()
@@ -138,7 +139,7 @@ def test_save_cloud_key_guarda_con_permisos(
     archivo = config_dir / "stt.key"
     assert archivo.is_file()
     assert archivo.read_text(encoding="utf-8") == "sk-x\n"
-    assert (archivo.stat().st_mode & 0o777) == 0o600
+    assert sys.platform == "win32" or (archivo.stat().st_mode & 0o777) == 0o600
     assert cloud_key() == "sk-x"
 
 

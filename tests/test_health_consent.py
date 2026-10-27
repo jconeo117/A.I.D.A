@@ -35,6 +35,7 @@ import inspect
 import io
 import json
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -439,7 +440,7 @@ def test_consent_ledger_con_archivo_permisos_0600_y_recarga(tmp_path: Path) -> N
     )
 
     assert archivo.is_file()
-    assert stat.S_IMODE(archivo.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(archivo.stat().st_mode) == 0o600
     lineas = archivo.read_text(encoding="utf-8").splitlines()
     assert len(lineas) == 1
 

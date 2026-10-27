@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def test_channel_private_key_se_crea_una_vez_y_0600(
 
     archivo = config_dir / "channel-x25519.key"
     assert archivo.is_file()
-    assert stat.S_IMODE(archivo.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(archivo.stat().st_mode) == 0o600
 
     k2 = channel_private_key()
     assert k1 == k2
@@ -46,7 +47,7 @@ def test_relay_token_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
     archivo = config_dir / "relay.key"
     assert archivo.is_file()
-    assert stat.S_IMODE(archivo.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(archivo.stat().st_mode) == 0o600
 
     t2 = relay_token(create=True)
     assert t1 == t2

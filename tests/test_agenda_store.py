@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import stat
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -106,7 +107,7 @@ def test_archivo_sqlite_no_contiene_datos_en_claro(tmp_path: Path, clave_fernet:
 def test_permisos_archivo_sqlite_son_0600(tmp_path: Path, clave_fernet: bytes) -> None:
     ruta = tmp_path / "agenda_permisos.sqlite"
     SqliteAgendaStore(ruta, clave_fernet)
-    assert stat.S_IMODE(ruta.stat().st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(ruta.stat().st_mode) == 0o600
 
 
 def test_clave_distinta_no_encuentra_cliente(tmp_path: Path, clave_fernet: bytes) -> None:

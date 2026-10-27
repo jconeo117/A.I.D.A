@@ -511,7 +511,7 @@ def test_render_note_con_traceability_completa_criticos_y_sin_ella_no(tmp_path: 
     """Caso 9 (§B.2, M7): render_note con traceability completa críticos; sin ella, no."""
     # 1. Con traceability
     c_con, prepared, _note, _flag, _log, _audit, _cache = _crear_consultation_test(
-        tmp_path / "con", traceability_active=True
+        tmp_path / "con_traza", traceability_active=True
     )
     nota_con = c_con.render_note(prepared)
     campos_con = {s.section_id: t for s, t in nota_con.fields}
