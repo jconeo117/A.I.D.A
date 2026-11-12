@@ -1,4 +1,14 @@
-# A.I.D.A.
+# A.I.D.A. · versión 0.1 (Python)
+
+> **Esta es la versión 0.1 de AIDA, en Python, y ya no se desarrolla.** Se conserva como **versión de
+> referencia**: la reescritura en .NET tiene que reproducir sus resultados byte a byte, y lo comprueba con
+> pruebas doradas contra la etiqueta [`v0.1.0`](https://github.com/jconeo117/A.I.D.A/tree/v0.1.0).
+> **El desarrollo continúa en [AIDA.NET](https://github.com/jconeo117/AIDA.NET).**
+>
+> *This is AIDA 0.1, the Python version, and it is no longer developed. It is kept as the **reference
+> implementation**: the .NET rewrite must reproduce its outputs byte for byte, checked by golden tests
+> against the [`v0.1.0`](https://github.com/jconeo117/A.I.D.A/tree/v0.1.0) tag. **Development continues in
+> [AIDA.NET](https://github.com/jconeo117/AIDA.NET).***
 
 **Asistente Inteligente Determinista y Autónomo.** Un secretario virtual cuya
 motivación es aritmética, no inferencia: un motor determinista decide *si*
